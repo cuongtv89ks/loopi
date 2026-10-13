@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import shutil
 import subprocess
@@ -154,3 +155,140 @@ async def test_startup_does_not_wait_for_requeue(pool, pki_settings, monkeypatch
     app = create_app(pki_settings, pool=pool)
     async with app.router.lifespan_context(app):
         assert not app.state.requeue_task.done()
+
+
+async def _insert_item(pool, dev, kind="video", status="stored"):
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes, raw_path, status)"
+            " VALUES (%s, %s, %s, now(), now(), 'x', 1, %s, %s)",
+            (ITEM_ID, dev["device_id"], kind, f"raw/{dev['device_id']}/x.h264", status),
+        )
+
+
+async def test_remux_item_is_noop_for_ready_item(pool, pki_settings, monkeypatch):
+    dev = await paired_device(pool, pki_settings)
+    await _insert_item(pool, dev, status="ready")
+    calls = []
+
+    async def spy(*a, **k):
+        calls.append(a)
+
+    monkeypatch.setattr(media, "remux_to_mp4", spy)
+    await media.remux_item(pool, pki_settings, ITEM_ID)
+    assert calls == [] and (await _status_row(pool))["status"] == "ready"
+
+
+async def test_remux_item_is_noop_for_non_video(pool, pki_settings, monkeypatch):
+    dev = await paired_device(pool, pki_settings)
+    await _insert_item(pool, dev, kind="audio")
+    calls = []
+
+    async def spy(*a, **k):
+        calls.append(a)
+
+    monkeypatch.setattr(media, "remux_to_mp4", spy)
+    await media.remux_item(pool, pki_settings, ITEM_ID)
+    assert calls == [] and (await _status_row(pool))["status"] == "stored"
+
+
+async def test_late_result_does_not_overwrite_moved_on_state(pool, pki_settings, monkeypatch):
+    dev = await paired_device(pool, pki_settings)
+    await _insert_item(pool, dev)
+
+    async def finish_elsewhere(*_a, **_k):
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE item SET status = 'error', error = 'other' WHERE id = %s", (ITEM_ID,))
+
+    monkeypatch.setattr(media, "remux_to_mp4", finish_elsewhere)
+    await media.remux_item(pool, pki_settings, ITEM_ID)
+    row = await _status_row(pool)
+    assert row["status"] == "error" and row["error"] == "other"
+
+
+async def test_requeue_db_error_is_logged_not_raised(pki_settings, caplog):
+    class BrokenPool:
+        def connection(self):
+            raise RuntimeError("pool down")
+
+    await media.requeue_stored(BrokenPool(), pki_settings)
+    assert "could not list stored videos" in caplog.text
+
+
+async def test_lifespan_closes_pool_even_if_requeue_task_failed(pki_settings, monkeypatch):
+    closed = []
+
+    class FakePool:
+        async def open(self):
+            pass
+
+        async def close(self):
+            closed.append(True)
+
+    import loopi_brain.app as app_mod
+
+    async def failing(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app_mod, "make_pool", lambda _url: FakePool())
+    monkeypatch.setattr(media, "requeue_stored", failing)
+    app = create_app(pki_settings)
+    async with app.router.lifespan_context(app):
+        await asyncio.sleep(0)
+    assert closed == [True]
+
+
+async def test_mark_failure_is_logged_with_item_id(pool, pki_settings, monkeypatch, caplog):
+    dev = await paired_device(pool, pki_settings)
+    await _insert_item(pool, dev)
+
+    async def fail(*_a, **_k):
+        raise MediaError_("bad")
+
+    MediaError_ = media.MediaError
+    monkeypatch.setattr(media, "remux_to_mp4", fail)
+
+    real_pool = pool
+
+    class FlakyPool:
+        def __init__(self):
+            self.n = 0
+
+        def connection(self):
+            self.n += 1
+            if self.n > 1:  # first call is the SELECT; the UPDATE fails
+                raise RuntimeError("db gone")
+            return real_pool.connection()
+
+    await media.remux_item(FlakyPool(), pki_settings, ITEM_ID)
+    assert f"could not record remux result for {ITEM_ID}" in caplog.text
+
+
+async def test_ffmpeg_timeout_kills_process_and_cleans_up(tmp_path, monkeypatch):
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    script = fake / "ffmpeg"
+    script.write_text("#!/bin/sh\nexec sleep 30\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake}:/usr/bin:/bin")
+    monkeypatch.setattr(media, "FFMPEG_TIMEOUT_S", 0.3)
+    src = tmp_path / "in.h264"
+    src.write_bytes(b"x")
+    with pytest.raises(media.MediaError, match="timed out"):
+        await media.remux_to_mp4(src, tmp_path / "out" / "x.mp4", fps=2)
+    assert not list(tmp_path.rglob("*.part.mp4"))
+
+
+async def test_concurrent_remux_uses_distinct_temp_files(tmp_path, monkeypatch):
+    seen = []
+    real = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kw):
+        seen.append(args[-1])
+        return await real(*args, **kw)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    src = tmp_path / "in.h264"
+    src.write_bytes(NO_VUI_FIXTURE.read_bytes())
+    await asyncio.gather(*(media.remux_to_mp4(src, tmp_path / "o.mp4", 2) for _ in range(2)))
+    assert len(set(seen)) == 2 and (tmp_path / "o.mp4").is_file()

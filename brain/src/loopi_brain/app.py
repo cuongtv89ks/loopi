@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
@@ -9,6 +10,8 @@ from . import media
 from .api.device_routes import router as device_router
 from .config import Settings
 from .db import make_pool
+
+log = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings, pool: AsyncConnectionPool | None = None) -> FastAPI:
@@ -25,10 +28,14 @@ def create_app(settings: Settings, pool: AsyncConnectionPool | None = None) -> F
             yield
         finally:
             requeue.cancel()
-            with suppress(asyncio.CancelledError):
-                await requeue
-            if owns_pool:
-                await active_pool.close()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await requeue
+            except Exception:
+                log.exception("requeue task ended with an error")
+            finally:
+                if owns_pool:
+                    await active_pool.close()
 
     app = FastAPI(title="Loopi Brain", lifespan=lifespan)
     app.state.settings = settings
