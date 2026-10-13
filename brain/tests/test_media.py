@@ -25,6 +25,26 @@ def h264_sample(tmp_path_factory) -> bytes:
     return out.read_bytes()
 
 
+@pytest.fixture(scope="session")
+def h264_without_timing(tmp_path_factory) -> bytes:
+    """Hardware-encoder-like stream with no VUI timing, so only -framerate decides the pace.
+
+    libx264 writes timing info into the SPS and ffmpeg then ignores -framerate, so the fps flag
+    can only be proven with an encoder that omits it (h264_videotoolbox on macOS).
+    """
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg required")
+    out = tmp_path_factory.mktemp("media_nt") / "sample.h264"
+    proc = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=2",
+         "-frames:v", str(FRAMES), "-c:v", "h264_videotoolbox", "-f", "h264", str(out)],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        pytest.skip("no timing-free H.264 encoder available (h264_videotoolbox)")
+    return out.read_bytes()
+
+
 def _duration(path) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
@@ -45,14 +65,14 @@ async def _status_row(pool):
         return await cur.fetchone()
 
 
-async def test_remux_respects_fps(tmp_path, h264_sample):
+async def test_remux_respects_fps(tmp_path, h264_without_timing):
     src = tmp_path / "in.h264"
-    src.write_bytes(h264_sample)
+    src.write_bytes(h264_without_timing)
     slow, fast = tmp_path / "out" / "slow.mp4", tmp_path / "out" / "fast.mp4"
     await media.remux_to_mp4(src, slow, fps=2)
     await media.remux_to_mp4(src, fast, fps=25)
-    assert 4.0 <= _duration(slow) <= 6.0  # 10 frames at 2 fps ~ 5 s
-    assert _duration(fast) < 1.0  # 10 frames at 25 fps ~ 0.4 s
+    assert 4.0 <= _duration(slow) <= 6.0  # 10 frames at 2 fps = 5 s
+    assert _duration(fast) < 1.0  # 10 frames at 25 fps = 0.4 s
     assert not list(tmp_path.rglob("*.part.mp4"))
 
 
