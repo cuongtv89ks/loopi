@@ -37,3 +37,52 @@ impl DiskUsage for CountingDisk {
         Ok(self.base + items as f32 * self.per_item)
     }
 }
+
+use chrono::{DateTime, Utc};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::clock::Clock;
+
+/// A clock that only moves when told to.
+pub struct ManualClock {
+    now: Mutex<DateTime<Utc>>,
+    synced: AtomicBool,
+}
+
+impl ManualClock {
+    pub fn new(now: DateTime<Utc>) -> Self {
+        Self { now: Mutex::new(now), synced: AtomicBool::new(true) }
+    }
+
+    pub fn advance(&self, by: chrono::Duration) {
+        let mut now = self.now.lock().unwrap();
+        *now += by;
+    }
+
+    pub fn set_synced(&self, synced: bool) {
+        self.synced.store(synced, Ordering::SeqCst);
+    }
+}
+
+impl Clock for ManualClock {
+    fn now(&self) -> DateTime<Utc> {
+        *self.now.lock().unwrap()
+    }
+
+    fn is_synced(&self) -> bool {
+        self.synced.load(Ordering::SeqCst)
+    }
+}
+
+/// Real wall clock that always reports NTP as synchronised.
+pub struct SyncedClock;
+
+impl Clock for SyncedClock {
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
+    }
+
+    fn is_synced(&self) -> bool {
+        true
+    }
+}

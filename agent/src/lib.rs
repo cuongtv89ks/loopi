@@ -7,3 +7,6 @@ pub mod disk;
 pub mod item;
 pub mod queue;
 pub mod testing;
+pub mod clock;
+pub mod control;
+pub mod status;
