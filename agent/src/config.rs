@@ -16,7 +16,12 @@ const PUBLIC: u32 = 0o644;
 /// Brain per-item upload limit: `x-loopi-max-item-bytes` in `docs/protocol/v1.openapi.yaml` (64 MiB).
 pub const MAX_ITEM_BYTES: u64 = 67_108_864;
 /// Brain per-segment duration limit: `x-loopi-max-segment-seconds` in `docs/protocol/v1.openapi.yaml`.
-pub const MAX_SEGMENT_SECONDS: u32 = 3600;
+pub const CONTRACT_MAX_SEGMENT_SECONDS: u32 = 3600;
+/// The agent's own accepted segment length range (validated in `Config::validate`).
+const SEGMENT_SECONDS_MIN: u32 = 10;
+const SEGMENT_SECONDS_MAX: u32 = 600;
+// The agent can never be configured past the brain's segment duration limit.
+const _: () = assert!(SEGMENT_SECONDS_MAX <= CONTRACT_MAX_SEGMENT_SECONDS);
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -188,14 +193,11 @@ impl Config {
                 c.video_bitrate_bps
             ));
         }
-        if c.segment_seconds > MAX_SEGMENT_SECONDS {
+        if !(SEGMENT_SECONDS_MIN..=SEGMENT_SECONDS_MAX).contains(&c.segment_seconds) {
             return invalid(format!(
-                "capture.segment_seconds must be at most {MAX_SEGMENT_SECONDS}, the brain's limit (got {})",
+                "capture.segment_seconds must be {SEGMENT_SECONDS_MIN}..={SEGMENT_SECONDS_MAX} (got {})",
                 c.segment_seconds
             ));
-        }
-        if !(10..=600).contains(&c.segment_seconds) {
-            return invalid(format!("capture.segment_seconds must be 10..=600 (got {})", c.segment_seconds));
         }
         let max_bytes = max_segment_bytes(c);
         if max_bytes > MAX_ITEM_BYTES {
@@ -242,6 +244,9 @@ fn validate_wifi(wifi: &WifiConfig) -> Result<(), String> {
     if wifi.psk.is_empty() || is_hex64(&wifi.psk) {
         return Ok(());
     }
+    // WPA passphrases are 8..=63 printable ASCII. A backslash is allowed: wpa_supplicant reads the
+    // quoted value raw (no escape processing). `"` and control characters (newline!) would let a
+    // value break out of the quoted line and inject config, so they are rejected.
     let printable = wifi.psk.chars().all(|c| c.is_ascii() && !c.is_ascii_control() && c != '"');
     if !(8..=63).contains(&wifi.psk.len()) || !printable {
         return Err("wifi.psk must be 8..=63 printable ASCII characters without '\"' (or 64 hex chars)".into());
@@ -250,7 +255,8 @@ fn validate_wifi(wifi: &WifiConfig) -> Result<(), String> {
 }
 
 /// wpa_supplicant config. The SSID is hex-encoded so any UTF-8 name works without escaping.
-pub fn render_wpa_conf(wifi: &WifiConfig) -> String {
+/// `wifi` must already have passed `Config::validate`: psk and country are interpolated unescaped.
+pub(crate) fn render_wpa_conf(wifi: &WifiConfig) -> String {
     let mut out = String::from("ctrl_interface=/run/wpa_supplicant\nupdate_config=0\n");
     if let Some(cc) = &wifi.country {
         out.push_str(&format!("country={cc}\n"));
@@ -286,13 +292,15 @@ pub fn import_boot_config(boot_toml: &Path, data_dir: &Path) -> Result<ImportOut
         return Ok(ImportOutcome::NoBootConfig);
     }
     let config = Config::load(boot_toml)?;
-    let fresh = config.wifi.as_ref().is_some_and(|w| !w.psk.is_empty()) || config.brain.pair_token.is_some();
-    if !fresh {
+    let config_dir = data_dir.join("config");
+    let data_config = config_dir.join(CONFIG_FILE);
+    // Fresh = still holds a secret, or was never imported (covers open-network first boot).
+    let has_secret = config.wifi.as_ref().is_some_and(|w| !w.psk.is_empty())
+        || config.brain.pair_token.as_deref().is_some_and(|t| !t.is_empty());
+    if !has_secret && data_config.exists() {
         return Ok(ImportOutcome::AlreadyImported);
     }
-    let config_dir = data_dir.join("config");
     fs::create_dir_all(&config_dir).map_err(io_err(&config_dir))?;
-    let data_config = config_dir.join(CONFIG_FILE);
     write_atomic(&data_config, toml::to_string(&config)?.as_bytes(), PRIVATE).map_err(io_err(&data_config))?;
     if let Some(wifi) = &config.wifi {
         let wpa = config_dir.join(WPA_CONF_FILE);
@@ -348,13 +356,56 @@ mod tests {
     }
 
     #[test]
-    fn segment_longer_than_brain_limit_is_rejected() {
-        let mut config = Config::parse(MINIMAL).unwrap();
-        config.capture.segment_seconds = MAX_SEGMENT_SECONDS + 1;
-        let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("3600"), "{err}");
-        config.capture.segment_seconds = MAX_SEGMENT_SECONDS;
-        assert!(config.validate().is_err(), "still outside the agent's own 10..=600 range");
+    fn item_size_limit_boundary_is_exact() {
+        let with = |bitrate: u32, secs: u32| {
+            let mut c = Config::parse(MINIMAL).unwrap();
+            c.capture.video_bitrate_bps = bitrate;
+            c.capture.segment_seconds = secs;
+            c
+        };
+        // 1_048_576 bps x 512 s / 8 == 67_108_864 bytes exactly.
+        let at_limit = with(1_048_576, 512);
+        assert_eq!(max_segment_bytes(&at_limit.capture), MAX_ITEM_BYTES);
+        assert!(at_limit.validate().is_ok());
+        // 1_048_577 bps x 512 s / 8 == 67_108_928 bytes, over the limit.
+        let over = with(1_048_577, 512);
+        assert!(max_segment_bytes(&over.capture) > MAX_ITEM_BYTES);
+        assert!(over.validate().is_err());
+    }
+
+    #[test]
+    fn wifi_values_that_could_inject_wpa_config_are_rejected() {
+        // Built directly (not via TOML) so raw control characters reach `validate`.
+        let with = |psk: &str, country: Option<&str>| {
+            let mut c = Config::parse(MINIMAL).unwrap();
+            c.wifi = Some(WifiConfig { ssid: "x".into(), psk: psk.into(), country: country.map(Into::into) });
+            c
+        };
+        assert!(with("longenough", Some("KR")).validate().is_ok());
+        let bad_psks = [
+            "password\nnetwork={",
+            "pass\rword1",
+            "pass\u{7}word1",
+            "pass\tword1",
+            "pass\u{7f}word1",
+            "pässword123",
+            "pass\"word12",
+        ];
+        for psk in bad_psks {
+            assert!(with(psk, None).validate().is_err(), "psk {psk:?} should be rejected");
+        }
+        for cc in ["kr", "K", "KRR", "K\nR", "K1", "한국", ""] {
+            assert!(with("longenough", Some(cc)).validate().is_err(), "country {cc:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn backslash_in_psk_is_allowed_and_rendered_raw() {
+        let text = format!("[wifi]\nssid = \"x\"\npsk = \"back\\\\slash1\"\n{MINIMAL}");
+        let config = Config::parse(&text).unwrap();
+        let wifi = config.wifi.unwrap();
+        assert_eq!(wifi.psk, "back\\slash1");
+        assert!(render_wpa_conf(&wifi).contains("psk=\"back\\slash1\"\n"));
     }
 
     #[test]
@@ -449,5 +500,30 @@ mod tests {
         std::fs::write(&boot, "[brain]\nurl = \"http://insecure\"\npair_token = \"X\"\n").unwrap();
         assert!(import_boot_config(&boot, &dir.path().join("data")).is_err());
         assert!(!dir.path().join("data").exists());
+    }
+
+    #[test]
+    fn open_network_first_boot_is_imported_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let boot = dir.path().join("loopi.toml");
+        let data = dir.path().join("data");
+        std::fs::write(&boot, format!("[wifi]\nssid = \"cafe\"\n{MINIMAL}")).unwrap();
+
+        assert_eq!(import_boot_config(&boot, &data).unwrap(), ImportOutcome::Imported);
+        let wpa = std::fs::read_to_string(data.join("config").join(WPA_CONF_FILE)).unwrap();
+        assert!(wpa.contains("key_mgmt=NONE"));
+        assert!(wpa.contains(&format!("ssid={}", hex::encode("cafe"))));
+        assert_eq!(import_boot_config(&boot, &data).unwrap(), ImportOutcome::AlreadyImported);
+    }
+
+    #[test]
+    fn empty_pair_token_is_not_a_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let boot = dir.path().join("loopi.toml");
+        let data = dir.path().join("data");
+        std::fs::write(&boot, "[brain]\nurl = \"https://x\"\npair_token = \"\"\n").unwrap();
+        assert_eq!(import_boot_config(&boot, &data).unwrap(), ImportOutcome::Imported);
+        // Data copy now exists and nothing secret remains: not fresh any more.
+        assert_eq!(import_boot_config(&boot, &data).unwrap(), ImportOutcome::AlreadyImported);
     }
 }
