@@ -58,19 +58,21 @@ pub fn parse_remote_command(kind: &str, payload: &Value) -> Result<Command, Stri
     }
 }
 
-/// Persisted state. A missing file silently yields defaults; any other read error or a corrupt
-/// file is logged with the path and also yields defaults.
+/// Persisted state. A missing file silently yields defaults. Any other read error or a corrupt
+/// file is logged with the path and fails closed: paused (the user may have paused; the brain can
+/// resume), with `audio_enabled` at its default.
 pub fn load_state(path: &Path, default_audio: bool) -> ControlState {
     let default = ControlState::initial(default_audio);
+    let fail_closed = ControlState { paused: true, ..default };
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, path = %path.display(), "corrupt control state, using defaults");
-            default
+            tracing::warn!(error = %e, path = %path.display(), "corrupt control state, failing closed (paused)");
+            fail_closed
         }),
         Err(e) if e.kind() == io::ErrorKind::NotFound => default,
         Err(e) => {
-            tracing::warn!(error = %e, path = %path.display(), "cannot read control state, using defaults");
-            default
+            tracing::warn!(error = %e, path = %path.display(), "cannot read control state, failing closed (paused)");
+            fail_closed
         }
     }
 }
@@ -138,14 +140,15 @@ mod tests {
         save_state(&path, &s).unwrap();
         assert_eq!(load_state(&path, true), s);
         std::fs::write(&path, b"garbage").unwrap();
-        assert_eq!(load_state(&path, true), ControlState::initial(true));
+        assert_eq!(load_state(&path, true), ControlState { paused: true, audio_enabled: true });
+        assert_eq!(load_state(&path, false), ControlState { paused: true, audio_enabled: false });
     }
 
     #[test]
-    fn unreadable_state_path_defaults() {
+    fn unreadable_state_path_fails_closed_paused() {
         // A directory at the state path yields a non-NotFound read error.
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(load_state(dir.path(), true), ControlState::initial(true));
+        assert_eq!(load_state(dir.path(), true), ControlState { paused: true, audio_enabled: true });
     }
 
     #[test]
