@@ -2,7 +2,7 @@
 
 - **Ngày:** 2026-10-14
 - **Trạng thái:** Draft, chờ review
-- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16)
+- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17)
 - **Phạm vi tài liệu:** kiến trúc tổng thể và thiết kế cho cả 3 dự án con (`os/`, `agent/`, `brain/`). Mỗi phase sẽ có implementation plan riêng.
 
 ---
@@ -73,7 +73,8 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D13 | Web UI | FastAPI + Jinja + HTMX, toàn bộ là một codebase Python |
 | D14 | Embedding MVP | Chỉ embed text (caption, transcript, summary) |
 | D15 | Vlog MVP | Kiểu timelapse, vì video gốc chỉ có 2fps |
-| D16 | Phần cứng thu | Camera CSI đi kèm kit (nối bằng cáp CSI của Zero). Mic là USB mic cắm qua cổng OTG, nên cổng OTG luôn chạy chế độ host và không dùng được USB gadget mode |
+| D16 | Phần cứng thu | Camera CSI đi kèm kit (nối bằng cáp CSI của Zero). Mic là USB mic cắm qua cổng OTG, nên khi ghi âm cổng OTG chạy chế độ host |
+| D17 | Truy cập khi bring-up | Image dev bật sẵn USB gadget trên cổng OTG: một cáp micro-USB tới máy tính vừa cấp điện vừa cho console (ACM) và mạng (ECM, `ssh root@10.55.0.1`). Trước khi cắm mic, chuyển cổng sang host bằng `loopi-usbmode host` rồi reboot. Mỗi lần boot chỉ một chế độ. Không cần cáp serial; lỗi trước tầng ứng dụng thì xem qua HDMI (`console=tty1`) |
 
 ---
 
@@ -124,7 +125,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 **Không dùng:** pin, mạch sạc/boost, chip đo pin, RTC, mic I2S. Thời gian lấy qua NTP; agent chỉ ghi khi đồng hồ đã đồng bộ.
 
 **Hệ quả của phần cứng kit:**
-- **Cổng OTG bị USB mic chiếm ở chế độ host**, nên không có đường cấu hình qua USB gadget (Ethernet-over-USB). Cấp WiFi vẫn đi theo `loopi.toml` ở P1 và QR, captive portal hoặc Improv BLE ở P4.
+- **Khi chạy thật, cổng OTG bị USB mic chiếm ở chế độ host**, nên người dùng cuối không cấu hình được qua USB gadget (Ethernet-over-USB). Cấp WiFi vẫn đi theo `loopi.toml` ở P1 và QR, captive portal hoặc Improv BLE ở P4. Chế độ gadget chỉ dùng khi phát triển, lúc chưa cắm mic (D17).
 - **Chất lượng hình phụ thuộc camera kit.** Với ống kính tiêu chuẩn, góc nhìn ngang chỉ khoảng 54–62°, chụp thiếu sáng kém và không có autofocus. Nên đặt máy ở góc bao quát được khu vực chính và đủ sáng. Nếu sau này cần nâng cấp, chỉ cần thay module CSI (ví dụ Camera Module 3 Wide).
 
 **Băng thông và dung lượng ước tính:** H.264 1080p@2fps khoảng 0,5–1,5Mbps, tuỳ cảnh thay đổi nhiều hay ít. Video thô khoảng 5–10GB/ngày, cộng audio Opus khoảng 260MB/ngày nếu ghi 24h ở 24kbps. Các con số này đo thật ở P1.
@@ -152,7 +153,8 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 
 ### 6.4 `config.txt` (định hướng)
 - `camera_auto_detect=1` để tự nhận sensor của kit (OV5647/IMX219/IMX708). Chỉ khi module bên thứ ba không tự nhận mới khai báo `dtoverlay=<sensor>` cụ thể
-- Cổng OTG chạy chế độ host bằng driver `dwc_otg` mặc định của kernel Raspberry Pi. **Không** bật `dtoverlay=dwc2` ở chế độ peripheral
+- Khi có mic, cổng OTG chạy chế độ host bằng driver `dwc_otg` mặc định của kernel Raspberry Pi (có FIQ, nhẹ hơn cho USB audio, xem R8). Không dùng `dr_mode=otg` tự đổi chế độ, vì khi đó mic sẽ chạy trên driver `dwc2`
+- Image dev có thêm dòng `dtoverlay=dwc2,dr_mode=peripheral` (USB gadget, D17); `loopi-usbmode host|gadget` comment/bỏ comment dòng này. Image prod không có dòng này
 - `dtparam=audio=off`, không cần framebuffer hay HDMI
 - Tinh chỉnh CMA cho 512MB RAM
 - Tắt LED ACT. LED trạng thái là LED ngoài do agent điều khiển
@@ -162,6 +164,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | | `loopi_dev_defconfig` | `loopi_prod_defconfig` |
 |---|---|---|
 | SSH | dropbear (chỉ xác thực bằng key) | Không |
+| Cổng USB | Mặc định gadget (console + mạng tới máy tính), đổi sang host cho mic bằng `loopi-usbmode` | Luôn là host |
 | Công cụ debug | strace, rpicam-hello, arecord, `loopi-selftest` | Chỉ có `loopi-selftest` |
 | Agent | Ưu tiên `/data/dev/loopi-agent` nếu file tồn tại | Chỉ chạy bản nằm trong rootfs |
 | Dùng ở | P1–P3 | Từ P4 |

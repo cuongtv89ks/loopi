@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Produce `os/out/loopi-dev.img`, a minimal Buildroot image for the Raspberry Pi Zero W (read-only squashfs root, A/B-ready partitions, systemd, WiFi from `loopi.toml`, kit CSI camera via libcamera, USB microphone, `loopi-agent` as a watchdog-supervised service, key-only SSH), then run the Phase 1 acceptance checks on real hardware against the P1a brain.
+**Goal:** Produce `os/out/loopi-dev.img`, a minimal Buildroot image for the Raspberry Pi Zero W (read-only squashfs root, A/B-ready partitions, systemd, WiFi from `loopi.toml`, kit CSI camera via libcamera, USB microphone, `loopi-agent` as a watchdog-supervised service, key-only SSH, a USB gadget console + network for bring-up), then run the Phase 1 acceptance checks on real hardware against the P1a brain.
 
 **Architecture:** A `BR2_EXTERNAL` tree in `os/` layered on Buildroot's upstream `raspberrypi0w_defconfig` through two config fragments (`loopi.fragment`, `dev.fragment`) merged with `merge_config.sh`, so kernel/firmware pins come from upstream while toolchain, init, filesystem and packages are ours. Builds run in a Debian container (works on x86_64 Linux and Apple Silicon); the source tree is copied into a named Docker volume so Buildroot gets a case-sensitive filesystem. `os/tests/check-image.sh` asserts the structure of every built image (the automated test for each task); on-device steps verify behaviour.
 
-**Tech Stack:** Buildroot LTS (`2026.02.x`, fallback `2025.02.x`), internal glibc toolchain, Raspberry Pi kernel + firmware from the upstream defconfig, systemd (networkd, resolved, timesyncd), squashfs (lz4), genimage, libcamera (`rpi/vc4`) + `libcamera-apps` (rpicam-apps), alsa-lib, opus, wpa_supplicant, BlueZ, dropbear, host Rust (`host-rust-bin`), Docker.
+**Tech Stack:** Buildroot LTS (`2026.02.x`, fallback `2025.02.x`), internal glibc toolchain, Raspberry Pi kernel + firmware from the upstream defconfig, systemd (networkd, resolved, timesyncd), squashfs (lz4), genimage, libcamera (`rpi/vc4`) + `libcamera-apps` (rpicam-apps), alsa-lib, opus, wpa_supplicant, BlueZ, dropbear, USB gadget via configfs (ACM + CDC-ECM, dev only), host Rust (`host-rust-bin`), Docker.
 
-**Spec:** `docs/superpowers/specs/2026-10-14-loopi-design.md` (§5, §6, §7.4, §12, §14 P1, §15 R1–R3, R8). **Depends on:** P1a (brain running for Tasks 3 and 6), P1b (agent sources in `agent/` with `Cargo.lock`).
+**Spec:** `docs/superpowers/specs/2026-10-14-loopi-design.md` (§5, §6, §7.4, §12, §14 P1, §15 R1–R3, R8). **Depends on:** P1a (brain running for Tasks 3, 5 and 6), P1b (agent sources in `agent/` with `Cargo.lock`).
 
 ## Global Constraints
 
@@ -16,7 +16,8 @@
 - Internal Buildroot toolchain, glibc, C++ enabled, kernel headers 6.1 (≥ 5.5 for libcamera-apps, ≤ the Raspberry Pi kernel).
 - Init: systemd. Root filesystem: squashfs (lz4), mounted read-only; `/var` and `/tmp` are tmpfs; journald volatile.
 - SD layout (MBR): p1 `boot` FAT32 64 MiB · p2 `rootfs-A` squashfs 128 MiB · p3 `rootfs-B` 128 MiB empty · p4 `data` ext4 (64 MiB in the image, grown to the card on first boot).
-- `config.txt`: `camera_auto_detect=1`, `dtoverlay=vc4-kms-v3d`, `dtparam=audio=off`, `enable_uart=1`; no `dtoverlay=dwc2` (the OTG port is a USB host for the mic).
+- `config.txt`: `camera_auto_detect=1`, `dtoverlay=vc4-kms-v3d`, `dtparam=audio=off`, `enable_uart=1`, and (dev image) `dtoverlay=dwc2,dr_mode=peripheral` on a line of its own. `loopi-usbmode host` comments that line out so the OTG port becomes a USB host for the mic with the default `dwc_otg` driver; `loopi-usbmode gadget` restores it (spec D17).
+- USB gadget (gadget mode): composite device with ACM (console on `ttyGS0`) + CDC-ECM (`usb0`, Pi `10.55.0.1/24`, DHCP server that advertises no router and no DNS). Bring-up uses one micro-USB data cable from the computer to the Pi's `USB` port, which also powers the Pi. No serial adapter is needed; failures before userspace are read on HDMI (`console=tty1`).
 - `cmdline.txt`: `root=/dev/mmcblk0p2 rootfstype=squashfs ro rootwait`.
 - Agent service: `Type=notify`, `WatchdogSec=30`, `KillMode=control-group`, `Restart=always`; dev images prefer `/data/dev/loopi-agent` when present (marker `/etc/loopi-dev`).
 - SSH: dropbear, key-only (`/data/dev/ssh/authorized_keys` imported from `boot/loopi-authorized_keys`), host keys persisted in `/data/dev/dropbear`.
@@ -28,9 +29,9 @@
 
 1. Power cut during the first-boot data-partition grow → the next boot finishes the grow; the marker is written only after `resize2fs` succeeds and re-running the script is a no-op. Test: Task 2 Step 7.
 2. A boot partition whose `loopi.toml` was already scrubbed (no passphrase, no token) → no re-import; WiFi keeps working from `/data/config`. Test: Task 3 Step 8.
-3. Read-only root: services that normally write `/etc` (dropbear host keys, machine-id, resolv.conf) still start. Test: Task 5 Step 6.
+3. Read-only root: services that normally write `/etc` (dropbear host keys, machine-id, resolv.conf) still start. Test: Task 4 Step 6.
 4. Agent killed with SIGKILL → `rpicam-vid` must not keep recording with the LED off. Test: Task 6 Step 6.
-5. Camera cable unplugged at boot → agent keeps running, LED fast-blinks after 5 failures, heartbeat shows camera failures, audio still records. Test: Task 4 Step 8.
+5. Camera cable unplugged at boot → agent keeps running, LED fast-blinks after 5 failures, heartbeat shows camera failures, audio still records. Test: Task 5 Step 8.
 
 ---
 
@@ -51,10 +52,11 @@ os/
 │       ├── etc/loopi-dev
 │       ├── etc/systemd/journald.conf.d/10-loopi.conf
 │       ├── etc/systemd/system.conf.d/10-watchdog.conf
-│       ├── etc/systemd/network/20-wlan0.network
-│       ├── etc/systemd/system/{loopi-growdata,loopi-provision,loopi-wifi,loopi-agent,loopi-devkeys}.service
+│       ├── etc/systemd/network/{20-wlan0,30-usb0}.network
+│       ├── etc/systemd/system/{loopi-usbgadget,loopi-growdata,loopi-provision,loopi-wifi,loopi-agent,loopi-devkeys}.service
 │       ├── etc/tmpfiles.d/loopi.conf
-│       └── usr/libexec/loopi/{grow-data.sh,run-agent}
+│       ├── usr/bin/loopi-usbmode
+│       └── usr/libexec/loopi/{usb-gadget.sh,grow-data.sh,run-agent}
 ├── package/loopi-agent/{Config.in,loopi-agent.mk}
 ├── docker/Dockerfile
 ├── scripts/{container-build.sh,verify-config.sh,deploy-agent.sh}
@@ -66,13 +68,13 @@ docs/measurements/2026-10-p1-acceptance.md          # Task 6
 
 ---
 
-### Task 1: Builder container, external tree and a bootable base image
+### Task 1: Builder container, external tree and a bootable base image with a USB console
 
 **Files:**
-- Create: `os/docker/Dockerfile`, `os/build.sh`, `os/scripts/container-build.sh`, `os/scripts/verify-config.sh`, `os/tests/check-image.sh`, `os/external.desc`, `os/external.mk`, `os/Config.in`, `os/configs/loopi.fragment`, `os/configs/dev.fragment`, `os/board/loopi/{config.txt,cmdline.txt,genimage.cfg,linux.fragment,loopi.toml.example,post-build.sh,post-image.sh}`
+- Create: `os/docker/Dockerfile`, `os/build.sh`, `os/scripts/container-build.sh`, `os/scripts/verify-config.sh`, `os/tests/check-image.sh`, `os/external.desc`, `os/external.mk`, `os/Config.in`, `os/configs/loopi.fragment`, `os/configs/dev.fragment`, `os/board/loopi/{config.txt,cmdline.txt,genimage.cfg,linux.fragment,loopi.toml.example,post-build.sh,post-image.sh}`, `os/board/loopi/rootfs-overlay/usr/libexec/loopi/usb-gadget.sh`, `os/board/loopi/rootfs-overlay/etc/systemd/system/loopi-usbgadget.service`, `os/board/loopi/rootfs-overlay/usr/bin/loopi-usbmode`
 
 **Interfaces:**
-- Produces: `os/build.sh [image|agent|shell]` (image → `os/out/loopi-dev.img`, agent → `os/out/loopi-agent`); `os/tests/check-image.sh <images dir>` (prints `[ OK ]`/`[FAIL]` per check, exit 1 on any failure; later tasks add checks before the final `exit`); fragments consumed by `merge_config.sh`.
+- Produces: `os/build.sh [image|agent|shell]` (image → `os/out/loopi-dev.img`, agent → `os/out/loopi-agent`); `os/tests/check-image.sh <images dir>` (prints `[ OK ]`/`[FAIL]` per check, exit 1 on any failure; later tasks add checks before the final `exit`); fragments consumed by `merge_config.sh`; `post-build.sh` helper `enable_unit <name>` used by later tasks; `loopi-usbgadget.service` (ACM console on `ttyGS0` + ECM `usb0` when `config.txt` selects the dwc2 overlay, does nothing in host mode); `loopi-usbmode [gadget|host]` (no argument prints the mode configured for the next boot; reads `LOOPI_BOOT_CONFIG`, default `/boot/config.txt`).
 
 - [ ] **Step 1: Confirm the Buildroot branch exists**
 
@@ -98,6 +100,18 @@ rootfs_file_contains() { rootfs_cat "$1" | grep -Eq "$2"; }
 boot_has() { mdir -i "$IMAGES/boot.vfat" "::$1"; }
 part_count() { [ "$(sfdisk -d "$IMAGES/sdcard.img" | grep -c '^/')" = "$1" ]; }
 part_type() { [ "$(sfdisk --part-type "$IMAGES/sdcard.img" "$1")" = "$2" ]; }
+usbmode_roundtrip() {  # run the shipped loopi-usbmode against a copy of the shipped config.txt
+  local tmp; tmp="$(mktemp -d)"
+  rootfs_cat usr/bin/loopi-usbmode > "$tmp/loopi-usbmode" && chmod +x "$tmp/loopi-usbmode"
+  cp "$IMAGES/rpi-firmware/config.txt" "$tmp/config.txt"
+  local cfg="LOOPI_BOOT_CONFIG=$tmp/config.txt"
+  env "$cfg" "$tmp/loopi-usbmode" host \
+    && grep -qx '# dtoverlay=dwc2,dr_mode=peripheral' "$tmp/config.txt" \
+    && [ "$(env "$cfg" "$tmp/loopi-usbmode")" = host ] \
+    && env "$cfg" "$tmp/loopi-usbmode" gadget && env "$cfg" "$tmp/loopi-usbmode" gadget \
+    && [ "$(grep -c 'dtoverlay=dwc2' "$tmp/config.txt")" = 1 ] \
+    && [ "$(env "$cfg" "$tmp/loopi-usbmode")" = gadget ]
+}
 
 # --- Task 1: bootable base image
 check "sdcard.img exists" test -s "$IMAGES/sdcard.img"
@@ -110,6 +124,11 @@ check "systemd is the init" rootfs_has /usr/lib/systemd/systemd
 check "cmdline mounts squashfs read-only" grep -q "root=/dev/mmcblk0p2 rootfstype=squashfs ro rootwait" "$IMAGES/rpi-firmware/cmdline.txt"
 check "boot partition has config.txt" boot_has config.txt
 check "boot partition has loopi.toml.example" boot_has loopi.toml.example
+check "dev image boots in USB gadget mode" grep -qx 'dtoverlay=dwc2,dr_mode=peripheral' "$IMAGES/rpi-firmware/config.txt"
+check "dwc2 overlay shipped" boot_has overlays/dwc2.dtbo
+check "gadget kernel modules present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && grep -q dwc2.ko /tmp/rootfs.list && grep -q usb_f_acm.ko /tmp/rootfs.list && grep -q usb_f_ecm.ko /tmp/rootfs.list"
+check "USB gadget service enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-usbgadget.service
+check "loopi-usbmode switches host <-> gadget" usbmode_roundtrip
 
 exit $fail
 ```
@@ -284,10 +303,10 @@ BR2_PACKAGE_HOST_DOSFSTOOLS=y
 BR2_PACKAGE_HOST_MTOOLS=y
 ```
 
-`os/configs/dev.fragment` (filled in Task 5):
+`os/configs/dev.fragment` (filled in Task 4):
 
 ```
-# Dev variant additions (Task 5)
+# Dev variant additions (Task 4)
 ```
 
 - [ ] **Step 5: Write the board files**
@@ -307,8 +326,11 @@ max_framebuffers=1
 disable_fw_kms_setup=1
 # Onboard analog audio is unused; the microphone is a USB device on the OTG port
 dtparam=audio=off
-# Serial console on GPIO14/15 for bring-up
+# Fallback serial console on GPIO14/15 (optional; bring-up uses the USB console)
 enable_uart=1
+# USB port: gadget = console + network over the cable to your computer (dev bring-up).
+# For the USB microphone run `loopi-usbmode host` and reboot (or put "# " in front of the next line).
+dtoverlay=dwc2,dr_mode=peripheral
 ```
 
 `os/board/loopi/cmdline.txt` (one line):
@@ -330,6 +352,13 @@ CONFIG_NLS_ISO8859_1=y
 CONFIG_WATCHDOG=y
 CONFIG_BCM2835_WDT=y
 CONFIG_SND_USB_AUDIO=m
+# USB gadget for dev bring-up (dwc2 in dual-role mode, configfs ACM + ECM)
+CONFIG_USB_GADGET=y
+CONFIG_USB_DWC2=m
+CONFIG_USB_DWC2_DUAL_ROLE=y
+CONFIG_USB_CONFIGFS=m
+CONFIG_USB_CONFIGFS_ACM=y
+CONFIG_USB_CONFIGFS_ECM=y
 ```
 
 `os/board/loopi/genimage.cfg`:
@@ -404,12 +433,25 @@ timezone = "Asia/Seoul"
 quiet_hours = []                  # e.g. ["00:00-07:00"]
 ```
 
-`os/board/loopi/post-build.sh` (extended in Task 2):
+`os/board/loopi/post-build.sh` (later tasks append to it):
 
 ```sh
 #!/bin/sh
 # Runs after the target tree is assembled, before the root filesystem image is made.
+# The root filesystem is read-only, so units are enabled here rather than at runtime.
 set -eu
+WANTS="${TARGET_DIR}/etc/systemd/system/multi-user.target.wants"
+mkdir -p "$WANTS"
+
+enable_unit() {
+	ln -sf "../$1" "$WANTS/$1"
+}
+
+enable_unit loopi-usbgadget.service
+# root logs in on the USB gadget console the same way as on a serial console
+if [ -f "${TARGET_DIR}/etc/securetty" ] && ! grep -qx ttyGS0 "${TARGET_DIR}/etc/securetty"; then
+	echo ttyGS0 >> "${TARGET_DIR}/etc/securetty"
+fi
 ```
 
 `os/board/loopi/post-image.sh`:
@@ -433,17 +475,125 @@ rmdir "${EMPTY_DIR}"
 support/scripts/genimage.sh -c "${BOARD_DIR}/genimage.cfg"
 ```
 
-Run: `chmod +x os/board/loopi/post-build.sh os/board/loopi/post-image.sh && mkdir -p os/board/loopi/rootfs-overlay/etc && touch os/board/loopi/rootfs-overlay/etc/.keep`
+`os/board/loopi/rootfs-overlay/usr/libexec/loopi/usb-gadget.sh`:
+
+```sh
+#!/bin/sh
+# Dev bring-up: when config.txt selects the dwc2 overlay, expose a composite USB device on the
+# OTG port: ACM serial console (ttyGS0) + CDC-ECM network (usb0). In host mode the default
+# dwc_otg driver owns the port, no device controller appears and this script does nothing.
+set -eu
+G=/sys/kernel/config/usb_gadget/loopi
+UDC_WAIT_S=10
+
+waited=0
+while [ -z "$(ls /sys/class/udc 2>/dev/null)" ]; do
+	waited=$((waited + 1))
+	if [ "$waited" -gt "$UDC_WAIT_S" ]; then
+		echo "no USB device controller: OTG port is in host mode"
+		exit 0
+	fi
+	sleep 1
+done
+[ -d "$G" ] && exit 0
+
+modprobe libcomposite
+mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
+serial="$(awk '/^Serial/ {print $3}' /proc/cpuinfo)"
+mac_tail="$(echo "$serial" | sed -E 's/.*(..)(..)(..)(..)(..)$/\1:\2:\3:\4:\5/')"
+
+mkdir -p "$G"
+cd "$G"
+echo 0x1d6b > idVendor      # Linux Foundation
+echo 0x0104 > idProduct     # Multifunction Composite Gadget
+echo 0x0100 > bcdDevice
+echo 0x0200 > bcdUSB
+echo 0xEF > bDeviceClass    # composite with an interface association (needed for ACM)
+echo 0x02 > bDeviceSubClass
+echo 0x01 > bDeviceProtocol
+mkdir -p strings/0x409
+echo "$serial" > strings/0x409/serialnumber
+echo "Loopi" > strings/0x409/manufacturer
+echo "Loopi dev console" > strings/0x409/product
+
+mkdir -p configs/c.1/strings/0x409 functions/acm.usb0 functions/ecm.usb0
+echo "ACM + ECM" > configs/c.1/strings/0x409/configuration
+echo 250 > configs/c.1/MaxPower
+# Stable MAC addresses so the computer keeps the same network interface across boots
+echo "02:$mac_tail" > functions/ecm.usb0/dev_addr
+echo "06:$mac_tail" > functions/ecm.usb0/host_addr
+ln -s functions/acm.usb0 configs/c.1/
+ln -s functions/ecm.usb0 configs/c.1/
+ls /sys/class/udc | head -n 1 > UDC
+
+systemctl --no-block start serial-getty@ttyGS0.service
+echo "USB gadget ready: console ttyGS0, network usb0"
+```
+
+`os/board/loopi/rootfs-overlay/etc/systemd/system/loopi-usbgadget.service`:
+
+```ini
+[Unit]
+Description=USB gadget console and network on the OTG port (dev bring-up)
+After=systemd-udev-trigger.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/loopi/usb-gadget.sh
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`os/board/loopi/rootfs-overlay/usr/bin/loopi-usbmode`:
+
+```sh
+#!/bin/sh
+# Choose what the OTG (`USB`) port does from the next boot on (dev image).
+#   gadget  console + network over the cable to your computer (bring-up, no microphone)
+#   host    USB host for the microphone (default dwc_otg driver)
+# Without an argument, print the mode configured for the next boot.
+set -eu
+CONFIG="${LOOPI_BOOT_CONFIG:-/boot/config.txt}"
+LINE='dtoverlay=dwc2,dr_mode=peripheral'
+
+configured_mode() {
+	if grep -qx "$LINE" "$CONFIG"; then echo gadget; else echo host; fi
+}
+
+case "${1:-}" in
+	"")
+		configured_mode
+		exit 0
+		;;
+	gadget) sed -i "s|^# *$LINE\$|$LINE|" "$CONFIG" ;;
+	host) sed -i "s|^$LINE\$|# $LINE|" "$CONFIG" ;;
+	*)
+		echo "usage: loopi-usbmode [gadget|host]" >&2
+		exit 2
+		;;
+esac
+sync
+if [ "$(configured_mode)" != "$1" ]; then
+	echo "could not switch: no '$LINE' line in $CONFIG" >&2
+	exit 1
+fi
+echo "next boot: $1 (run 'reboot' to apply)"
+```
+
+Run: `chmod +x os/board/loopi/post-build.sh os/board/loopi/post-image.sh os/board/loopi/rootfs-overlay/usr/libexec/loopi/usb-gadget.sh os/board/loopi/rootfs-overlay/usr/bin/loopi-usbmode`
 
 - [ ] **Step 6: Build and run the checks**
 
 Run: `./os/build.sh image`
 Expected: the first build takes 1–3 h (toolchain, kernel, systemd). It prints `verify-config: all fragment lines applied`, every Task 1 check is `[ OK ]`, and `os/out/loopi-dev.img` exists. If `verify-config` reports `MISSING`, run `./os/build.sh shell`, then `make -C /br/buildroot O=/br/output menuconfig`, search the symbol with `/`, fix the fragment and rebuild.
 
-- [ ] **Step 7: Boot on the Pi (serial console)**
+- [ ] **Step 7: Boot on the Pi (USB console)**
 
-Flash: `sudo dd if=os/out/loopi-dev.img of=/dev/sdX bs=4M conv=fsync status=progress` (or Raspberry Pi Imager → "Use custom"). Connect a 3.3 V USB-serial adapter to GPIO14/15, run `screen /dev/ttyUSB0 115200`, power the Pi.
-Expected: `loopi login:` within ~60 s; `root` logs in without a password on the serial console; `mount | grep ' / '` shows `squashfs (ro`.
+Flash the card. macOS: `diskutil list` → find the card (`/dev/diskN`), `diskutil unmountDisk /dev/diskN`, `sudo dd if=os/out/loopi-dev.img of=/dev/rdiskN bs=4m && sync`. Linux: `sudo dd if=os/out/loopi-dev.img of=/dev/sdX bs=4M conv=fsync status=progress`. Or Raspberry Pi Imager → "Use custom".
+Connect the Pi's `USB` port (the middle one, not `PWR`) to the computer with a micro-USB **data** cable; it also powers the Pi. After ~60 s: `ls /dev/cu.usbmodem*` (macOS) or `ls /dev/ttyACM*` (Linux), then `screen /dev/cu.usbmodem<N> 115200` and press Enter.
+Expected: `loopi login:`; `root` logs in without a password; `mount | grep ' / '` shows `squashfs (ro`; `journalctl -u loopi-usbgadget --no-pager | tail -1` shows `USB gadget ready`. If no `usbmodem` device appears within 2 min, first try another cable (charge-only cables look the same); if it still does not appear, the boot did not reach userspace: plug a monitor into the mini-HDMI port (`console=tty1` shows the kernel messages) and fix what it reports.
 
 - [ ] **Step 8: Commit**
 
@@ -461,7 +611,8 @@ git commit -m "feat(os): Buildroot external tree, builder container and bootable
 - Modify: `os/board/loopi/post-build.sh`, `os/configs/loopi.fragment`, `os/tests/check-image.sh`
 
 **Interfaces:**
-- Produces: `/data` mounted ext4 from p4; `/var`, `/tmp` tmpfs; `loopi-growdata.service` (oneshot, `ConditionPathExists=!/data/.grown`); `post-build.sh` helper `enable_unit <name>` used by later tasks.
+- Produces: `/data` mounted ext4 from p4; `/var`, `/tmp` tmpfs; `loopi-growdata.service` (oneshot, `ConditionPathExists=!/data/.grown`).
+- Consumes: `enable_unit` in `post-build.sh` and the USB console (Task 1).
 
 - [ ] **Step 1: Add the failing checks to `os/tests/check-image.sh` (before `exit $fail`)**
 
@@ -554,24 +705,13 @@ ExecStart=/usr/libexec/loopi/grow-data.sh
 WantedBy=multi-user.target
 ```
 
-Run: `chmod +x os/board/loopi/rootfs-overlay/usr/libexec/loopi/grow-data.sh && rm os/board/loopi/rootfs-overlay/etc/.keep`
+Run: `chmod +x os/board/loopi/rootfs-overlay/usr/libexec/loopi/grow-data.sh`
 
-- [ ] **Step 4: Enable units from `post-build.sh`**
+- [ ] **Step 4: Enable the unit from `post-build.sh`**
 
-Replace `os/board/loopi/post-build.sh` with:
+Append to `os/board/loopi/post-build.sh`:
 
 ```sh
-#!/bin/sh
-# Runs after the target tree is assembled, before the root filesystem image is made.
-# The root filesystem is read-only, so units are enabled here rather than at runtime.
-set -eu
-WANTS="${TARGET_DIR}/etc/systemd/system/multi-user.target.wants"
-mkdir -p "$WANTS"
-
-enable_unit() {
-	ln -sf "../$1" "$WANTS/$1"
-}
-
 enable_unit loopi-growdata.service
 ```
 
@@ -582,7 +722,7 @@ Expected: all Task 1 and Task 2 checks `[ OK ]`.
 
 - [ ] **Step 6: Verify on the device**
 
-Flash and boot (serial console), then run:
+Flash and boot (USB console, as in Task 1 Step 7), then run:
 ```sh
 mount | grep -E ' on (/|/data|/var|/tmp) '
 df -h /data
@@ -608,12 +748,12 @@ git commit -m "feat(os): read-only squashfs root, tmpfs /var, data partition gro
 ### Task 3: Agent package, WiFi, first-boot provisioning and the agent service
 
 **Files:**
-- Create: `os/package/loopi-agent/Config.in`, `os/package/loopi-agent/loopi-agent.mk`, `os/board/loopi/rootfs-overlay/etc/systemd/network/20-wlan0.network`, `.../etc/systemd/system/{loopi-provision,loopi-wifi,loopi-agent}.service`, `.../usr/libexec/loopi/run-agent`, `.../etc/loopi-dev`
+- Create: `os/package/loopi-agent/Config.in`, `os/package/loopi-agent/loopi-agent.mk`, `os/board/loopi/rootfs-overlay/etc/systemd/network/{20-wlan0,30-usb0}.network`, `.../etc/systemd/system/{loopi-provision,loopi-wifi,loopi-agent}.service`, `.../usr/libexec/loopi/run-agent`, `.../etc/loopi-dev`
 - Modify: `os/Config.in`, `os/configs/loopi.fragment`, `os/board/loopi/post-build.sh`, `os/tests/check-image.sh`
 
 **Interfaces:**
 - Consumes: `loopi-agent provision --boot /boot/loopi.toml --data /data` and `loopi-agent run` (P1b Task 12); `/data/config/wpa_supplicant-wlan0.conf` written by provisioning; the P1a brain on the LAN.
-- Produces: `/usr/bin/loopi-agent` (ARMv6); units `loopi-provision.service`, `loopi-wifi.service`, `loopi-agent.service`; `/usr/libexec/loopi/run-agent` (prefers `/data/dev/loopi-agent` on dev images).
+- Produces: `/usr/bin/loopi-agent` (ARMv6); units `loopi-provision.service`, `loopi-wifi.service`, `loopi-agent.service`; `/usr/libexec/loopi/run-agent` (prefers `/data/dev/loopi-agent` on dev images); in gadget mode `usb0` is `10.55.0.1/24` and hands the computer an address (no router, no DNS).
 
 - [ ] **Step 1: Add the failing checks to `os/tests/check-image.sh` (before `exit $fail`)**
 
@@ -626,6 +766,8 @@ check "wifi enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loop
 check "agent has a systemd watchdog" rootfs_file_contains etc/systemd/system/loopi-agent.service '^WatchdogSec=30'
 check "recorders die with the agent" rootfs_file_contains etc/systemd/system/loopi-agent.service '^KillMode=control-group'
 check "wlan0 uses DHCP" rootfs_file_contains etc/systemd/network/20-wlan0.network '^DHCP=yes'
+check "usb0 serves DHCP to the dev computer" rootfs_file_contains etc/systemd/network/30-usb0.network '^DHCPServer=yes'
+check "usb0 does not take over the computer's default route" rootfs_file_contains etc/systemd/network/30-usb0.network '^EmitRouter=no'
 check "WiFi firmware present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q brcmfmac43430"
 check "BlueZ present" rootfs_has /usr/bin/bluetoothctl
 check "timesyncd present" rootfs_has /usr/lib/systemd/systemd-timesyncd
@@ -720,6 +862,23 @@ Name=wlan0
 
 [Network]
 DHCP=yes
+```
+
+`rootfs-overlay/etc/systemd/network/30-usb0.network` (USB gadget link to the dev computer):
+
+```ini
+[Match]
+Name=usb0
+
+[Network]
+Address=10.55.0.1/24
+DHCPServer=yes
+
+[DHCPServer]
+PoolOffset=10
+PoolSize=10
+EmitRouter=no
+EmitDNS=no
 ```
 
 `rootfs-overlay/etc/systemd/system/loopi-provision.service`:
@@ -820,14 +979,14 @@ Expected: all checks up to Task 3 `[ OK ]`. The first build of `loopi-agent` dow
 
 - [ ] **Step 7: First boot against the brain**
 
-On the brain (P1a): Devices page → "Tạo token ghép cặp". Mount the SD card's boot partition on your computer, copy `loopi.toml.example` to `loopi.toml` and fill in `wifi`, `brain.url` (the brain's LAN IP), `pair_token` and `ca_fingerprint`. Boot the Pi and on the serial console run:
+On the brain (P1a): Devices page → "Tạo token ghép cặp". Mount the SD card's boot partition on your computer, copy `loopi.toml.example` to `loopi.toml` and fill in `wifi`, `brain.url` (the brain's LAN IP), `pair_token` and `ca_fingerprint`. Boot the Pi on the USB cable and on the USB console run:
 ```sh
 journalctl -b -u loopi-provision -u loopi-wifi -u loopi-agent --no-pager | tail -40
 networkctl status wlan0 | head -5
 timedatectl show -p NTPSynchronized
 cat /boot/loopi.toml
 ```
-Expected: provisioning prints `Imported`; `wlan0` is `routable` with an IP; `NTPSynchronized=yes`; the agent logs `paired`; `/boot/loopi.toml` no longer contains `psk` or `pair_token`. On the brain's Devices page the device is "trực tuyến". (Camera and mic packages arrive in Task 4, so the agent reports camera failures and `mic_missing` for now.)
+Expected: provisioning prints `Imported`; `wlan0` is `routable` with an IP; `NTPSynchronized=yes`; the agent logs `paired`; `/boot/loopi.toml` no longer contains `psk` or `pair_token`. On the brain's Devices page the device is "trực tuyến". Note the WiFi address (`Address:` in `networkctl status wlan0`); Task 5 reaches the device through it once the microphone takes the USB port. (Camera and mic packages arrive in Task 5, so the agent reports camera failures and `mic_missing` for now.)
 
 - [ ] **Step 8: Second boot does not re-import (Review Focus 2)**
 
@@ -843,101 +1002,7 @@ git commit -m "feat(os): loopi-agent package, WiFi provisioning from the boot pa
 
 ---
 
-### Task 4: Kit CSI camera and USB microphone
-
-**Files:**
-- Modify: `os/configs/loopi.fragment`, `os/configs/dev.fragment`, `os/tests/check-image.sh`
-
-**Interfaces:**
-- Consumes: `config.txt` (`camera_auto_detect=1`, `vc4-kms-v3d`), kernel module `snd-usb-audio` (Task 1 fragment), agent `selftest` (P1b Task 12).
-- Produces: `/usr/bin/rpicam-vid` and libcamera's Raspberry Pi IPA in the image; `arecord` on dev images.
-
-- [ ] **Step 1: Add the failing checks to `os/tests/check-image.sh` (before `exit $fail`)**
-
-```bash
-# --- Task 4: camera and USB microphone
-check "rpicam-vid present" rootfs_has /usr/bin/rpicam-vid
-check "libcamera Raspberry Pi IPA present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'ipa_rpi_vc4'"
-check "USB audio driver present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'snd-usb-audio.ko'"
-check "camera auto-detect enabled" grep -qx 'camera_auto_detect=1' "$IMAGES/rpi-firmware/config.txt"
-check "onboard audio disabled" grep -qx 'dtparam=audio=off' "$IMAGES/rpi-firmware/config.txt"
-check "KMS overlay shipped" boot_has overlays/vc4-kms-v3d.dtbo
-check "OV5647 overlay shipped" boot_has overlays/ov5647.dtbo
-check "arecord present (dev)" rootfs_has /usr/bin/arecord
-```
-
-Run: `./os/build.sh image`
-Expected: the camera and `arecord` checks `[FAIL]`.
-
-- [ ] **Step 2: Add camera packages to `os/configs/loopi.fragment`**
-
-```
-# Camera: libcamera with the Raspberry Pi (VC4) pipeline + rpicam-apps (Buildroot name libcamera-apps)
-BR2_PACKAGE_LIBCAMERA=y
-BR2_PACKAGE_LIBCAMERA_PIPELINE_RPI_VC4=y
-BR2_PACKAGE_LIBCAMERA_APPS=y
-```
-
-- [ ] **Step 3: Add audio tools to `os/configs/dev.fragment`**
-
-Replace the file with:
-
-```
-# Dev variant: audio tools for bring-up
-BR2_PACKAGE_ALSA_UTILS=y
-BR2_PACKAGE_ALSA_UTILS_APLAY=y
-```
-
-- [ ] **Step 4: Rebuild and run the checks**
-
-Run: `./os/build.sh image`
-Expected: all checks up to Task 4 `[ OK ]`. If `libcamera-apps` fails to build against Buildroot's libcamera (risk R1), use `./os/build.sh shell` → `grep -E '^(LIBCAMERA|LIBCAMERA_APPS)_VERSION' /br/buildroot/package/libcamera*/*.mk` and pin a matching rpicam-apps release in an external package `os/package/rpicam-apps/` (copy Buildroot's `libcamera-apps.mk`, change `*_VERSION`/`*_SITE`, disable the upstream one with `# BR2_PACKAGE_LIBCAMERA_APPS is not set`). If only the IPA check fails, list `/usr/lib/libcamera` in the squashfs and update the pattern to the real file name.
-
-- [ ] **Step 5: Verify the camera on the device**
-
-Flash, boot, then on the device:
-```sh
-rpicam-vid --list-cameras
-rpicam-vid -t 6000 -n --codec h264 --inline --framerate 2 --width 1920 --height 1080 -o /tmp/test.h264
-ls -l /tmp/test.h264
-```
-Expected: the kit sensor is listed (e.g. `0 : ov5647 [2592x1944 …]` or `imx219`); `/tmp/test.h264` is non-empty. Copy it to your computer (`scp` after Task 5, or via the serial console's file transfer) and check with `ffprobe -f h264 -framerate 2 test.h264` → about 12 frames.
-
-- [ ] **Step 6: Verify the USB microphone**
-
-Plug the USB mic into the OTG port (via adapter if needed), then:
-```sh
-arecord -l
-arecord -D plughw:1,0 -f S16_LE -r 16000 -c 1 -d 3 /tmp/mic.wav && ls -l /tmp/mic.wav
-loopi-agent selftest
-```
-Expected: `arecord -l` lists a `USB Audio` card; `/tmp/mic.wav` is about 96 KB; `selftest` shows `[ OK ]` for camera and microphone (level well above -120 dBFS while you speak).
-
-- [ ] **Step 7: End-to-end recording to the brain**
-
-Run: `systemctl restart loopi-agent && sleep 150`, then open the brain timeline for today.
-Expected: within 2 minutes there are video segments that play in the browser (after remux) and audio segments that play; the LED is solid; the Devices page shows `recording_video` and `recording_audio` true and `camera_failures` 0.
-
-- [ ] **Step 8: Camera unplugged at boot (Review Focus 5)**
-
-Power off, disconnect the camera ribbon cable, power on. After ~2 minutes:
-```sh
-systemctl is-active loopi-agent
-journalctl -b -u loopi-agent --no-pager | grep -c "rpicam-vid exited"
-loopi-agent selftest | grep camera
-```
-Expected: the agent is `active`; at least 5 "rpicam-vid exited" lines with growing gaps (≤ 60 s); selftest camera `[FAIL]`; the LED fast-blinks when not recording audio, and is solid while the mic records; audio segments keep arriving on the brain; the Devices page shows `camera_failures ≥ 5`. Power off and reconnect the camera afterwards.
-
-- [ ] **Step 9: Commit**
-
-```bash
-git add os
-git commit -m "feat(os): libcamera + rpicam-apps for the kit camera and USB microphone support"
-```
-
----
-
-### Task 5: Dev access — key-only SSH, persistent host keys, agent hot-deploy
+### Task 4: Dev access — key-only SSH, persistent host keys, agent hot-deploy
 
 **Files:**
 - Create: `os/board/loopi/rootfs-overlay/etc/tmpfiles.d/loopi.conf`, `.../etc/systemd/system/loopi-devkeys.service`, `os/scripts/deploy-agent.sh`, `os/README.md`
@@ -950,7 +1015,7 @@ git commit -m "feat(os): libcamera + rpicam-apps for the kit camera and USB micr
 - [ ] **Step 1: Add the failing checks to `os/tests/check-image.sh` (before `exit $fail`)**
 
 ```bash
-# --- Task 5: dev access (key-only SSH, rsync)
+# --- Task 4: dev access (key-only SSH, rsync)
 check "dropbear enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/dropbear.service
 check "SSH host keys persist on /data" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -q 'etc/dropbear -> /data/dev/dropbear'"
 check "authorized_keys live on /data" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -q 'root/.ssh -> /data/dev/ssh'"
@@ -960,11 +1025,11 @@ check "dev marker present" rootfs_has /etc/loopi-dev
 ```
 
 Run: `./os/build.sh image`
-Expected: the Task 5 checks `[FAIL]`.
+Expected: the Task 4 checks `[FAIL]`.
 
-- [ ] **Step 2: Extend `os/configs/dev.fragment`**
+- [ ] **Step 2: Fill in `os/configs/dev.fragment`**
 
-Append:
+Replace the file with:
 
 ```
 # Dev variant: SSH (key-only via /data/dev/ssh), file sync, tracing
@@ -1051,22 +1116,34 @@ Run: `chmod +x os/scripts/deploy-agent.sh`
 2. On the `boot` partition: copy `loopi.toml.example` to `loopi.toml` and fill in WiFi, the brain URL,
    `pair_token` and `ca_fingerprint` (brain web → Thiết bị → "Tạo token ghép cặp").
 3. Dev images: put your SSH public key in `boot/loopi-authorized_keys`.
-4. Insert the card, plug the USB mic into the OTG port (`USB`, not `PWR`), power on.
+4. Insert the card and connect the Pi's `USB` port (not `PWR`) to your computer with a micro-USB data
+   cable. Dev images start in USB gadget mode: the cable powers the Pi and gives a console
+   (`screen /dev/cu.usbmodem* 115200`) and network (`ssh root@10.55.0.1`).
+
+Reflashing wipes `/data`, so every flash needs a fresh `pair_token` (revoke the old device on the brain).
 
 On first boot the device grows the data partition, imports `loopi.toml` (secrets are then removed
 from the boot partition), joins WiFi, pairs with the brain and starts recording (LED solid).
+
+## USB port modes (one per boot)
+- `gadget` (default on dev images): console + network to your computer; no microphone.
+- `host`: the microphone goes into `USB` (OTG adapter if needed) and the charger into `PWR`; reach the
+  device over WiFi (`ssh root@<wifi-ip>`).
+
+Switch with `loopi-usbmode host` or `loopi-usbmode gadget`, then `reboot`. Without SSH, edit `config.txt`
+on the boot partition: `# ` in front of `dtoverlay=dwc2,dr_mode=peripheral` means host mode.
 
 ## Develop the agent without reflashing
 `os/scripts/deploy-agent.sh <device-ip>` rebuilds the ARMv6 binary and runs it from `/data/dev/`.
 Remove `/data/dev/loopi-agent` on the device to go back to the packaged binary.
 
 ## Useful commands on the device
-`loopi-agent selftest` · `journalctl -u loopi-agent -f` · `systemctl --failed` · `rpicam-vid --list-cameras` · `arecord -l`
+`loopi-agent selftest` · `loopi-usbmode` · `journalctl -u loopi-agent -f` · `systemctl --failed` · `rpicam-vid --list-cameras` · `arecord -l`
 ```
 
 - [ ] **Step 6: Rebuild, then verify SSH and read-only robustness on the device (Review Focus 3)**
 
-Run: `./os/build.sh image` → all checks `[ OK ]`. Flash, put `~/.ssh/id_ed25519.pub` into `boot/loopi-authorized_keys`, boot, then from your computer:
+Run: `./os/build.sh image` → all checks `[ OK ]`. Flash, fill in `loopi.toml` (fresh pair token) and put `~/.ssh/id_ed25519.pub` into `boot/loopi-authorized_keys`, boot on the USB cable. `<device-ip>` below is `10.55.0.1`; afterwards run the first command once more with the WiFi address to confirm SSH over WiFi. From your computer:
 ```bash
 ssh root@<device-ip> 'systemctl --failed --no-legend | wc -l; uptime'
 ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password root@<device-ip> true; echo "password login exit=$?"
@@ -1091,6 +1168,101 @@ git commit -m "feat(os): key-only SSH with persistent host keys and agent hot-de
 
 ---
 
+### Task 5: Kit CSI camera and USB microphone
+
+**Files:**
+- Modify: `os/configs/loopi.fragment`, `os/configs/dev.fragment`, `os/tests/check-image.sh`
+
+**Interfaces:**
+- Consumes: `config.txt` (`camera_auto_detect=1`, `vc4-kms-v3d`), kernel module `snd-usb-audio` (Task 1 fragment), agent `selftest` (P1b Task 12), `loopi-usbmode` (Task 1), SSH over USB and WiFi (Task 4).
+- Produces: `/usr/bin/rpicam-vid` and libcamera's Raspberry Pi IPA in the image; `arecord` on dev images.
+
+- [ ] **Step 1: Add the failing checks to `os/tests/check-image.sh` (before `exit $fail`)**
+
+```bash
+# --- Task 5: camera and USB microphone
+check "rpicam-vid present" rootfs_has /usr/bin/rpicam-vid
+check "libcamera Raspberry Pi IPA present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'ipa_rpi_vc4'"
+check "USB audio driver present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'snd-usb-audio.ko'"
+check "camera auto-detect enabled" grep -qx 'camera_auto_detect=1' "$IMAGES/rpi-firmware/config.txt"
+check "onboard audio disabled" grep -qx 'dtparam=audio=off' "$IMAGES/rpi-firmware/config.txt"
+check "KMS overlay shipped" boot_has overlays/vc4-kms-v3d.dtbo
+check "OV5647 overlay shipped" boot_has overlays/ov5647.dtbo
+check "arecord present (dev)" rootfs_has /usr/bin/arecord
+```
+
+Run: `./os/build.sh image`
+Expected: the camera and `arecord` checks `[FAIL]`.
+
+- [ ] **Step 2: Add camera packages to `os/configs/loopi.fragment`**
+
+```
+# Camera: libcamera with the Raspberry Pi (VC4) pipeline + rpicam-apps (Buildroot name libcamera-apps)
+BR2_PACKAGE_LIBCAMERA=y
+BR2_PACKAGE_LIBCAMERA_PIPELINE_RPI_VC4=y
+BR2_PACKAGE_LIBCAMERA_APPS=y
+```
+
+- [ ] **Step 3: Add audio tools to `os/configs/dev.fragment`**
+
+Append:
+
+```
+# Dev variant: audio tools for bring-up
+BR2_PACKAGE_ALSA_UTILS=y
+BR2_PACKAGE_ALSA_UTILS_APLAY=y
+```
+
+- [ ] **Step 4: Rebuild and run the checks**
+
+Run: `./os/build.sh image`
+Expected: all checks up to Task 5 `[ OK ]`. If `libcamera-apps` fails to build against Buildroot's libcamera (risk R1), use `./os/build.sh shell` → `grep -E '^(LIBCAMERA|LIBCAMERA_APPS)_VERSION' /br/buildroot/package/libcamera*/*.mk` and pin a matching rpicam-apps release in an external package `os/package/rpicam-apps/` (copy Buildroot's `libcamera-apps.mk`, change `*_VERSION`/`*_SITE`, disable the upstream one with `# BR2_PACKAGE_LIBCAMERA_APPS is not set`). If only the IPA check fails, list `/usr/lib/libcamera` in the squashfs and update the pattern to the real file name.
+
+- [ ] **Step 5: Verify the camera on the device**
+
+Flash (fresh pair token, see `os/README.md`), boot on the USB cable, `ssh root@10.55.0.1`, then:
+```sh
+rpicam-vid --list-cameras
+rpicam-vid -t 6000 -n --codec h264 --inline --framerate 2 --width 1920 --height 1080 -o /tmp/test.h264
+ls -l /tmp/test.h264
+```
+Expected: the kit sensor is listed (e.g. `0 : ov5647 [2592x1944 …]` or `imx219`); `/tmp/test.h264` is non-empty. Copy it with `scp root@10.55.0.1:/tmp/test.h264 .` and check with `ffprobe -f h264 -framerate 2 test.h264` → about 12 frames.
+
+- [ ] **Step 6: Verify the USB microphone**
+
+Switch the port to host mode and move to WiFi: `ssh root@10.55.0.1 'loopi-usbmode host && reboot'`, unplug the computer cable, plug the USB mic into `USB` (OTG adapter if needed) and the charger into `PWR`. After ~60 s `ssh root@<wifi-ip>` (address from Task 3 Step 7) and run:
+```sh
+loopi-usbmode; journalctl -b -u loopi-usbgadget --no-pager | tail -1; systemctl --failed --no-legend | wc -l
+arecord -l
+arecord -D plughw:1,0 -f S16_LE -r 16000 -c 1 -d 3 /tmp/mic.wav && ls -l /tmp/mic.wav
+loopi-agent selftest
+```
+Expected: `host`, `no USB device controller: OTG port is in host mode`, `0`; `arecord -l` lists a `USB Audio` card; `/tmp/mic.wav` is about 96 KB; `selftest` shows `[ OK ]` for camera and microphone (level well above -120 dBFS while you speak).
+
+- [ ] **Step 7: End-to-end recording to the brain**
+
+Run: `systemctl restart loopi-agent && sleep 150`, then open the brain timeline for today.
+Expected: within 2 minutes there are video segments that play in the browser (after remux) and audio segments that play; the LED is solid; the Devices page shows `recording_video` and `recording_audio` true and `camera_failures` 0.
+
+- [ ] **Step 8: Camera unplugged at boot (Review Focus 5)**
+
+Power off, disconnect the camera ribbon cable, power on. After ~2 minutes, over `ssh root@<wifi-ip>`:
+```sh
+systemctl is-active loopi-agent
+journalctl -b -u loopi-agent --no-pager | grep -c "rpicam-vid exited"
+loopi-agent selftest | grep camera
+```
+Expected: the agent is `active`; at least 5 "rpicam-vid exited" lines with growing gaps (≤ 60 s); selftest camera `[FAIL]`; the LED fast-blinks when not recording audio, and is solid while the mic records; audio segments keep arriving on the brain; the Devices page shows `camera_failures ≥ 5`. Power off and reconnect the camera afterwards.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add os
+git commit -m "feat(os): libcamera + rpicam-apps for the kit camera and USB microphone support"
+```
+
+---
+
 ### Task 6: Phase 1 acceptance on real hardware
 
 **Files:**
@@ -1108,7 +1280,7 @@ git commit -m "feat(os): key-only SSH with persistent host keys and agent hot-de
 # Phase 1 acceptance — Loopi dev image
 
 - Date: <YYYY-MM-DD> · Image commit: <git rev-parse --short HEAD> · Camera sensor: <from selftest>
-- USB mic: <model> · SD card: <size/model> · Brain host: <CPU/RAM>
+- USB mic: <model> · USB mode: host · SD card: <size/model> · Brain host: <CPU/RAM>
 
 | # | Spec §14 P1 criterion | Result | Evidence |
 |---|---|---|---|
@@ -1132,7 +1304,7 @@ Go / no-go for Phase 2: <decision and follow-ups>
 
 - [ ] **Step 2: Criterion 1 — time to first segment**
 
-Start a stopwatch, flash a fresh card with `loopi.toml` + `loopi-authorized_keys`, power on. Stop when the first video segment appears on the brain timeline.
+Flash a fresh card with `loopi.toml` (fresh pair token) + `loopi-authorized_keys`, and on the boot partition put `# ` in front of `dtoverlay=dwc2,dr_mode=peripheral` (host mode for the whole acceptance run). Insert the card, plug the mic into `USB`, start a stopwatch and plug the charger into `PWR`. Stop when the first video segment appears on the brain timeline.
 Expected: ≤ 2 min after the LED turns solid (first boot also grows `/data`; note the total time too). Record both times.
 
 - [ ] **Step 3: Criterion 2 — 24-hour soak**
