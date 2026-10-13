@@ -1,7 +1,9 @@
 """Device-facing endpoints of sync protocol v1 (docs/protocol/v1.openapi.yaml)."""
+from typing import Annotated, Literal
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .. import devices, items, media, pki
 from .device_auth import check_agent_version, current_device
@@ -75,3 +77,55 @@ async def put_item(
     if status == 201 and header.kind == "video":
         background.add_task(media.remux_item, request.app.state.pool, settings, header.id)
     return JSONResponse(ack, status_code=status)
+
+
+ULID_PATTERN = r"^[0-9A-HJKMNP-TV-Z]{26}$"
+Counter = Annotated[StrictInt, Field(ge=0)]
+
+
+class Heartbeat(BaseModel):
+    """Mirrors the contract's Heartbeat schema (additionalProperties: false)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_version: str = Field(max_length=32)
+    uptime_s: Counter
+    soc_temp_c: float | None = None
+    disk_used_pct: float = Field(ge=0, le=100)
+    queue_depth: Counter
+    wifi_rssi_dbm: StrictInt | None = None
+    clock_synced: StrictBool
+    paused: StrictBool
+    audio_enabled: StrictBool
+    recording_video: StrictBool
+    recording_audio: StrictBool
+    mic_missing: StrictBool = False
+    camera_failures: Counter = 0
+    last_error: str | None = Field(default=None, max_length=500)
+    dropped_items: Counter = 0
+    acked_command_ids: list[Annotated[str, Field(pattern=ULID_PATTERN)]] = Field(max_length=100)
+
+
+class Command(BaseModel):
+    id: str
+    type: Literal["pause", "resume", "set_config"]
+    payload: dict
+
+
+class HeartbeatResponse(BaseModel):
+    commands: list[Command]
+
+
+@router.post(
+    "/v1/heartbeat",
+    response_model=HeartbeatResponse,
+    dependencies=[Depends(check_agent_version)],
+)
+async def heartbeat(
+    body: Heartbeat, request: Request, device: dict = Depends(current_device)
+) -> HeartbeatResponse:
+    status = body.model_dump(exclude={"acked_command_ids"})
+    pending = await devices.record_heartbeat(
+        request.app.state.pool, device["id"], status, body.acked_command_ids
+    )
+    return HeartbeatResponse(commands=[Command(**row) for row in pending])
