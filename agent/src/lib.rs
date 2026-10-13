@@ -10,3 +10,5 @@ pub mod testing;
 pub mod clock;
 pub mod control;
 pub mod status;
+pub mod button;
+pub mod led;

@@ -86,3 +86,20 @@ impl Clock for SyncedClock {
         true
     }
 }
+
+use std::sync::Arc;
+
+use crate::led::LedDriver;
+
+/// LED that records every level it was set to.
+#[derive(Default, Clone)]
+pub struct RecordingLed {
+    pub states: Arc<Mutex<Vec<bool>>>,
+}
+
+impl LedDriver for RecordingLed {
+    fn set(&mut self, on: bool) -> io::Result<()> {
+        self.states.lock().unwrap().push(on);
+        Ok(())
+    }
+}
