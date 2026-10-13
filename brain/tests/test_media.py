@@ -1,6 +1,7 @@
 import hashlib
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -25,24 +26,11 @@ def h264_sample(tmp_path_factory) -> bytes:
     return out.read_bytes()
 
 
-@pytest.fixture(scope="session")
-def h264_without_timing(tmp_path_factory) -> bytes:
-    """Hardware-encoder-like stream with no VUI timing, so only -framerate decides the pace.
-
-    libx264 writes timing info into the SPS and ffmpeg then ignores -framerate, so the fps flag
-    can only be proven with an encoder that omits it (h264_videotoolbox on macOS).
-    """
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg required")
-    out = tmp_path_factory.mktemp("media_nt") / "sample.h264"
-    proc = subprocess.run(
-        ["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=2",
-         "-frames:v", str(FRAMES), "-c:v", "h264_videotoolbox", "-f", "h264", str(out)],
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        pytest.skip("no timing-free H.264 encoder available (h264_videotoolbox)")
-    return out.read_bytes()
+# Generated once with:
+#   ffmpeg -f lavfi -i testsrc=size=64x64:rate=2 -frames:v 10 -c:v h264_videotoolbox -f h264 no_vui_timing_10f.h264
+# The stream carries no VUI timing (libx264 always writes it, and then ffmpeg ignores -framerate),
+# like raw Pi encoder output, so -framerate alone decides the playback pace.
+NO_VUI_FIXTURE = Path(__file__).parent / "fixtures" / "no_vui_timing_10f.h264"
 
 
 def _duration(path) -> float:
@@ -65,9 +53,11 @@ async def _status_row(pool):
         return await cur.fetchone()
 
 
-async def test_remux_respects_fps(tmp_path, h264_without_timing):
+async def test_remux_respects_fps(tmp_path):
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg/ffprobe required")
     src = tmp_path / "in.h264"
-    src.write_bytes(h264_without_timing)
+    src.write_bytes(NO_VUI_FIXTURE.read_bytes())
     slow, fast = tmp_path / "out" / "slow.mp4", tmp_path / "out" / "fast.mp4"
     await media.remux_to_mp4(src, slow, fps=2)
     await media.remux_to_mp4(src, fast, fps=25)

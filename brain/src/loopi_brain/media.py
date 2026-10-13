@@ -17,6 +17,8 @@ class MediaError(Exception):
     """ffmpeg failed to process a file."""
 
 
+# Assumption: raw input has no VUI timing (Pi encoder output), so -framerate sets the pace;
+# streams that carry VUI timing (e.g. libx264) make ffmpeg ignore -framerate.
 async def remux_to_mp4(src: Path, dst: Path, fps: int) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.stem + ".part.mp4")
