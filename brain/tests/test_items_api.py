@@ -248,3 +248,69 @@ async def test_trailing_newline_in_id_or_sha_is_422(client, pool, device):
     r = await client.put(f"/v1/items/{ITEM_ID}", content=body, headers=_headers(device["fingerprint"], body, sha=sha))
     assert r.status_code == 422
     assert await _row(pool) is None
+
+
+class _FailingCommitPool:
+    """Wraps a pool; the first transaction rolls back and then raises, as a failed commit would."""
+
+    def __init__(self, pool):
+        self._pool = pool
+        self.failed = False
+
+    def connection(self):
+        outer = self._pool.connection()
+        wrapper = self
+
+        class _Conn:
+            async def __aenter__(self):
+                self.conn = await outer.__aenter__()
+                return self
+
+            async def __aexit__(self, *exc):
+                return await outer.__aexit__(*exc)
+
+            async def execute(self, *a, **k):
+                return await self.conn.execute(*a, **k)
+
+            def transaction(self):
+                real = self.conn.transaction()
+
+                class _Tx:
+                    async def __aenter__(self):
+                        return await real.__aenter__()
+
+                    async def __aexit__(self, et, ev, tb):
+                        if et is None and not wrapper.failed:
+                            wrapper.failed = True
+                            err = RuntimeError("commit failed")
+                            await real.__aexit__(RuntimeError, err, None)
+                            raise err
+                        return await real.__aexit__(et, ev, tb)
+
+                return _Tx()
+
+        return _Conn()
+
+
+async def test_commit_failure_keeps_file_and_retry_succeeds(pool, pki_settings, device):
+    from loopi_brain import items
+
+    body = b"segment-bytes"
+    raw = {k.lower(): v for k, v in _headers(device["fingerprint"], body).items()}
+    header = items.parse_header(ITEM_ID, raw, 2)
+
+    async def chunks():
+        yield body
+
+    flaky = _FailingCommitPool(pool)
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await items.store_item(flaky, pki_settings, device["device_id"], header, chunks())
+    assert await _row(pool) is None
+    stored = [p for p in _media_files(pki_settings) if not p.name.endswith(".part")]
+    assert len(stored) == 1  # not deleted by a post-lock handler
+    assert [p for p in _media_files(pki_settings) if p.name.endswith(".part")] == []
+
+    status, _ = await items.store_item(flaky, pki_settings, device["device_id"], header, chunks())
+    assert status == 201
+    row = await _row(pool)
+    assert (pki_settings.media_root / row["raw_path"]).read_bytes() == body

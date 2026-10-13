@@ -192,35 +192,29 @@ async def store_item(
             meta, view_path = _marker_meta(tmp, size), None
 
         await anyio.to_thread.run_sync(_fsync_path, tmp)
-        renamed = False
-        try:
-            async with pool.connection() as conn:
-                async with conn.transaction():
-                    # Serialise concurrent uploads of the same id.
-                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (header.id,))
-                    existing = await _existing(conn, header.id)
-                    if existing is not None:
-                        return _duplicate_or_conflict(existing, device_id, header)
-                    tmp.replace(final)
-                    renamed = True
-                    try:
-                        await anyio.to_thread.run_sync(_fsync_path, final.parent)
-                        await conn.execute(
-                            "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes,"
-                            " raw_path, view_path, meta, status)"
-                            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                            (header.id, device_id, header.kind, header.started_at, header.ended_at,
-                             header.sha256, size, str(rel), view_path, Jsonb(meta), status),
-                        )
-                    except BaseException:
-                        # Advisory lock still held: no concurrent upload of this id can have renamed yet.
-                        final.unlink(missing_ok=True)
-                        renamed = False
-                        raise
-        except BaseException:
-            if renamed:  # commit itself failed after the rename
-                final.unlink(missing_ok=True)
-            raise
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                # Serialise concurrent uploads of the same id.
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (header.id,))
+                existing = await _existing(conn, header.id)
+                if existing is not None:
+                    return _duplicate_or_conflict(existing, device_id, header)
+                tmp.replace(final)
+                try:
+                    await anyio.to_thread.run_sync(_fsync_path, final.parent)
+                    await conn.execute(
+                        "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes,"
+                        " raw_path, view_path, meta, status)"
+                        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                        (header.id, device_id, header.kind, header.started_at, header.ended_at,
+                         header.sha256, size, str(rel), view_path, Jsonb(meta), status),
+                    )
+                except BaseException:
+                    # Advisory lock still held: no concurrent upload of this id can have renamed yet.
+                    final.unlink(missing_ok=True)
+                    raise
+    # A commit failure (after the lock is gone) deliberately leaves `final` in place: it may belong
+    # to a committed row or a concurrent upload, and a retry simply overwrites any stale file.
     finally:
         tmp.unlink(missing_ok=True)
     return 201, {"id": header.id, "status": "created"}
