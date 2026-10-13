@@ -79,3 +79,49 @@ async def test_heartbeat_requires_acked_command_ids(client, pool, pki_settings):
     body = {k: v for k, v in HEARTBEAT.items() if k != "acked_command_ids"}
     r = await client.post("/v1/heartbeat", json=body, headers=auth_headers(dev["fingerprint"]))
     assert r.status_code == 422
+
+
+async def test_heartbeat_ack_of_other_devices_command_is_ignored(client, pool, pki_settings):
+    dev_a = await paired_device(pool, pki_settings)
+    dev_b = await paired_device(pool, pki_settings)
+    cmd = await devices.enqueue_command(pool, dev_a["device_id"], "pause")
+
+    r = await client.post("/v1/heartbeat", json={**HEARTBEAT, "acked_command_ids": [cmd]},
+                          headers=auth_headers(dev_b["fingerprint"]))
+    assert r.status_code == 200, r.text
+    assert r.json() == {"commands": []}
+
+    r = await client.post("/v1/heartbeat", json=HEARTBEAT,
+                          headers=auth_headers(dev_a["fingerprint"]))
+    assert_matches("HeartbeatResponse", r.json())
+    assert r.json()["commands"] == [{"id": cmd, "type": "pause", "payload": {}}]
+
+
+async def test_heartbeat_accepts_agent_null_shape(client, pool, pki_settings):
+    dev = await paired_device(pool, pki_settings)
+    body = {**HEARTBEAT, "soc_temp_c": None, "wifi_rssi_dbm": None, "last_error": None}
+    assert_matches("Heartbeat", body)
+    r = await client.post("/v1/heartbeat", json=body, headers=auth_headers(dev["fingerprint"]))
+    assert r.status_code == 200, r.text
+    assert_matches("HeartbeatResponse", r.json())
+    (row,) = await devices.list_devices(pool)
+    hb = row["last_heartbeat"]
+    assert hb["soc_temp_c"] is None and hb["wifi_rssi_dbm"] is None and hb["last_error"] is None
+
+
+async def test_heartbeat_omitted_optional_fields_use_defaults(client, pool, pki_settings):
+    dev = await paired_device(pool, pki_settings)
+    optional = {"soc_temp_c", "wifi_rssi_dbm", "mic_missing", "camera_failures",
+                "last_error", "dropped_items"}
+    body = {k: v for k, v in HEARTBEAT.items() if k not in optional}
+    assert_matches("Heartbeat", body)
+    r = await client.post("/v1/heartbeat", json=body, headers=auth_headers(dev["fingerprint"]))
+    assert r.status_code == 200, r.text
+    assert_matches("HeartbeatResponse", r.json())
+    (row,) = await devices.list_devices(pool)
+    hb = row["last_heartbeat"]
+    assert hb["mic_missing"] is False
+    assert hb["camera_failures"] == 0
+    assert hb["dropped_items"] == 0
+    assert hb["last_error"] is None
+    assert row["dropped_total"] == 0
