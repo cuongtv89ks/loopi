@@ -44,7 +44,9 @@ services:
       LOOPI_WEB_PASSWORD_HASH: ${LOOPI_WEB_PASSWORD_HASH:?set LOOPI_WEB_PASSWORD_HASH}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ${LOOPI_DATA_DIR:-/srv/loopi}/pki:/pki:ro
+      - ${LOOPI_DATA_DIR:-/srv/loopi}/pki/server.crt:/pki/server.crt:ro
+      - ${LOOPI_DATA_DIR:-/srv/loopi}/pki/server.key:/pki/server.key:ro
+      - ${LOOPI_DATA_DIR:-/srv/loopi}/pki/ca.crt:/pki/ca.crt:ro
       - caddy_data:/data
     depends_on:
       api:

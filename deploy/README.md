@@ -3,6 +3,7 @@
 Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the LAN.
 
 1. `cp deploy/.env.example deploy/.env` and fill in the values (password hash command is in the file).
+   Generate `LOOPI_DB_PASSWORD` with `openssl rand -hex 24` (hex only: it is embedded unencoded in the database URL, so `/`, `@` or `:` would break it).
    Set `LOOPI_UID` / `LOOPI_GID` to the output of `id -u` / `id -g`: the api container runs as that user, so files in the data dir belong to you.
 2. Create the data dir: `sudo mkdir -p /srv/loopi && sudo chown "$USER" /srv/loopi`.
 3. Create the CA and server cert (use the PC's LAN IP; keep `localhost` for the smoke test):

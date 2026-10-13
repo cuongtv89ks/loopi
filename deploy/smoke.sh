@@ -65,4 +65,10 @@ expect 401 -H "X-Loopi-Client-Fingerprint: $FP" "${ITEM[@]}" "$BASE/v1/items/$ID
 HB='{"agent_version":"0.1.0","uptime_s":1,"disk_used_pct":1.0,"queue_depth":0,"clock_synced":true,"paused":false,"audio_enabled":true,"recording_video":false,"recording_audio":false,"acked_command_ids":[]}'
 expect 200 "${MTLS[@]}" -H 'Content-Type: application/json' --data "$HB" "$BASE/v1/heartbeat"
 expect 401 "$BASE/"
+# Leave no test device behind: revoke the smoke device (a revoked device is rejected from now on).
+DEVICE_ID="$(docker compose exec -T db psql -U loopi -d loopi -tAc \
+  "UPDATE device SET revoked = TRUE WHERE cert_fingerprint = '$FP' RETURNING id" | head -n1 | tr -d '\r')"
+[[ -n "$DEVICE_ID" ]] || { echo "FAIL: could not revoke smoke device" >&2; exit 1; }
+expect 401 "${MTLS[@]}" -H 'Content-Type: application/json' --data "$HB" "$BASE/v1/heartbeat"
+echo "Revoked smoke device $DEVICE_ID"
 echo "OK: smoke test passed (device fingerprint $FP)"

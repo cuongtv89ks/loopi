@@ -14,6 +14,17 @@
 	}
 
 	# Device API: identity comes only from the verified client certificate.
+	# Small bodies for JSON endpoints; only uploads get the large limit.
+	@small path /v1/pair /v1/heartbeat
+	handle @small {
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy api:8000 {
+			header_up X-Loopi-Client-Fingerprint {http.request.tls.client.fingerprint}
+		}
+	}
+
 	@device path /v1/*
 	handle @device {
 		request_body {
@@ -26,6 +37,7 @@
 
 	# Web UI and media: basic auth; never trust a client-supplied fingerprint header.
 	handle {
+		header X-Frame-Options DENY
 		basic_auth {
 			{$LOOPI_WEB_USER} {$LOOPI_WEB_PASSWORD_HASH}
 		}
