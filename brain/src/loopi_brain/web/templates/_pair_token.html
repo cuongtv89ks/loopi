@@ -1,0 +1,7 @@
+<div class="card">
+  <p>Token: <strong><code>{{ token }}</code></strong> (hết hạn {{ expires_at.strftime("%H:%M") }})</p>
+  <p>Ghi vào <code>loopi.toml</code> trên thẻ SD:</p>
+  <pre>[brain]
+pair_token = "{{ token }}"
+ca_fingerprint = "{{ ca_fingerprint }}"</pre>
+</div>

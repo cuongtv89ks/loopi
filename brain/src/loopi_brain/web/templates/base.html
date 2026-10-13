@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loopi</title>
+  <script src="/static/htmx.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 960px; margin: 0 auto; padding: 16px; }
+    header nav a { margin-right: 16px; }
+    .hour h2 { font-size: 1rem; border-bottom: 1px solid #8884; }
+    .item { display: flex; gap: 12px; align-items: center; padding: 4px 0; list-style: none; }
+    .item video { max-width: 320px; }
+    .err { color: #c33; }
+    .card { border: 1px solid #8886; border-radius: 8px; padding: 12px; margin: 12px 0; }
+    .online { color: #2a2; } .offline { color: #999; }
+    code { word-break: break-all; }
+  </style>
+</head>
+<body>
+  <header><nav><a href="/">Dòng thời gian</a><a href="/devices">Thiết bị</a></nav></header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>
