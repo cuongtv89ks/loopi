@@ -88,3 +88,21 @@ async def test_device_name_is_escaped(client, pool, pki_settings):
         await conn.execute("UPDATE device SET name = %s WHERE id = %s", ("<script>x</script>", dev["device_id"]))
     r = await client.get("/devices")
     assert "<script>x</script>" not in r.text and "&lt;script&gt;" in r.text
+
+
+async def test_devices_page_uses_vietnamese_for_flags_and_missing_values(client, pool, pki_settings):
+    dev = await paired_device(pool, pki_settings)
+    status = {"paused": True, "audio_enabled": False, "recording_video": None,
+              "soc_temp_c": None, "wifi_rssi_dbm": None}
+    await devices.record_heartbeat(pool, dev["device_id"], status, [])
+    text = (await client.get("/devices")).text
+    assert "tạm dừng: có" in text and "audio bật: không" in text
+    assert "Đang ghi hình: —" in text and "nhiệt độ: —" in text and "WiFi: —" in text
+    for raw in ("None", "True", "False", "°C", " dBm"):
+        assert raw not in text
+
+
+async def test_page_has_vietnamese_htmx_error_handler(client):
+    text = (await client.get("/devices")).text
+    assert 'id="hx-error"' in text and "htmx:responseError" in text
+    assert "Không tìm thấy thiết bị" in text and "Có lỗi, thử lại" in text

@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
+{% macro yn(v) %}{{ "—" if v is none else ("có" if v else "không") }}{% endmacro %}
+{% macro val(v, unit="") %}{{ "—" if v is none else (v ~ unit) }}{% endmacro %}
 <h1>Thiết bị</h1>
 <p>Fingerprint CA của brain: <code>{{ ca_fingerprint }}</code></p>
 <button hx-post="/devices/pair-token" hx-target="#pair-token">Tạo token ghép cặp</button>
@@ -12,11 +14,11 @@
   {% else %}<span class="offline">ngoại tuyến</span>{% endif %}
   <ul>
     <li>Lần cuối: {{ d.seen_local.strftime("%Y-%m-%d %H:%M:%S") if d.seen_local else "chưa có" }}</li>
-    <li>Đang ghi hình: {{ d.hb.get("recording_video") }} · ghi âm: {{ d.hb.get("recording_audio") }}
-        · tạm dừng: {{ d.hb.get("paused") }} · audio bật: {{ d.hb.get("audio_enabled") }}</li>
-    <li>Hàng đợi: {{ d.hb.get("queue_depth") }} · thẻ nhớ: {{ d.hb.get("disk_used_pct") }}%
-        · nhiệt độ: {{ d.hb.get("soc_temp_c") }}°C · WiFi: {{ d.hb.get("wifi_rssi_dbm") }} dBm</li>
-    <li>Camera lỗi: {{ d.hb.get("camera_failures") }} lần · mic: {{ "mất" if d.hb.get("mic_missing") else "ổn" }}
+    <li>Đang ghi hình: {{ yn(d.hb.get("recording_video")) }} · ghi âm: {{ yn(d.hb.get("recording_audio")) }}
+        · tạm dừng: {{ yn(d.hb.get("paused")) }} · audio bật: {{ yn(d.hb.get("audio_enabled")) }}</li>
+    <li>Hàng đợi: {{ val(d.hb.get("queue_depth")) }} · thẻ nhớ: {{ val(d.hb.get("disk_used_pct"), "%") }}
+        · nhiệt độ: {{ val(d.hb.get("soc_temp_c"), "°C") }} · WiFi: {{ val(d.hb.get("wifi_rssi_dbm"), " dBm") }}</li>
+    <li>Camera lỗi: {{ val(d.hb.get("camera_failures"), " lần") }} · mic: {{ "mất" if d.hb.get("mic_missing") else "ổn" }}
         · đã phải xoá: {{ d.dropped_total }} đoạn · lỗi gần nhất: {{ d.hb.get("last_error") or "không" }}</li>
   </ul>
   {% if not d.revoked %}

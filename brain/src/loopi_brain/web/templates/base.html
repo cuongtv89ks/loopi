@@ -20,6 +20,20 @@
 </head>
 <body>
   <header><nav><a href="/">Dòng thời gian</a><a href="/devices">Thiết bị</a></nav></header>
+  <div id="hx-error" class="err" role="alert"></div>
   <main>{% block content %}{% endblock %}</main>
+  <script>
+    const HX_ERRORS = {403: "Yêu cầu không hợp lệ", 404: "Không tìm thấy thiết bị"};
+    document.body.addEventListener("htmx:responseError", (e) => {
+      document.getElementById("hx-error").textContent =
+        HX_ERRORS[e.detail.xhr.status] || "Có lỗi, thử lại";
+    });
+    document.body.addEventListener("htmx:sendError", () => {
+      document.getElementById("hx-error").textContent = "Có lỗi, thử lại";
+    });
+    document.body.addEventListener("htmx:beforeRequest", () => {
+      document.getElementById("hx-error").textContent = "";
+    });
+  </script>
 </body>
 </html>
