@@ -1,9 +1,9 @@
 """Device-facing endpoints of sync protocol v1 (docs/protocol/v1.openapi.yaml)."""
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .. import devices, items, pki
+from .. import devices, items, media, pki
 from .device_auth import check_agent_version, current_device
 
 router = APIRouter()
@@ -58,7 +58,12 @@ async def pair(body: PairRequest, request: Request) -> PairResponse:
 
 
 @router.put("/v1/items/{item_id}", dependencies=[Depends(check_agent_version)])
-async def put_item(item_id: str, request: Request, device: dict = Depends(current_device)) -> JSONResponse:
+async def put_item(
+    item_id: str,
+    request: Request,
+    background: BackgroundTasks,
+    device: dict = Depends(current_device),
+) -> JSONResponse:
     settings = request.app.state.settings
     try:
         header = items.parse_header(item_id, request.headers, settings.default_video_fps)
@@ -67,4 +72,6 @@ async def put_item(item_id: str, request: Request, device: dict = Depends(curren
         )
     except items.ItemRejected as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    if status == 201 and header.kind == "video":
+        background.add_task(media.remux_item, request.app.state.pool, settings, header.id)
     return JSONResponse(ack, status_code=status)

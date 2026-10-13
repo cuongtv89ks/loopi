@@ -17,6 +17,15 @@ ITEM_ID = "01JA2B3C4D5E6F7G8H9J0KMNPQ"
 _headers = item_headers
 
 
+@pytest.fixture(autouse=True)
+def _no_remux(monkeypatch):
+    """These tests cover ingest only; remux behaviour lives in test_media.py."""
+    async def noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("loopi_brain.media.remux_item", noop)
+
+
 @pytest.fixture
 async def device(pool, pki_settings):
     return await paired_device(pool, pki_settings)
