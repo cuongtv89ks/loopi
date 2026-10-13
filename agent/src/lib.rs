@@ -12,3 +12,6 @@ pub mod control;
 pub mod status;
 pub mod button;
 pub mod led;
+pub mod tls;
+pub mod transport;
+pub mod wire;
