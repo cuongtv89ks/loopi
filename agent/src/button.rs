@@ -62,3 +62,16 @@ pub fn spawn_button_thread(chip: String, line: u32, tx: tokio::sync::mpsc::Sende
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn press_durations_are_classified() {
+        assert_eq!(classify(Duration::from_millis(80)), Some(Press::Short));
+        assert_eq!(classify(Duration::from_millis(999)), Some(Press::Short));
+        assert_eq!(classify(Duration::from_millis(1500)), None);
+        assert_eq!(classify(Duration::from_millis(2000)), Some(Press::Long));
+        assert_eq!(classify(Duration::from_secs(9)), Some(Press::Long));
+    }
+}
