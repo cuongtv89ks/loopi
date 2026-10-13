@@ -52,8 +52,11 @@ pub fn enforce(queue: &Queue, disk: &dyn DiskUsage) -> io::Result<DiskReport> {
     let mut used = disk.used_pct()?;
     let mut dropped = 0;
     if used >= DROP_ABOVE_PCT {
-        while used >= DROP_UNTIL_PCT {
-            let Some(item) = queue.oldest_of_kind(ItemKind::Video)? else { break };
+        // One directory scan, oldest first; deleting from this list keeps enforce linear.
+        for item in queue.items_of_kind(ItemKind::Video)? {
+            if used < DROP_UNTIL_PCT {
+                break;
+            }
             queue.remove(&item.meta)?;
             dropped += 1;
             used = disk.used_pct()?;
@@ -99,6 +102,18 @@ mod tests {
         assert!(!report.stop);
         assert!(queue.oldest_of_kind(Video).unwrap().is_none());
         assert_eq!(queue.len().unwrap(), 3, "both audio items and the marker survive");
+    }
+
+    #[test]
+    fn enforce_stops_early_and_deletes_oldest_video_first() {
+        let (_t, queue) = queue_with(&[ItemKind::Video; 4]);
+        let ids: Vec<_> = queue.items_of_kind(ItemKind::Video).unwrap().into_iter().map(|i| i.meta.id).collect();
+        // 72 + 4x4 = 88 %: deleting gives 84, 80, 76 -> stops after three, one video left over.
+        let report = enforce(&queue, &disk(&queue, 72.0, 4.0)).unwrap();
+        assert_eq!(report.dropped, 3);
+        let left = queue.items_of_kind(ItemKind::Video).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].meta.id, ids[3], "oldest went first, newest survives");
     }
 
     #[test]

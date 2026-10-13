@@ -89,6 +89,8 @@ impl Queue {
         video_fps: Option<u32>,
     ) -> io::Result<ItemMeta> {
         let (sha256, size) = sha256_file(src)?;
+        // The durable sidecar asserts this sha/size, so the payload must be on disk first.
+        File::open(src)?.sync_all()?;
         let id = ulid::Ulid::new().to_string();
         fs::rename(src, self.data_path(&id, kind))?;
         let meta = ItemMeta { id, kind, started_at, ended_at, sha256, size, video_fps };
@@ -137,6 +139,11 @@ impl Queue {
         Ok(self.metas()?.into_iter().next().map(|m| self.queued(m)))
     }
 
+    /// All items of `kind`, oldest first, from a single directory scan.
+    pub fn items_of_kind(&self, kind: ItemKind) -> io::Result<Vec<QueuedItem>> {
+        Ok(self.metas()?.into_iter().filter(|m| m.kind == kind).map(|m| self.queued(m)).collect())
+    }
+
     pub fn oldest_of_kind(&self, kind: ItemKind) -> io::Result<Option<QueuedItem>> {
         Ok(self.metas()?.into_iter().find(|m| m.kind == kind).map(|m| self.queued(m)))
     }
@@ -163,11 +170,25 @@ impl Queue {
         fs::rename(self.meta_path(&meta.id), self.quarantine.join(format!("{}.{META_EXT}", meta.id)))
     }
 
-    /// Remove temp files, payloads without a valid sidecar and sidecars without a payload.
+    /// Move a payload and its bad sidecar into `quarantine/` with a `.reason` file (best effort per file).
+    fn quarantine_raw(&self, stem: &str, payload: Option<&Path>, sidecar: &Path, reason: &str) -> io::Result<()> {
+        tracing::warn!(id = stem, reason, "quarantining queue item during recovery");
+        if let Some(p) = payload {
+            if let Some(name) = p.file_name() {
+                fs::rename(p, self.quarantine.join(name))?;
+            }
+        }
+        fs::write(self.quarantine.join(format!("{stem}.reason")), reason)?;
+        fs::rename(sidecar, self.quarantine.join(format!("{stem}.{META_EXT}")))
+    }
+
+    /// Crash recovery. Deleted and counted: temp files, true orphans (payload with no sidecar file)
+    /// and sidecars without a payload. Payloads whose sidecar is unreadable, mismatched or disagrees
+    /// on size are quarantined, never deleted, so audio and markers survive a corrupt sidecar.
     fn recover(&self) -> io::Result<u32> {
         let mut dropped = 0u32;
-        let mut valid = HashSet::new();
-        let mut payloads = Vec::new();
+        let mut sidecars: Vec<(String, PathBuf)> = Vec::new();
+        let mut payloads: Vec<(String, PathBuf)> = Vec::new();
         for entry in fs::read_dir(&self.items)? {
             let path = entry?.path();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
@@ -177,24 +198,46 @@ impl Queue {
                 fs::remove_file(&path)?;
                 dropped += 1;
             } else if ext == META_EXT {
-                match read_meta(&path) {
-                    Ok(m) if m.id == stem && self.data_path(&m.id, m.kind).exists() => {
-                        valid.insert(stem);
-                    }
-                    other => {
-                        if let Err(e) = other {
-                            tracing::warn!(path = %path.display(), error = %e, "dropping corrupt queue sidecar");
-                        }
-                        fs::remove_file(&path)?;
-                        dropped += 1;
-                    }
-                }
+                sidecars.push((stem, path));
             } else {
                 payloads.push((stem, path));
             }
         }
+        let mut claimed = HashSet::new();
+        for (stem, sidecar) in &sidecars {
+            let found = payloads.iter().find(|(s, _)| s == stem).map(|(_, p)| p.clone());
+            let verdict = match read_meta(sidecar) {
+                Err(e) => Err(format!("unreadable sidecar: {e}")),
+                Ok(m) if m.id != *stem => Err(format!("sidecar id {} does not match file name", m.id)),
+                Ok(m) => {
+                    let data = self.data_path(&m.id, m.kind);
+                    match fs::metadata(&data) {
+                        Ok(md) if md.len() == m.size => Ok(()),
+                        Ok(md) => Err(format!("payload size {} != sidecar size {}", md.len(), m.size)),
+                        Err(_) => Err(String::new()),
+                    }
+                }
+            };
+            match verdict {
+                Ok(()) => {
+                    claimed.insert(stem.clone());
+                }
+                Err(reason) => match found {
+                    Some(p) if !reason.is_empty() || p.exists() => {
+                        self.quarantine_raw(stem, Some(&p), sidecar, &reason)?;
+                        claimed.insert(stem.clone());
+                    }
+                    _ => {
+                        tracing::warn!(path = %sidecar.display(), "dropping sidecar without payload");
+                        fs::remove_file(sidecar)?;
+                        dropped += 1;
+                    }
+                },
+            }
+        }
         for (stem, path) in payloads {
-            if !valid.contains(&stem) {
+            if !claimed.contains(&stem) {
+                tracing::warn!(path = %path.display(), "dropping orphan payload without sidecar");
                 fs::remove_file(&path)?;
                 dropped += 1;
             }
@@ -289,11 +332,29 @@ mod tests {
         drop(queue);
 
         let (queue, dropped) = Queue::open(&root).unwrap();
-        assert_eq!(dropped, 5);
+        assert_eq!(dropped, 3, "tmp file, true orphan, sidecar without payload");
         assert_eq!(queue.len().unwrap(), 1);
         assert_eq!(queue.oldest().unwrap().unwrap().meta.id, kept.id);
         let leftovers: Vec<_> = fs::read_dir(&items).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(leftovers.len(), 2, "only the kept payload and its sidecar remain: {leftovers:?}");
+        let q = root.join("quarantine");
+        assert!(q.join("01JA2B3C4D5E6F7G8H9J0KMNPS.opus").exists(), "audio under a corrupt sidecar is quarantined, not deleted");
+        assert!(q.join("01JA2B3C4D5E6F7G8H9J0KMNPS.reason").exists());
+        assert!(!q.join("01JA2B3C4D5E6F7G8H9J0KMNPQ.h264").exists());
+    }
+
+    #[test]
+    fn sidecar_with_wrong_payload_size_is_not_left_in_the_queue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("q");
+        let (queue, _) = Queue::open(&root).unwrap();
+        let m = queue.enqueue_bytes(b"audio-bytes", ItemKind::Audio, ts(0), ts(1)).unwrap();
+        fs::write(queue.items_dir().join(format!("{}.opus", m.id)), b"trunc").unwrap();
+        drop(queue);
+        let (queue, dropped) = Queue::open(&root).unwrap();
+        assert_eq!(dropped, 0);
+        assert_eq!(queue.len().unwrap(), 0);
+        assert!(root.join("quarantine").join(format!("{}.opus", m.id)).exists());
     }
 
     #[test]
