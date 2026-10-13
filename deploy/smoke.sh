@@ -26,6 +26,14 @@ expect() {  # expect <http-code> <curl args...>
   fi
 }
 
+# Wait (max 60 s) until Caddy reaches a migrated api: an unauthenticated device call answers 401, not 502/refused.
+for _ in $(seq 30); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --cacert "$PKI/ca.crt" "$BASE/v1/heartbeat" || true)"
+  [[ "$code" == "401" || "$code" == "405" ]] && break
+  sleep 2
+done
+if [[ "$code" != "401" && "$code" != "405" ]]; then echo "FAIL: stack not ready (last HTTP code $code)" >&2; exit 1; fi
+
 TOKEN="$(docker compose exec -T api loopi-brain pair-token | head -n1 | tr -d '\r')"
 openssl ecparam -name prime256v1 -genkey -noout -out "$WORK/device.key"
 openssl req -new -key "$WORK/device.key" -subj "/CN=smoke" -out "$WORK/device.csr"

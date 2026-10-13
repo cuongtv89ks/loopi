@@ -106,3 +106,9 @@ async def test_page_has_vietnamese_htmx_error_handler(client):
     text = (await client.get("/devices")).text
     assert 'id="hx-error"' in text and "htmx:responseError" in text
     assert "Không tìm thấy thiết bị" in text and "Có lỗi, thử lại" in text
+
+
+async def test_healthz_is_unauthenticated_and_ok(client):
+    response = await client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}

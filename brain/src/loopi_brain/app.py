@@ -43,6 +43,11 @@ def create_app(settings: Settings, pool: AsyncConnectionPool | None = None) -> F
     app = FastAPI(title="Loopi Brain", lifespan=lifespan)
     app.state.settings = settings
     app.state.pool = active_pool
+
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
     app.include_router(device_router)
     app.include_router(web_router)
     settings.media_root.mkdir(parents=True, exist_ok=True)

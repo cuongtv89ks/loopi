@@ -1,6 +1,6 @@
 services:
   db:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:0.8.1-pg17
     environment:
       POSTGRES_USER: loopi
       POSTGRES_PASSWORD: ${LOOPI_DB_PASSWORD:?set LOOPI_DB_PASSWORD in deploy/.env}
@@ -15,6 +15,7 @@ services:
 
   api:
     build: ../brain
+    user: "${LOOPI_UID:-1000}:${LOOPI_GID:-1000}"
     environment:
       LOOPI_DATABASE_URL: postgresql://loopi:${LOOPI_DB_PASSWORD}@db:5432/loopi
       LOOPI_MEDIA_ROOT: /srv/loopi/media
@@ -22,13 +23,20 @@ services:
       LOOPI_TZ: ${LOOPI_TZ:-Asia/Seoul}
     volumes:
       - ${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi
+    healthcheck:
+      # Passes only once `serve` has applied migrations and uvicorn is listening.
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
 
   proxy:
-    image: caddy:2.10
+    image: caddy:2.10.2
     ports:
       - "8443:8443"
     environment:
@@ -39,7 +47,8 @@ services:
       - ${LOOPI_DATA_DIR:-/srv/loopi}/pki:/pki:ro
       - caddy_data:/data
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
