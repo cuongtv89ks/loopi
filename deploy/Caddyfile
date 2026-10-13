@@ -1,0 +1,36 @@
+{
+	auto_https off
+	admin off
+}
+
+:8443 {
+	tls /pki/server.crt /pki/server.key {
+		client_auth {
+			mode verify_if_given
+			trust_pool file {
+				pem_file /pki/ca.crt
+			}
+		}
+	}
+
+	# Device API: identity comes only from the verified client certificate.
+	@device path /v1/*
+	handle @device {
+		request_body {
+			max_size 80MB
+		}
+		reverse_proxy api:8000 {
+			header_up X-Loopi-Client-Fingerprint {http.request.tls.client.fingerprint}
+		}
+	}
+
+	# Web UI and media: basic auth; never trust a client-supplied fingerprint header.
+	handle {
+		basic_auth {
+			{$LOOPI_WEB_USER} {$LOOPI_WEB_PASSWORD_HASH}
+		}
+		reverse_proxy api:8000 {
+			header_up -X-Loopi-Client-Fingerprint
+		}
+	}
+}

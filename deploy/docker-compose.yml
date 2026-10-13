@@ -1,0 +1,47 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: loopi
+      POSTGRES_PASSWORD: ${LOOPI_DB_PASSWORD:?set LOOPI_DB_PASSWORD in deploy/.env}
+      POSTGRES_DB: loopi
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loopi"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: ../brain
+    environment:
+      LOOPI_DATABASE_URL: postgresql://loopi:${LOOPI_DB_PASSWORD}@db:5432/loopi
+      LOOPI_MEDIA_ROOT: /srv/loopi/media
+      LOOPI_PKI_DIR: /srv/loopi/pki
+      LOOPI_TZ: ${LOOPI_TZ:-Asia/Seoul}
+    volumes:
+      - ${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2.10
+    ports:
+      - "8443:8443"
+    environment:
+      LOOPI_WEB_USER: ${LOOPI_WEB_USER:?set LOOPI_WEB_USER}
+      LOOPI_WEB_PASSWORD_HASH: ${LOOPI_WEB_PASSWORD_HASH:?set LOOPI_WEB_PASSWORD_HASH}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${LOOPI_DATA_DIR:-/srv/loopi}/pki:/pki:ro
+      - caddy_data:/data
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  db: {}
+  caddy_data: {}
