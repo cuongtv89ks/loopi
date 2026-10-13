@@ -209,13 +209,13 @@ RAUC với bundle được ký, chuyển slot A/B. Bản mới phải boot đư�
 | Module | Nhiệm vụ | Phụ thuộc (trait) |
 |---|---|---|
 | `recorder::video` | Spawn và giám sát `rpicam-vid -t 0 -n --codec h264 --inline --framerate <fps> --width/--height --segment <ms> -o /data/queue/incoming/v_%06d.h264`. Dùng inotify bắt đoạn vừa đóng, gắn `started_at`/`ended_at` theo wall clock, chuyển vào hàng đợi | `Camera`, `Clock` |
-| `recorder::audio` | Mở USB mic qua ALSA theo `audio_device` (`auto` = thiết bị USB capture đầu tiên). Thu mono ở 16kHz nếu mic hỗ trợ, nếu không thì thu ở rate gốc (thường 48kHz) rồi resample trong agent. Encode Opus ~24kbps thành file Ogg 60s căn theo phút đồng hồ. Mic bị rút thì thử mở lại 10s một lần và báo `mic_missing`, video vẫn ghi bình thường | `AudioSource`, `Clock` |
+| `recorder::audio` | Mở USB mic qua ALSA theo `audio_device` (`auto` = thiết bị USB capture đầu tiên). Mở qua `plughw` ở 16kHz mono. Nếu mic không hỗ trợ sẵn 16kHz, lớp plug của ALSA tự chuyển đổi. Encode Opus ~24kbps thành file Ogg 60s căn theo phút đồng hồ. Mic bị rút thì thử mở lại 10s một lần và báo `mic_missing`, video vẫn ghi bình thường | `AudioSource`, `Clock` |
 | `queue` | Lưu file kèm sidecar JSON (`id` ULID, `kind`, `started_at`, `ended_at`, `sha256`, `size`). Ghi atomic (tmp → fsync → rename). Thẻ trên 85% thì xoá video chưa gửi cũ nhất cho tới khi xuống dưới 80%, mỗi lần xoá đều ghi sự kiện `dropped` để báo về brain; audio không bị xoá. Trên 95% thì dừng ghi, LED báo lỗi, gửi sự kiện `disk_full` | `Clock` |
 | `uploader` | Gửi tuần tự, cũ nhất trước, `PUT /v1/items/{id}`. rustls + mTLS, **ưu tiên ChaCha20-Poly1305** vì ARMv6 không có AES phần cứng. Thời gian chờ khi lỗi tăng dần từ 1s tới 5 phút. Xoá file local sau khi nhận `200`/`201` | `Transport` |
-| `control` | Event bus (`tokio::sync::broadcast`) với các lệnh `Mark`, `Pause`, `Resume`, `SetConfig`. Nguồn lệnh: nút bấm (`gpiocdev`), lệnh từ heartbeat, lịch `quiet_hours`. **Đây là điểm cắm cho các extension Bluetooth** | — |
+| `control` | Event bus (`tokio::sync::broadcast`) với các lệnh `Mark`, `Pause`, `Resume`, `SetConfig`. Nguồn lệnh: nút bấm (`gpiocdev`), lệnh từ heartbeat, lịch `quiet_hours`. Chỉ ghi khi đủ các điều kiện: đã ghép cặp, NTP đã đồng bộ, không pause, ngoài giờ yên lặng, thẻ chưa đầy. Trạng thái pause và audio được lưu ở `/data/config/state.json`, nên khởi động lại vẫn giữ nguyên. **Đây là điểm cắm cho các extension Bluetooth** | — |
 | `led` | Sáng liên tục: đang ghi. Nháy chậm: tạm dừng hoặc trong giờ yên lặng. Nháy nhanh: lỗi (chưa NTP, thẻ đầy, camera lỗi, chưa ghép cặp). Tắt: agent không chạy | — |
 | `health` | Heartbeat 15s một lần: phiên bản, uptime, nhiệt độ SoC, dung lượng thẻ, độ dài hàng đợi, RSSI, trạng thái NTP, trạng thái pause, lỗi gần nhất | `Transport` |
-| `pairing` | Sinh khoá Ed25519 và CSR (`rcgen`), gọi `POST /v1/pair` kèm token, lưu cert đã ký, `device_id` và fingerprint CA của brain vào `/data/keys` | `Transport` |
+| `pairing` | Sinh khoá ECDSA P-256 và CSR (`rcgen`), gọi `POST /v1/pair` kèm token, lưu cert đã ký, `device_id` và cert CA của brain vào `/data/keys`. Dùng P-256 thay vì Ed25519 để cùng loại khoá với CA và server cert, vì trình duyệt không nhận server cert Ed25519 | `Transport` |
 | `config` | Đọc và validate `/data/config/loopi.toml`, áp dụng `SetConfig` từ brain. Cấu hình sai thì giữ cấu hình cũ và báo lỗi | — |
 
 ### 7.3 Nút bấm
@@ -236,11 +236,13 @@ Nguồn sự thật duy nhất là `docs/protocol/v1.openapi.yaml`, tạo ở P1
 
 | Endpoint | Xác thực | Request | Response |
 |---|---|---|---|
-| `POST /v1/pair` | Token dùng một lần | `{token, csr_pem, hw_info{model, serial, agent_version}}` | `201 {device_id, cert_pem, ca_fingerprint}`; token sai hoặc hết hạn trả `401` |
-| `PUT /v1/items/{ulid}` | mTLS | Header `X-Loopi-Kind: video\|audio\|marker`, `X-Loopi-Start`, `X-Loopi-End` (RFC 3339 UTC), `X-Loopi-Sha256`, `Content-Type`. Body là bytes thô; marker thì body là JSON | `201` đã nhận mới · `200` đã có (cùng sha) · `409` cùng id khác sha · `422` header sai · `507` brain hết dung lượng |
+| `POST /v1/pair` | Token dùng một lần | `{token, csr_pem, hw_info{model, serial, agent_version}}` | `201 {device_id, cert_pem, ca_cert_pem, ca_fingerprint}`; token sai, đã dùng hoặc hết hạn trả `401`; CSR không hợp lệ trả `422` (token không bị tiêu) |
+| `PUT /v1/items/{ulid}` | mTLS | Header `X-Loopi-Kind: video\|audio\|marker`, `X-Loopi-Start`, `X-Loopi-End` (RFC 3339 UTC), `X-Loopi-Sha256`, `Content-Type`; với video thêm `X-Loopi-Video-Fps`. Body là bytes thô; marker thì body là JSON | `201` đã nhận mới · `200` đã có (cùng sha) · `409` cùng id khác sha · `413` quá lớn · `422` header sai hoặc sha không khớp · `507` brain hết dung lượng |
 | `POST /v1/heartbeat` | mTLS | Trạng thái thiết bị (mục 7.2) và `acked_command_ids[]` | `200 {commands: [{id, type: pause\|resume\|set_config, payload}]}` |
 
-- Phiên bản protocol nằm ở path. Agent không tương thích nhận `426`.
+- Phiên bản protocol nằm ở path. Mọi request của agent gửi kèm `X-Loopi-Agent-Version`. Nếu major version không được hỗ trợ, brain trả `426`.
+- **Ghép cặp theo kiểu TOFU:** lúc ghép cặp, thiết bị chưa có CA nên tạm chấp nhận server cert, rồi so fingerprint của `ca_cert_pem` nhận về với `ca_fingerprint` trong `loopi.toml` (nếu có cấu hình). Sau khi ghép cặp, mọi kết nối đều xác thực server bằng CA đã lưu.
+- Web UI dùng chung cổng 8443 qua Caddy, được bảo vệ bằng HTTP basic auth. Request POST từ web phải có header `HX-Request: true` để chống CSRF.
 - Brain có CA riêng, ký CSR lúc ghép cặp. Caddy kiểm tra mTLS (`verify_if_given`, trust pool là CA của brain) rồi chuyển subject của cert vào header cho app. Riêng `/v1/pair` không cần cert. Thu hồi thiết bị bằng deny list trong DB.
 
 ---
@@ -436,7 +438,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 | R5 | VLM trên CPU quá chậm | P2 | Lọc trùng mạnh hơn, model nhỏ hơn, dồn xử lý vào ban đêm |
 | R6 | Hệ sinh thái ARMv6 tiếp tục bị bỏ rơi | Liên tục | Buildroot tự build từ source; đường nâng cấp sang Zero 2 W cùng kích thước |
 | R7 | Mốc giờ của từng đoạn chỉ chính xác ở mức giây (lấy theo wall clock lúc đóng đoạn) | P1 | Đủ cho lifelog. Cần chính xác hơn thì thêm `--save-pts` |
-| R8 | Driver `dwc_otg` của Pi Zero sinh nhiều ngắt khi chạy USB audio, cộng dồn với tải CPU ở R2 | P1 | Giữ FIQ của `dwc_otg` bật (mặc định); ưu tiên mic hỗ trợ 16kHz để agent khỏi phải resample; đo tải ngắt và CPU trong bài chạy 24h |
+| R8 | Driver `dwc_otg` của Pi Zero sinh nhiều ngắt khi chạy USB audio, cộng dồn với tải CPU ở R2 | P1 | Giữ FIQ của `dwc_otg` bật (mặc định); ưu tiên mic hỗ trợ sẵn 16kHz để ALSA khỏi phải chuyển đổi; đo tải ngắt và CPU trong bài chạy 24h |
 | R9 | Camera kit hẹp góc và yếu sáng làm giảm chất lượng caption | P2 | Đặt máy ở vị trí bao quát và đủ sáng; thay module CSI khác (thiết kế không phụ thuộc sensor) |
 
 ---
