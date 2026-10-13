@@ -46,3 +46,34 @@ def auth_headers(fingerprint: str | None = None, agent_version: str | None = "0.
     if agent_version is not None:
         headers["X-Loopi-Agent-Version"] = agent_version
     return headers
+
+
+ITEM_CONTENT_TYPES = {"video": "video/h264", "audio": "audio/ogg", "marker": "application/json"}
+ITEM_START = "2026-10-14T01:00:00Z"
+ITEM_END = "2026-10-14T01:01:00Z"
+
+
+def item_headers(
+    fingerprint: str | None,
+    body: bytes,
+    kind: str = "video",
+    sha: str | None = None,
+    ctype: str | None = None,
+    start: str = ITEM_START,
+    end: str = ITEM_END,
+    **extra: str,
+) -> dict:
+    """Headers for PUT /v1/items/{id} carrying ``body`` (fingerprint None = header absent)."""
+    import hashlib
+
+    headers = {
+        "X-Loopi-Kind": kind,
+        "X-Loopi-Start": start,
+        "X-Loopi-End": end,
+        "X-Loopi-Sha256": sha or hashlib.sha256(body).hexdigest(),
+        "Content-Type": ctype or ITEM_CONTENT_TYPES.get(kind, "application/octet-stream"),
+    }
+    if fingerprint is not None:
+        headers["X-Loopi-Client-Fingerprint"] = fingerprint
+    headers.update(extra)
+    return headers
