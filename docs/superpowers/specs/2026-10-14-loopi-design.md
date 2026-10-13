@@ -2,13 +2,14 @@
 
 - **Ngày:** 2026-10-14
 - **Trạng thái:** Draft, chờ review
+- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16)
 - **Phạm vi tài liệu:** kiến trúc tổng thể và thiết kế cho cả 3 dự án con (`os/`, `agent/`, `brain/`). Mỗi phase sẽ có implementation plan riêng.
 
 ---
 
 ## 0. Tóm tắt
 
-Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng từ Looki L1. Phần thu là một **Raspberry Pi Zero W đặt cố định**, gắn Camera Module 3 Wide và mic I2S, cắm điện trực tiếp. Thiết bị **ghi video tốc độ thấp và âm thanh liên tục**, rồi đẩy về một **Linux PC chỉ có CPU** (gọi là *brain*). Brain lo toàn bộ phần AI: caption khung hình, nhận dạng giọng nói Việt/Hàn/Anh, chia ngày thành chương, recap cuối ngày kèm việc cần làm, tìm kiếm và hỏi đáp có trích nguồn, vlog timelapse, và một MCP server để Claude hoặc agent khác truy vấn ký ức. Thiết bị chạy một **image Buildroot tối giản** (rootfs chỉ đọc, phân vùng A/B cho OTA) cùng một agent viết bằng Rust.
+Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng từ Looki L1. Phần thu là một **Raspberry Pi Zero W đặt cố định**, dùng camera CSI đi kèm kit và USB mic cắm qua cổng OTG, cắm điện trực tiếp. Thiết bị **ghi video tốc độ thấp và âm thanh liên tục**, rồi đẩy về một **Linux PC chỉ có CPU** (gọi là *brain*). Brain lo toàn bộ phần AI: caption khung hình, nhận dạng giọng nói Việt/Hàn/Anh, chia ngày thành chương, recap cuối ngày kèm việc cần làm, tìm kiếm và hỏi đáp có trích nguồn, vlog timelapse, và một MCP server để Claude hoặc agent khác truy vấn ký ức. Thiết bị chạy một **image Buildroot tối giản** (rootfs chỉ đọc, phân vùng A/B cho OTA) cùng một agent viết bằng Rust.
 
 ---
 
@@ -32,7 +33,8 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 - BCM2835: ARMv6 một nhân 1GHz, RAM 512MB, WiFi chỉ 2.4GHz, BT 4.1/BLE. Không chạy được ML trên thiết bị.
 - Có encoder phần cứng H.264 tới 1080p30 trên VideoCore IV.
 - ARMv6 đang bị bỏ rơi dần: Debian đã bỏ, chỉ còn Raspbian 32-bit giữ. `rpi-image-gen` chủ yếu nhắm arm64. Buildroot vẫn có `raspberrypi0w_defconfig`.
-- Camera Module 3 chạy được trên Zero W qua libcamera, cần cáp Zero.
+- Các camera CSI chính hãng và loại tương thích (OV5647, IMX219, IMX708) đều chạy trên Zero W qua libcamera.
+- Zero W chỉ có **một cổng micro-USB OTG** cho dữ liệu. WiFi đi qua SDIO nên không tranh băng thông với USB.
 - Nếu sau này muốn nâng cấp, Pi Zero 2 W có cùng kích thước. Thiết kế giữ agent portable, chỉ cần đổi target triple và defconfig.
 
 ---
@@ -71,6 +73,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D13 | Web UI | FastAPI + Jinja + HTMX, toàn bộ là một codebase Python |
 | D14 | Embedding MVP | Chỉ embed text (caption, transcript, summary) |
 | D15 | Vlog MVP | Kiểu timelapse, vì video gốc chỉ có 2fps |
+| D16 | Phần cứng thu | Camera CSI đi kèm kit (nối bằng cáp CSI của Zero). Mic là USB mic cắm qua cổng OTG, nên cổng OTG luôn chạy chế độ host và không dùng được USB gadget mode |
 
 ---
 
@@ -79,7 +82,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 ```
  THIẾT BỊ  (Pi Zero W · Buildroot · loopi-agent viết bằng Rust)
  ┌─────────────────────────────────────────────────┐
- │ Cam3 Wide · Mic I2S · Nút · LED · BT (BlueZ)     │
+ │ Cam CSI (kit) · USB mic (OTG) · Nút · LED · BT   │
  │  rpicam-vid (H.264 HW) ─┐                        │
  │  ALSA → Opus ───────────┼─► hàng đợi /data ─► uploader
  │  nút/lịch/brain ─► event bus (Mark/Pause/Resume) │
@@ -109,16 +112,20 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 
 | Linh kiện | Lựa chọn | Ghi chú |
 |---|---|---|
-| Board | Raspberry Pi Zero W | Đã có. Tắt HDMI và audio onboard |
-| Nguồn | Sạc 5V micro-USB ≥2A | Đã có |
-| Camera | Camera Module 3 **Wide** (IMX708) + cáp Zero | FOV 120°, có autofocus và HDR |
-| Mic | INMP441 hoặc ICS-43434 (I2S MEMS) | Chốt overlay cụ thể khi bring-up ở P1 |
+| Board | Raspberry Pi Zero W (bộ kit) | Đã có. Tắt HDMI và audio onboard |
+| Nguồn | Sạc 5V micro-USB ≥2A, cắm vào cổng PWR | Đã có. Nuôi luôn USB mic qua cổng OTG |
+| Camera | Camera CSI **đi kèm kit**, nối bằng cáp CSI của Zero | Đã có. Thường là OV5647 (5MP) hoặc Camera Module v2 (IMX219). Image dùng `camera_auto_detect`, không gắn chặt vào sensor nào; thay module CSI khác về sau không phải sửa code |
+| Mic | **USB mic** (USB Audio Class) | Cắm vào cổng micro-USB **OTG** (cổng `USB`, không phải cổng `PWR`). Mic đầu USB-A thì thêm adapter OTG micro-B → USB-A. Không phải hàn, không cần overlay |
 | Điều khiển | 1 nút bấm (GPIO) + 1 LED đỏ (GPIO) | |
 | Lưu trữ | microSD 32–64GB loại High Endurance | Ghi liên tục |
 | Vỏ | Case Pi Zero có lỗ camera + chân đế hoặc ngàm tripod 1/4" | Chỉnh được góc |
 | Bluetooth | Có sẵn trên board (CYW43438) | Dùng chung chip với WiFi |
 
-**Không dùng:** pin, mạch sạc/boost, chip đo pin, RTC. Thời gian lấy qua NTP; agent chỉ ghi khi đồng hồ đã đồng bộ.
+**Không dùng:** pin, mạch sạc/boost, chip đo pin, RTC, mic I2S. Thời gian lấy qua NTP; agent chỉ ghi khi đồng hồ đã đồng bộ.
+
+**Hệ quả của phần cứng kit:**
+- **Cổng OTG bị USB mic chiếm ở chế độ host**, nên không có đường cấu hình qua USB gadget (Ethernet-over-USB). Cấp WiFi vẫn đi theo `loopi.toml` ở P1 và QR, captive portal hoặc Improv BLE ở P4.
+- **Chất lượng hình phụ thuộc camera kit.** Với ống kính tiêu chuẩn, góc nhìn ngang chỉ khoảng 54–62°, chụp thiếu sáng kém và không có autofocus. Nên đặt máy ở góc bao quát được khu vực chính và đủ sáng. Nếu sau này cần nâng cấp, chỉ cần thay module CSI (ví dụ Camera Module 3 Wide).
 
 **Băng thông và dung lượng ước tính:** H.264 1080p@2fps khoảng 0,5–1,5Mbps, tuỳ cảnh thay đổi nhiều hay ít. Video thô khoảng 5–10GB/ngày, cộng audio Opus khoảng 260MB/ngày nếu ghi 24h ở 24kbps. Các con số này đo thật ở P1.
 
@@ -132,7 +139,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 - Init là **systemd**: hardware watchdog, giám sát service, `systemd-timesyncd` + `systemd-time-wait-sync`, D-Bus cho BlueZ. journald chỉ lưu trong RAM.
 
 ### 6.2 Các gói chính
-`libcamera` (pipeline rpi/vc4), `rpicam-apps`, `alsa-lib`, `libopus`, `wpa_supplicant`, `bluez5_utils`, `dbus`, `ca-certificates`, `loopi-agent` (một package dùng hạ tầng cargo của Buildroot).
+`libcamera` (pipeline rpi/vc4), `rpicam-apps`, `alsa-lib` (kèm kernel module `snd-usb-audio`, nạp tự động qua udev của systemd), `libopus`, `wpa_supplicant`, `bluez5_utils`, `dbus`, `ca-certificates`, `loopi-agent` (một package dùng hạ tầng cargo của Buildroot).
 
 ### 6.3 Phân vùng thẻ SD (chốt từ P1)
 
@@ -144,8 +151,8 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | `data` | ext4 | Phần còn lại | `/data/queue`, `/data/config`, `/data/keys`, `/data/dev` (chỉ có ở dev) |
 
 ### 6.4 `config.txt` (định hướng)
-- Overlay camera cho IMX708 Wide (`camera_auto_detect` hoặc `dtoverlay=imx708`)
-- Overlay I2S cho mic
+- `camera_auto_detect=1` để tự nhận sensor của kit (OV5647/IMX219/IMX708). Chỉ khi module bên thứ ba không tự nhận mới khai báo `dtoverlay=<sensor>` cụ thể
+- Cổng OTG chạy chế độ host bằng driver `dwc_otg` mặc định của kernel Raspberry Pi. **Không** bật `dtoverlay=dwc2` ở chế độ peripheral
 - `dtparam=audio=off`, không cần framebuffer hay HDMI
 - Tinh chỉnh CMA cho 512MB RAM
 - Tắt LED ACT. LED trạng thái là LED ngoài do agent điều khiển
@@ -179,6 +186,7 @@ video_height    = 1080
 video_fps       = 2
 segment_seconds = 60
 audio_enabled   = true
+audio_device    = "auto"        # thiết bị ALSA; "auto" = thiết bị USB capture đầu tiên
 
 [schedule]
 quiet_hours = ["00:00-07:00"]   # không ghi trong khoảng này
@@ -201,7 +209,7 @@ RAUC với bundle được ký, chuyển slot A/B. Bản mới phải boot đư�
 | Module | Nhiệm vụ | Phụ thuộc (trait) |
 |---|---|---|
 | `recorder::video` | Spawn và giám sát `rpicam-vid -t 0 -n --codec h264 --inline --framerate <fps> --width/--height --segment <ms> -o /data/queue/incoming/v_%06d.h264`. Dùng inotify bắt đoạn vừa đóng, gắn `started_at`/`ended_at` theo wall clock, chuyển vào hàng đợi | `Camera`, `Clock` |
-| `recorder::audio` | Đọc ALSA (mono; resample sang 16kHz qua plug nếu mic chỉ hỗ trợ 48kHz), encode Opus ~24kbps thành file Ogg 60s căn theo phút đồng hồ | `AudioSource`, `Clock` |
+| `recorder::audio` | Mở USB mic qua ALSA theo `audio_device` (`auto` = thiết bị USB capture đầu tiên). Thu mono ở 16kHz nếu mic hỗ trợ, nếu không thì thu ở rate gốc (thường 48kHz) rồi resample trong agent. Encode Opus ~24kbps thành file Ogg 60s căn theo phút đồng hồ. Mic bị rút thì thử mở lại 10s một lần và báo `mic_missing`, video vẫn ghi bình thường | `AudioSource`, `Clock` |
 | `queue` | Lưu file kèm sidecar JSON (`id` ULID, `kind`, `started_at`, `ended_at`, `sha256`, `size`). Ghi atomic (tmp → fsync → rename). Thẻ trên 85% thì xoá video chưa gửi cũ nhất cho tới khi xuống dưới 80%, mỗi lần xoá đều ghi sự kiện `dropped` để báo về brain; audio không bị xoá. Trên 95% thì dừng ghi, LED báo lỗi, gửi sự kiện `disk_full` | `Clock` |
 | `uploader` | Gửi tuần tự, cũ nhất trước, `PUT /v1/items/{id}`. rustls + mTLS, **ưu tiên ChaCha20-Poly1305** vì ARMv6 không có AES phần cứng. Thời gian chờ khi lỗi tăng dần từ 1s tới 5 phút. Xoá file local sau khi nhận `200`/`201` | `Transport` |
 | `control` | Event bus (`tokio::sync::broadcast`) với các lệnh `Mark`, `Pause`, `Resume`, `SetConfig`. Nguồn lệnh: nút bấm (`gpiocdev`), lệnh từ heartbeat, lịch `quiet_hours`. **Đây là điểm cắm cho các extension Bluetooth** | — |
@@ -379,7 +387,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 | Tình huống | Cách xử lý |
 |---|---|
 | `rpicam-vid` crash | Supervisor khởi động lại, thời gian chờ tăng dần. Sau 5 lần thì LED báo lỗi và heartbeat gửi `last_error` |
-| Mic lỗi | Video vẫn ghi tiếp, lỗi audio được báo |
+| USB mic bị rút hoặc lỗi | Video vẫn ghi tiếp. Agent thử mở lại mic 10s một lần, heartbeat báo `mic_missing`, UI hiện cảnh báo |
 | Chưa có NTP | Không ghi, LED nháy nhanh |
 | Mất WiFi hoặc brain tắt | Dữ liệu dồn vào hàng đợi, áp dụng ngưỡng 85%/95% |
 | Mất điện | Rootfs chỉ đọc, ghi atomic. Đoạn dở dang trong `incoming/` vẫn được đưa vào hàng đợi lúc boot |
@@ -396,7 +404,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 ## 13. Kiểm thử
 - **Coverage:** ≥80% cho logic của agent và brain (TDD theo quy ước của người dùng).
 - **Contract:** `docs/protocol/v1.openapi.yaml` dùng chung. Agent test client theo schema, brain test server theo schema.
-- **Agent:** unit test với các trait `Camera`, `AudioSource`, `Clock`, `Transport`, chạy được trên máy dev. Integration test dùng script `rpicam-vid` giả phát đoạn H.264 mẫu, gửi tới brain giả (wiremock). Trên thiết bị có `loopi-selftest`: kiểm camera, mức âm thanh mic, NTP, một vòng upload và LED.
+- **Agent:** unit test với các trait `Camera`, `AudioSource`, `Clock`, `Transport`, chạy được trên máy dev. Integration test dùng script `rpicam-vid` giả phát đoạn H.264 mẫu, gửi tới brain giả (wiremock). Trên thiết bị có `loopi-selftest`: in ra sensor camera nhận được, kiểm USB mic có mặt và mức âm thanh, NTP, một vòng upload và LED.
 - **OS:** CI build cả hai defconfig (có ccache). Smoke test boot trên phần cứng thật mỗi khi phát hành.
 - **Brain:** pytest cho từng stage với fixture, integration test với Postgres thật (testcontainers), và bài E2E "phát lại một ngày".
 - **Đánh giá chất lượng AI (golden set, lưu ở `brain/eval/`):**
@@ -421,13 +429,15 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 
 | # | Rủi ro / giả định | Xác nhận ở | Phương án dự phòng |
 |---|---|---|---|
-| R1 | `libcamera`/`rpicam-apps` trong Buildroot chạy được trên ARMv6 và nhận IMX708 | Đầu P1 | Tự đóng gói `rpicam-apps` trong `BR2_EXTERNAL`, ghim phiên bản libcamera |
+| R1 | `libcamera`/`rpicam-apps` trong Buildroot chạy được trên ARMv6 và nhận được camera của kit | Đầu P1 | Tự đóng gói `rpicam-apps` trong `BR2_EXTERNAL`, ghim phiên bản libcamera |
 | R2 | CPU của Zero W kham nổi cùng lúc rpicam-vid, Opus và upload TLS | P1 | Giảm fps hoặc độ phân giải, giảm độ phức tạp Opus, giới hạn tốc độ upload |
 | R3 | WiFi 2.4GHz đông và chung chip với BT | P1 | Giới hạn bitrate, upload theo lô |
 | R4 | Chất lượng Whisper khi nói trộn vi/ko | P2 | PhoWhisper cho tiếng Việt, model fine-tune cho tiếng Hàn, ASR cloud nếu người dùng tự bật |
 | R5 | VLM trên CPU quá chậm | P2 | Lọc trùng mạnh hơn, model nhỏ hơn, dồn xử lý vào ban đêm |
 | R6 | Hệ sinh thái ARMv6 tiếp tục bị bỏ rơi | Liên tục | Buildroot tự build từ source; đường nâng cấp sang Zero 2 W cùng kích thước |
 | R7 | Mốc giờ của từng đoạn chỉ chính xác ở mức giây (lấy theo wall clock lúc đóng đoạn) | P1 | Đủ cho lifelog. Cần chính xác hơn thì thêm `--save-pts` |
+| R8 | Driver `dwc_otg` của Pi Zero sinh nhiều ngắt khi chạy USB audio, cộng dồn với tải CPU ở R2 | P1 | Giữ FIQ của `dwc_otg` bật (mặc định); ưu tiên mic hỗ trợ 16kHz để agent khỏi phải resample; đo tải ngắt và CPU trong bài chạy 24h |
+| R9 | Camera kit hẹp góc và yếu sáng làm giảm chất lượng caption | P2 | Đặt máy ở vị trí bao quát và đủ sáng; thay module CSI khác (thiết kế không phụ thuộc sensor) |
 
 ---
 
