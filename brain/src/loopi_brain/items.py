@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import re
 import secrets
 import shutil
@@ -19,8 +20,9 @@ from .config import Settings
 
 KIND_CONTENT_TYPES = {"video": "video/h264", "audio": "audio/ogg", "marker": "application/json"}
 KIND_EXT = {"video": "h264", "audio": "opus", "marker": "json"}
-ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
-SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+ULID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+SHA_RE = re.compile(r"[0-9a-f]{64}")
+MARKER_MAX_BYTES = 64 * 1024
 MAX_SEGMENT_DURATION = dt.timedelta(hours=1)
 FPS_RANGE = range(1, 31)
 
@@ -60,7 +62,7 @@ def _parse_time(name: str, value: str | None) -> dt.datetime:
 
 
 def parse_header(item_id: str, headers: Mapping[str, str], default_fps: int) -> ItemHeader:
-    if not ULID_RE.match(item_id):
+    if not ULID_RE.fullmatch(item_id):
         raise _reject("item id must be a ULID")
     kind = headers.get("x-loopi-kind", "")
     if kind not in KIND_CONTENT_TYPES:
@@ -75,7 +77,7 @@ def parse_header(item_id: str, headers: Mapping[str, str], default_fps: int) -> 
     if ended - started > MAX_SEGMENT_DURATION:
         raise _reject("segment longer than 1 hour")
     sha = headers.get("x-loopi-sha256", "")
-    if not SHA_RE.match(sha):
+    if not SHA_RE.fullmatch(sha):
         raise _reject("X-Loopi-Sha256 must be 64 lowercase hex chars")
     fps = None
     if kind == "video":
@@ -119,14 +121,42 @@ async def _write_body(tmp: Path, body: AsyncIterator[bytes], limit: int) -> tupl
     return digest.hexdigest(), size
 
 
-def _marker_meta(path: Path) -> dict:
+def _has_nul(value) -> bool:
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if "\x00" in item:
+                return True
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
+
+
+def _marker_meta(path: Path, size: int) -> dict:
+    if size > MARKER_MAX_BYTES:
+        raise _reject(f"marker larger than {MARKER_MAX_BYTES} bytes", status=413)
     try:
         meta = json.loads(path.read_bytes() or b"{}")
-    except json.JSONDecodeError as exc:
-        raise _reject("marker body is not JSON") from exc
+    except (ValueError, RecursionError) as exc:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+        raise _reject("marker body is not valid UTF-8 JSON") from exc
     if not isinstance(meta, dict):
         raise _reject("marker body must be a JSON object")
+    if _has_nul(meta):
+        raise _reject("marker body contains a NUL character")
     return meta
+
+
+def _fsync_path(path: Path) -> None:
+    """fsync a file or a directory so the data survives a crash."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 async def store_item(
@@ -159,23 +189,38 @@ async def store_item(
         if header.kind == "video":
             meta, status, view_path = {"video_fps": header.video_fps}, "stored", None
         elif header.kind == "marker":
-            meta, view_path = _marker_meta(tmp), None
+            meta, view_path = _marker_meta(tmp, size), None
 
-        async with pool.connection() as conn:
-            async with conn.transaction():
-                # Serialise concurrent uploads of the same id.
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (header.id,))
-                existing = await _existing(conn, header.id)
-                if existing is not None:
-                    return _duplicate_or_conflict(existing, device_id, header)
-                tmp.replace(final)
-                await conn.execute(
-                    "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes,"
-                    " raw_path, view_path, meta, status)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (header.id, device_id, header.kind, header.started_at, header.ended_at,
-                     header.sha256, size, str(rel), view_path, Jsonb(meta), status),
-                )
+        await anyio.to_thread.run_sync(_fsync_path, tmp)
+        renamed = False
+        try:
+            async with pool.connection() as conn:
+                async with conn.transaction():
+                    # Serialise concurrent uploads of the same id.
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (header.id,))
+                    existing = await _existing(conn, header.id)
+                    if existing is not None:
+                        return _duplicate_or_conflict(existing, device_id, header)
+                    tmp.replace(final)
+                    renamed = True
+                    try:
+                        await anyio.to_thread.run_sync(_fsync_path, final.parent)
+                        await conn.execute(
+                            "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes,"
+                            " raw_path, view_path, meta, status)"
+                            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                            (header.id, device_id, header.kind, header.started_at, header.ended_at,
+                             header.sha256, size, str(rel), view_path, Jsonb(meta), status),
+                        )
+                    except BaseException:
+                        # Advisory lock still held: no concurrent upload of this id can have renamed yet.
+                        final.unlink(missing_ok=True)
+                        renamed = False
+                        raise
+        except BaseException:
+            if renamed:  # commit itself failed after the rename
+                final.unlink(missing_ok=True)
+            raise
     finally:
         tmp.unlink(missing_ok=True)
     return 201, {"id": header.id, "status": "created"}

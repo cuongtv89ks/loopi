@@ -161,3 +161,90 @@ async def test_oversize_body_is_413(pool, pki_settings, device):
         r = await c.put(f"/v1/items/{ITEM_ID}", content=body, headers=_headers(device["fingerprint"], body))
     assert r.status_code == 413
     assert await _row(pool) is None
+
+
+def _media_files(pki_settings):
+    media = Path(pki_settings.media_root)
+    return [p for p in media.rglob("*") if p.is_file()] if media.exists() else []
+
+
+async def test_insert_failure_after_rename_leaves_no_file_or_row(
+    client, pool, pki_settings, device, monkeypatch
+):
+    from loopi_brain import items
+
+    def boom(_meta):
+        raise RuntimeError("insert failed")
+
+    monkeypatch.setattr(items, "Jsonb", boom)
+    body = b"segment"
+    with pytest.raises(RuntimeError):
+        await client.put(f"/v1/items/{ITEM_ID}", content=body, headers=_headers(device["fingerprint"], body))
+    assert await _row(pool) is None
+    assert _media_files(pki_settings) == []
+
+
+async def test_store_fsyncs_part_file_then_directory(pool, pki_settings, device, monkeypatch):
+    from loopi_brain import items
+
+    body = b"segment"
+    header = items.parse_header(
+        ITEM_ID, {k.lower(): v for k, v in _headers(device["fingerprint"], body).items()}, 2
+    )
+
+    async def chunks():
+        yield body
+
+    real = items._fsync_path
+    calls = []
+
+    def recording_fsync(path):
+        calls.append(path)
+        real(path)
+
+    monkeypatch.setattr(items, "_fsync_path", recording_fsync)
+    status, _ = await items.store_item(pool, pki_settings, device["device_id"], header, chunks())
+    assert status == 201
+    # fsync'd the .part file first, then the parent directory after the rename
+    assert calls[0].name.endswith(".part") and calls[1].is_dir()
+
+
+def test_fsync_path_syncs_file_and_directory(tmp_path, monkeypatch):
+    from loopi_brain import items
+
+    synced = []
+    monkeypatch.setattr(items.os, "fsync", lambda fd: synced.append(fd))
+    f = tmp_path / "a"
+    f.write_bytes(b"x")
+    items._fsync_path(f)
+    items._fsync_path(tmp_path)
+    assert len(synced) == 2
+
+
+@pytest.mark.parametrize(
+    ("body", "status"),
+    [
+        (b'{"a": "\xff\xfe"}', 422),
+        (b'{"a": "x\\u0000y"}', 422),
+        (b'{"\\u0000": 1}', 422),
+        (b"[" * 50000, 422),
+        (b'{"a": "' + b"x" * 70000 + b'"}', 413),
+    ],
+    ids=["bad-utf8", "nul-value", "nul-key", "deep-nesting", "oversize"],
+)
+async def test_hostile_marker_bodies_are_rejected_cleanly(client, pool, pki_settings, device, body, status):
+    r = await client.put(f"/v1/items/{ITEM_ID}", content=body,
+                         headers=_headers(device["fingerprint"], body, kind="marker", end=START))
+    assert r.status_code == status
+    assert await _row(pool) is None
+    assert _media_files(pki_settings) == []
+
+
+async def test_trailing_newline_in_id_or_sha_is_422(client, pool, device):
+    body = b"x"
+    r = await client.put(f"/v1/items/{ITEM_ID}%0A", content=body, headers=_headers(device["fingerprint"], body))
+    assert r.status_code == 422
+    sha = hashlib.sha256(body).hexdigest() + "\n"
+    r = await client.put(f"/v1/items/{ITEM_ID}", content=body, headers=_headers(device["fingerprint"], body, sha=sha))
+    assert r.status_code == 422
+    assert await _row(pool) is None
