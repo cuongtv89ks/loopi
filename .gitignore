@@ -1,0 +1,11 @@
+# brain
+brain/.venv/
+**/__pycache__/
+.pytest_cache/
+.coverage
+# agent
+agent/target/
+# os
+os/out/
+# deploy secrets
+deploy/.env
