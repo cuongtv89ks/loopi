@@ -32,6 +32,15 @@ paths:
     put:
       operationId: putItem
       summary: Upload one captured segment or marker. Idempotent per id.
+      description: |
+        Limits enforced by the brain: the body is at most 67108864 bytes (64 MiB) for every
+        kind, and a marker body is at most 65536 bytes (64 KiB). The Content-Type must match
+        X-Loopi-Kind (video -> video/h264, audio -> audio/ogg, marker -> application/json);
+        a mismatch is 422. X-Loopi-End must not be before X-Loopi-Start and
+        End - Start must be at most 3600 s; otherwise 422.
+      x-loopi-max-item-bytes: 67108864
+      x-loopi-max-marker-bytes: 65536
+      x-loopi-max-segment-seconds: 3600
       parameters:
         - { name: id, in: path, required: true, schema: { $ref: '#/components/schemas/Ulid' } }
         - name: X-Loopi-Kind
@@ -39,7 +48,11 @@ paths:
           required: true
           schema: { type: string, enum: [video, audio, marker] }
         - { name: X-Loopi-Start, in: header, required: true, schema: { type: string, format: date-time } }
-        - { name: X-Loopi-End, in: header, required: true, schema: { type: string, format: date-time } }
+        - name: X-Loopi-End
+          in: header
+          required: true
+          description: End of the segment. Must satisfy End >= Start and End - Start <= 3600 seconds.
+          schema: { type: string, format: date-time }
         - name: X-Loopi-Sha256
           in: header
           required: true
@@ -53,9 +66,15 @@ paths:
       requestBody:
         required: true
         content:
-          video/h264: { schema: { type: string, format: binary } }
-          audio/ogg: { schema: { type: string, format: binary } }
-          application/json: { schema: { $ref: '#/components/schemas/Marker' } }
+          video/h264:
+            description: Body for X-Loopi-Kind video, at most 64 MiB.
+            schema: { type: string, format: binary }
+          audio/ogg:
+            description: Body for X-Loopi-Kind audio, at most 64 MiB.
+            schema: { type: string, format: binary }
+          application/json:
+            description: Body for X-Loopi-Kind marker, at most 64 KiB.
+            schema: { $ref: '#/components/schemas/Marker' }
       responses:
         '201':
           description: Stored.
@@ -69,7 +88,13 @@ paths:
               schema: { $ref: '#/components/schemas/ItemAck' }
         '401': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
-        '413': { $ref: '#/components/responses/Error' }
+        '413':
+          description: >-
+            Body larger than 67108864 bytes (64 MiB), or a marker body larger than
+            65536 bytes (64 KiB). Error with a human-readable detail.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/Error' }
         '426': { $ref: '#/components/responses/Error' }
         '507': { $ref: '#/components/responses/Error' }
@@ -141,10 +166,10 @@ components:
         ca_cert_pem: { type: string }
         ca_fingerprint: { type: string, pattern: '^[0-9a-f]{64}$' }
     Marker:
+      description: >-
+        Any JSON object (arbitrary keys), UTF-8, at most 65536 bytes serialized, without NUL
+        characters. An empty body is treated as {}.
       type: object
-      additionalProperties: false
-      properties:
-        note: { type: string, maxLength: 500 }
     ItemAck:
       type: object
       additionalProperties: false
@@ -179,12 +204,51 @@ components:
           items: { $ref: '#/components/schemas/Ulid' }
     Command:
       type: object
+      description: >-
+        pause and resume carry an empty payload; set_config carries {audio_enabled: boolean}.
+      oneOf:
+        - { $ref: '#/components/schemas/PauseCommand' }
+        - { $ref: '#/components/schemas/ResumeCommand' }
+        - { $ref: '#/components/schemas/SetConfigCommand' }
+      discriminator:
+        propertyName: type
+        mapping:
+          pause: '#/components/schemas/PauseCommand'
+          resume: '#/components/schemas/ResumeCommand'
+          set_config: '#/components/schemas/SetConfigCommand'
+    PauseCommand:
+      type: object
       additionalProperties: false
       required: [id, type, payload]
       properties:
         id: { $ref: '#/components/schemas/Ulid' }
-        type: { type: string, enum: [pause, resume, set_config] }
-        payload: { type: object }
+        type: { const: pause }
+        payload: { $ref: '#/components/schemas/EmptyPayload' }
+    ResumeCommand:
+      type: object
+      additionalProperties: false
+      required: [id, type, payload]
+      properties:
+        id: { $ref: '#/components/schemas/Ulid' }
+        type: { const: resume }
+        payload: { $ref: '#/components/schemas/EmptyPayload' }
+    SetConfigCommand:
+      type: object
+      additionalProperties: false
+      required: [id, type, payload]
+      properties:
+        id: { $ref: '#/components/schemas/Ulid' }
+        type: { const: set_config }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [audio_enabled]
+          properties:
+            audio_enabled: { type: boolean }
+    EmptyPayload:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
     HeartbeatResponse:
       type: object
       additionalProperties: false
@@ -192,4 +256,5 @@ components:
       properties:
         commands:
           type: array
+          maxItems: 100
           items: { $ref: '#/components/schemas/Command' }

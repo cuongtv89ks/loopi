@@ -15,6 +15,8 @@ from . import pki
 TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 COMMAND_TYPES = frozenset({"pause", "resume", "set_config"})
 SET_CONFIG_KEYS: dict[str, type] = {"audio_enabled": bool}
+# One heartbeat returns at most this many commands, and may ack at most this many ids.
+MAX_HEARTBEAT_COMMANDS = 100
 
 
 def new_id() -> str:
@@ -141,8 +143,8 @@ async def record_heartbeat(
                 )
             cur = await conn.execute(
                 "SELECT id, type, payload FROM device_command"
-                " WHERE device_id = %s AND acked_at IS NULL ORDER BY id",
-                (device_id,),
+                " WHERE device_id = %s AND acked_at IS NULL ORDER BY id LIMIT %s",
+                (device_id, MAX_HEARTBEAT_COMMANDS),
             )
             return await cur.fetchall()
 

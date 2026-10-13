@@ -103,7 +103,7 @@ class Heartbeat(BaseModel):
     camera_failures: Counter = 0
     last_error: str | None = Field(default=None, max_length=500)
     dropped_items: Counter = 0
-    acked_command_ids: list[Annotated[str, Field(pattern=ULID_PATTERN)]] = Field(max_length=100)
+    acked_command_ids: list[Annotated[str, Field(pattern=ULID_PATTERN)]] = Field(max_length=devices.MAX_HEARTBEAT_COMMANDS)
 
 
 class Command(BaseModel):

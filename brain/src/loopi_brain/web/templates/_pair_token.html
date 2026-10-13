@@ -1,7 +1,8 @@
 <div class="card">
   <p>Token: <strong><code>{{ token }}</code></strong> (hết hạn {{ expires_at.strftime("%H:%M") }})</p>
-  <p>Ghi vào <code>loopi.toml</code> trên thẻ SD:</p>
+  <p>Trong <code>loopi.toml</code> trên thẻ SD, thay toàn bộ mục <code>[brain]</code> hiện có bằng khối sau:</p>
   <pre>[brain]
+url = "{{ brain_url }}"
 pair_token = "{{ token }}"
 ca_fingerprint = "{{ ca_fingerprint }}"</pre>
 </div>

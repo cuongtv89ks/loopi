@@ -108,6 +108,7 @@ async def new_pair_token(request: Request):
             "token": token["token"],
             "expires_at": token["expires_at"].astimezone(settings.zone),
             "ca_fingerprint": _ca_fingerprint(request),
+            "brain_url": f"https://{request.headers.get('host', request.url.netloc)}",
         },
     )
 

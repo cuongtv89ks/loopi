@@ -25,6 +25,11 @@ SERVER_VALIDITY = MAX_SERVER_TOTAL_VALIDITY - CLOCK_SKEW
 DEVICE_VALIDITY = dt.timedelta(days=3650)
 CA_NAME = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Loopi Brain CA")])
 PRIVATE_KEY_MODE = 0o600
+_LEAF_KEY_USAGE = x509.KeyUsage(
+    digital_signature=True, content_commitment=False, key_encipherment=False,
+    data_encipherment=False, key_agreement=False, key_cert_sign=False,
+    crl_sign=False, encipher_only=False, decipher_only=False,
+)
 
 
 class PkiError(Exception):
@@ -89,6 +94,7 @@ def init_pki(pki_dir: Path, hostnames: list[str], ips: list[str]) -> None:
             ),
             critical=True,
         )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
 
@@ -102,6 +108,9 @@ def init_pki(pki_dir: Path, hostnames: list[str], ips: list[str]) -> None:
         .add_extension(x509.SubjectAlternativeName(sans), critical=False)
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(server_key.public_key()), critical=False)
+        .add_extension(_LEAF_KEY_USAGE, critical=True)
         .sign(ca_key, hashes.SHA256())
     )
 
@@ -133,6 +142,9 @@ def sign_csr(pki_dir: Path, csr_pem: str, device_id: str) -> str:
         )
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(public_key), critical=False)
+        .add_extension(_LEAF_KEY_USAGE, critical=True)
         .sign(ca_key, hashes.SHA256())
     )
     return _pem(cert).decode()
