@@ -36,3 +36,13 @@ async def paired_device(pool, settings) -> dict:
         HW,
         lambda device_id: pki.sign_csr(settings.pki_dir, make_csr_pem(), device_id),
     )
+
+
+def auth_headers(fingerprint: str | None = None, agent_version: str | None = "0.1.0") -> dict:
+    """Headers Caddy/the agent send on device requests (omit a header by passing None)."""
+    headers = {}
+    if fingerprint is not None:
+        headers["X-Loopi-Client-Fingerprint"] = fingerprint
+    if agent_version is not None:
+        headers["X-Loopi-Agent-Version"] = agent_version
+    return headers

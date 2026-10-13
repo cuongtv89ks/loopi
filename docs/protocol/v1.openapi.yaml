@@ -1,0 +1,195 @@
+openapi: 3.1.0
+info:
+  title: Loopi device-brain sync protocol
+  version: 1.0.0
+  description: |
+    Device endpoints served by the brain behind Caddy. Every endpoint except
+    /v1/pair requires mTLS. Caddy forwards the client certificate's SHA-256
+    fingerprint (lowercase hex of DER) as X-Loopi-Client-Fingerprint and the
+    brain maps it to a device. Timestamps are RFC 3339 in UTC.
+paths:
+  /v1/pair:
+    post:
+      operationId: pair
+      summary: Exchange a one-time token and a P-256 CSR for a client certificate.
+      parameters:
+        - { $ref: '#/components/parameters/AgentVersion' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PairRequest' }
+      responses:
+        '201':
+          description: Paired.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PairResponse' }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '426': { $ref: '#/components/responses/Error' }
+  /v1/items/{id}:
+    put:
+      operationId: putItem
+      summary: Upload one captured segment or marker. Idempotent per id.
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: '#/components/schemas/Ulid' } }
+        - name: X-Loopi-Kind
+          in: header
+          required: true
+          schema: { type: string, enum: [video, audio, marker] }
+        - { name: X-Loopi-Start, in: header, required: true, schema: { type: string, format: date-time } }
+        - { name: X-Loopi-End, in: header, required: true, schema: { type: string, format: date-time } }
+        - name: X-Loopi-Sha256
+          in: header
+          required: true
+          schema: { type: string, pattern: '^[0-9a-f]{64}$' }
+        - name: X-Loopi-Video-Fps
+          in: header
+          required: false
+          description: Frame rate of a raw H.264 video segment (raw H.264 has no timing); defaults to 2.
+          schema: { type: integer, minimum: 1, maximum: 30 }
+        - { $ref: '#/components/parameters/AgentVersion' }
+      requestBody:
+        required: true
+        content:
+          video/h264: { schema: { type: string, format: binary } }
+          audio/ogg: { schema: { type: string, format: binary } }
+          application/json: { schema: { $ref: '#/components/schemas/Marker' } }
+      responses:
+        '201':
+          description: Stored.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItemAck' }
+        '200':
+          description: Already stored with the same sha256.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ItemAck' }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '426': { $ref: '#/components/responses/Error' }
+        '507': { $ref: '#/components/responses/Error' }
+  /v1/heartbeat:
+    post:
+      operationId: heartbeat
+      summary: Report device status, ack commands, receive pending commands.
+      parameters:
+        - { $ref: '#/components/parameters/AgentVersion' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Heartbeat' }
+      responses:
+        '200':
+          description: Pending commands, oldest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HeartbeatResponse' }
+        '401': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '426': { $ref: '#/components/responses/Error' }
+components:
+  parameters:
+    AgentVersion:
+      name: X-Loopi-Agent-Version
+      in: header
+      required: false
+      schema: { type: string, pattern: '^[0-9]+\.[0-9]+\.[0-9]+' }
+  responses:
+    Error:
+      description: Error with a human-readable detail.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Ulid:
+      type: string
+      pattern: '^[0-9A-HJKMNP-TV-Z]{26}$'
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: {}
+    HwInfo:
+      type: object
+      additionalProperties: false
+      required: [model, serial, agent_version]
+      properties:
+        model: { type: string, maxLength: 100 }
+        serial: { type: string, maxLength: 100 }
+        agent_version: { type: string, maxLength: 32 }
+    PairRequest:
+      type: object
+      additionalProperties: false
+      required: [token, csr_pem, hw_info]
+      properties:
+        token: { type: string, minLength: 1, maxLength: 32 }
+        csr_pem: { type: string, maxLength: 8192 }
+        hw_info: { $ref: '#/components/schemas/HwInfo' }
+    PairResponse:
+      type: object
+      additionalProperties: false
+      required: [device_id, cert_pem, ca_cert_pem, ca_fingerprint]
+      properties:
+        device_id: { $ref: '#/components/schemas/Ulid' }
+        cert_pem: { type: string }
+        ca_cert_pem: { type: string }
+        ca_fingerprint: { type: string, pattern: '^[0-9a-f]{64}$' }
+    Marker:
+      type: object
+      additionalProperties: false
+      properties:
+        note: { type: string, maxLength: 500 }
+    ItemAck:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id: { $ref: '#/components/schemas/Ulid' }
+        status: { type: string, enum: [created, duplicate] }
+    Heartbeat:
+      type: object
+      additionalProperties: false
+      required: [agent_version, uptime_s, disk_used_pct, queue_depth, clock_synced, paused,
+                 audio_enabled, recording_video, recording_audio, acked_command_ids]
+      properties:
+        agent_version: { type: string, maxLength: 32 }
+        uptime_s: { type: integer, minimum: 0 }
+        soc_temp_c: { type: [number, 'null'] }
+        disk_used_pct: { type: number, minimum: 0, maximum: 100 }
+        queue_depth: { type: integer, minimum: 0 }
+        wifi_rssi_dbm: { type: [integer, 'null'] }
+        clock_synced: { type: boolean }
+        paused: { type: boolean }
+        audio_enabled: { type: boolean }
+        recording_video: { type: boolean }
+        recording_audio: { type: boolean }
+        mic_missing: { type: boolean }
+        camera_failures: { type: integer, minimum: 0 }
+        last_error: { type: [string, 'null'], maxLength: 500 }
+        dropped_items: { type: integer, minimum: 0 }
+        acked_command_ids:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/Ulid' }
+    Command:
+      type: object
+      additionalProperties: false
+      required: [id, type, payload]
+      properties:
+        id: { $ref: '#/components/schemas/Ulid' }
+        type: { type: string, enum: [pause, resume, set_config] }
+        payload: { type: object }
+    HeartbeatResponse:
+      type: object
+      additionalProperties: false
+      required: [commands]
+      properties:
+        commands:
+          type: array
+          items: { $ref: '#/components/schemas/Command' }

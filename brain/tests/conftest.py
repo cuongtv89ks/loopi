@@ -1,3 +1,4 @@
+import httpx
 import psycopg
 import pytest
 from testcontainers.postgres import PostgresContainer
@@ -45,3 +46,14 @@ def pki_settings(settings):
 
     pki.init_pki(settings.pki_dir, ["brain.test"], ["127.0.0.1"])
     return settings
+
+
+@pytest.fixture
+async def client(pki_settings, pool):
+    from loopi_brain.app import create_app
+
+    app = create_app(pki_settings, pool=pool)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://brain.test"
+    ) as c:
+        yield c
