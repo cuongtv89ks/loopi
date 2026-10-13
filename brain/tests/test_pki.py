@@ -66,3 +66,45 @@ def test_fingerprint_is_sha256_of_der(tmp_path):
     pem = pki.ca_cert_pem(tmp_path)
     der = x509.load_pem_x509_certificate(pem.encode()).public_bytes(serialization.Encoding.DER)
     assert pki.fingerprint(pem) == hashlib.sha256(der).hexdigest()
+
+
+def _corrupt_csr_signature(csr_pem: str) -> str:
+    der = bytearray(x509.load_pem_x509_csr(csr_pem.encode()).public_bytes(serialization.Encoding.DER))
+    der[-1] ^= 0xFF  # last byte belongs to the signature BIT STRING
+    csr = x509.load_der_x509_csr(bytes(der))
+    assert not csr.is_signature_valid
+    return csr.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def test_sign_csr_rejects_invalid_signature(tmp_path):
+    pki.init_pki(tmp_path, ["brain.lan"], [])
+    with pytest.raises(pki.PkiError, match="signature"):
+        pki.sign_csr(tmp_path, _corrupt_csr_signature(make_csr_pem()), "D1")
+
+
+def test_device_cert_is_not_a_ca_and_keeps_csr_public_key(tmp_path):
+    pki.init_pki(tmp_path, ["brain.lan"], [])
+    csr_pem = make_csr_pem()
+    cert = x509.load_pem_x509_certificate(pki.sign_csr(tmp_path, csr_pem, "D1").encode())
+    bc = cert.extensions.get_extension_for_class(x509.BasicConstraints)
+    assert bc.critical
+    assert bc.value.ca is False
+    csr = x509.load_pem_x509_csr(csr_pem.encode())
+    assert cert.public_key() == csr.public_key()
+
+
+def test_ca_cert_is_a_constrained_ca(tmp_path):
+    pki.init_pki(tmp_path, ["brain.lan"], [])
+    bc = _load(tmp_path / pki.CA_CERT).extensions.get_extension_for_class(x509.BasicConstraints)
+    assert bc.critical
+    assert bc.value.ca is True
+    assert bc.value.path_length == 0
+
+
+def test_server_cert_has_server_auth_eku_and_is_not_a_ca(tmp_path):
+    pki.init_pki(tmp_path, ["brain.lan"], [])
+    server = _load(tmp_path / pki.SERVER_CERT)
+    eku = server.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    assert ExtendedKeyUsageOID.SERVER_AUTH in eku
+    assert ExtendedKeyUsageOID.CLIENT_AUTH not in eku
+    assert server.extensions.get_extension_for_class(x509.BasicConstraints).value.ca is False
