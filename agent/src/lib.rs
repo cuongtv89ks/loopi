@@ -3,3 +3,7 @@
 pub mod config;
 pub mod fsutil;
 pub mod schedule;
+pub mod disk;
+pub mod item;
+pub mod queue;
+pub mod testing;
