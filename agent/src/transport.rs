@@ -46,17 +46,39 @@ pub fn rfc3339(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-fn network(e: reqwest::Error) -> TransportError {
-    TransportError::Network(e.to_string())
+/// Full error chain ("outer: inner: root"); reqwest's Display alone hides the root cause
+/// (UnknownIssuer, connection refused, DNS failure...), which is the only on-device diagnostic.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut message = e.to_string();
+    let mut source = e.source();
+    while let Some(inner) = source {
+        message.push_str(": ");
+        message.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    message
 }
 
-pub fn build_client(tls: rustls::ClientConfig) -> Result<Client, TransportError> {
+fn network(e: reqwest::Error) -> TransportError {
+    TransportError::Network(error_chain(&e))
+}
+
+fn decode(e: reqwest::Error) -> TransportError {
+    TransportError::Decode(error_chain(&e))
+}
+
+/// Shared by production and tests. Redirects are never followed: a 303 would turn a PUT into a
+/// GET whose 200 looks like "duplicate" and the uploader would delete unsent data.
+fn base_builder() -> reqwest::ClientBuilder {
     Client::builder()
-        .use_preconfigured_tls(tls)
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(network)
+}
+
+/// Production client: https only (wiremock tests use plain http, so they build from `base_builder`).
+pub fn build_client(tls: rustls::ClientConfig) -> Result<Client, TransportError> {
+    base_builder().use_preconfigured_tls(tls).https_only(true).build().map_err(network)
 }
 
 pub fn map_put_status(status: u16) -> Result<PutOutcome, TransportError> {
@@ -70,6 +92,7 @@ pub fn map_put_status(status: u16) -> Result<PutOutcome, TransportError> {
         426 => Ok(PutOutcome::UpgradeRequired),
         507 => Ok(PutOutcome::BrainFull),
         400..=499 => Ok(PutOutcome::Rejected(status)),
+        // 3xx (redirects are not followed) and 5xx are retryable.
         _ => Err(TransportError::Status(status)),
     }
 }
@@ -120,7 +143,7 @@ impl Transport for HttpTransport {
         if response.status() != StatusCode::OK {
             return Err(TransportError::Status(response.status().as_u16()));
         }
-        let body: HeartbeatResponse = response.json().await.map_err(|e| TransportError::Decode(e.to_string()))?;
+        let body: HeartbeatResponse = response.json().await.map_err(decode)?;
         Ok(body.commands)
     }
 }
@@ -136,7 +159,7 @@ pub async fn pair(client: &Client, base_url: &str, request: &PairRequest) -> Res
     if response.status() != StatusCode::CREATED {
         return Err(TransportError::Status(response.status().as_u16()));
     }
-    response.json().await.map_err(|e| TransportError::Decode(e.to_string()))
+    response.json().await.map_err(decode)
 }
 
 #[cfg(test)]
@@ -245,5 +268,40 @@ mod tests {
             hw_info: crate::wire::HwInfo { model: "m".into(), serial: "s".into(), agent_version: AGENT_VERSION.into() },
         };
         assert!(matches!(pair(&Client::new(), &server.uri(), &request).await, Err(TransportError::Status(401))));
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed_and_never_mean_duplicate() {
+        for code in [303u16, 307] {
+            let server = MockServer::start().await;
+            let dir = tempfile::tempdir().unwrap();
+            let (meta, data) = video_item(dir.path());
+            Mock::given(method("PUT"))
+                .respond_with(ResponseTemplate::new(code).insert_header("Location", "/elsewhere"))
+                .mount(&server)
+                .await;
+            Mock::given(path("/elsewhere")).respond_with(ResponseTemplate::new(200)).mount(&server).await;
+            let transport = HttpTransport::new(base_builder().build().unwrap(), &server.uri());
+            let result = transport.put_item(&meta, &data).await;
+            assert!(matches!(result, Err(TransportError::Status(c)) if c == code), "{code}: {result:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn network_error_includes_root_cause() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dir = tempfile::tempdir().unwrap();
+        let (meta, data) = video_item(dir.path());
+        let transport = HttpTransport::new(base_builder().build().unwrap(), &format!("http://127.0.0.1:{port}"));
+        let Err(TransportError::Network(message)) = transport.put_item(&meta, &data).await else { panic!("expected network error") };
+        assert!(message.contains(": "), "{message}");
+        assert!(message.to_lowercase().contains("refused") || message.contains("os error"), "{message}");
+    }
+
+    #[test]
+    fn production_client_builds() {
+        assert!(build_client(crate::tls::pairing_config().unwrap()).is_ok());
     }
 }
