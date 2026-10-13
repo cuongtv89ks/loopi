@@ -1,4 +1,6 @@
 """Shared test helpers; later tasks import from here instead of redefining."""
+import datetime as dt
+
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
@@ -13,3 +15,24 @@ def make_csr_pem(rsa_key: bool = False) -> str:
         .sign(key, hashes.SHA256())
     )
     return csr.public_bytes(serialization.Encoding.PEM).decode()
+
+
+HW = {"model": "Raspberry Pi Zero W", "serial": "000000001", "agent_version": "0.1.0"}
+
+
+async def create_token(pool, minutes: int = 5) -> str:
+    """Create a one-time pair token valid for ``minutes`` (negative = already expired)."""
+    from loopi_brain import devices
+
+    return (await devices.create_pair_token(pool, dt.timedelta(minutes=minutes)))["token"]
+
+
+async def paired_device(pool, settings) -> dict:
+    from loopi_brain import devices, pki
+
+    return await devices.register_device(
+        pool,
+        await create_token(pool),
+        HW,
+        lambda device_id: pki.sign_csr(settings.pki_dir, make_csr_pem(), device_id),
+    )

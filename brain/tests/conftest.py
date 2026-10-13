@@ -37,3 +37,11 @@ def settings(database_url, tmp_path):
         pki_dir=tmp_path / "pki",
         min_free_bytes=0,
     )
+
+
+@pytest.fixture
+def pki_settings(settings):
+    from loopi_brain import pki
+
+    pki.init_pki(settings.pki_dir, ["brain.test"], ["127.0.0.1"])
+    return settings
