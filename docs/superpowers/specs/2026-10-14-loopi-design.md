@@ -262,7 +262,7 @@ Nguồn sự thật duy nhất là `docs/protocol/v1.openapi.yaml`, tạo ở P1
 | `db` | Postgres 17 + pgvector + pg_trgm | Metadata, vector, tìm kiếm theo trigram |
 | `models` | Ollama | VLM, LLM và model embedding |
 
-Media lưu trên filesystem (`/srv/loopi/media/{raw,keyframes,vlog}/YYYY/MM/DD/`). DB chỉ lưu đường dẫn.
+Media lưu trên filesystem (`/srv/loopi/media/raw/<device_id>/YYYY/MM/DD/`, `keyframes/` và `vlog/` cùng cấu trúc ngày). DB chỉ lưu đường dẫn.
 
 ### 9.2 Pipeline
 
@@ -313,7 +313,7 @@ tasks:
 
 | Bảng | Trường chính |
 |---|---|
-| `device` | id, name, cert_fingerprint, revoked, last_heartbeat (jsonb), paused, audio_enabled |
+| `device` | id, name, cert_fingerprint, revoked, last_heartbeat (jsonb). Trạng thái `paused`/`audio_enabled` do thiết bị giữ (`state.json`) và brain đọc từ `last_heartbeat`, không lưu cột riêng |
 | `item` | id (ULID), device_id, kind, started_at, ended_at, sha256, path, status, error |
 | `keyframe` | id, item_id, ts, path, dhash, caption (jsonb), model_version |
 | `transcript_segment` | id, item_id, start_ts, end_ts, lang, text, model_version |
