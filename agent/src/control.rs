@@ -165,4 +165,28 @@ mod tests {
         }
         assert_eq!(recording_gates(&on.apply(&Command::Pause), &ready), Gates { video: false, audio: false });
     }
+
+    #[test]
+    fn gates_match_truth_table_for_every_combination() {
+        for bits in 0u32..64 {
+            let flag = |n: u32| bits & (1 << n) != 0;
+            let (paired, synced, paused, quiet, disk_stopped, audio_enabled) =
+                (flag(0), flag(1), flag(2), flag(3), flag(4), flag(5));
+            let status = AgentStatus {
+                paired,
+                clock_synced: synced,
+                quiet,
+                disk_stopped,
+                ..AgentStatus::default()
+            };
+            let state = ControlState { paused, audio_enabled };
+            let expected_video = paired && synced && !paused && !quiet && !disk_stopped;
+            let expected_audio = expected_video && audio_enabled;
+            assert_eq!(
+                recording_gates(&state, &status),
+                Gates { video: expected_video, audio: expected_audio },
+                "bits {bits:06b}"
+            );
+        }
+    }
 }
