@@ -102,6 +102,10 @@ pub async fn run_uploader(
             }
         };
         if delay.is_zero() {
+            // Dropped sender = no one can ever ask us to stop; do not drain forever.
+            if shutdown.has_changed().is_err() {
+                return;
+            }
             tokio::task::yield_now().await;
             continue;
         }
@@ -230,7 +234,9 @@ mod tests {
         task.await.unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
+    // Real time on a multi-thread runtime: if the fix regresses and the loop never yields, the
+    // timeout still fires on the other worker, so the test fails instead of hanging.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropped_shutdown_sender_stops_the_loop_without_hammering() {
         let (_t, queue) = queue_with(2);
         let queue = Arc::new(queue);
@@ -241,9 +247,9 @@ mod tests {
         let status = status_channel(AgentStatus::default());
         let (stop_tx, stop_rx) = watch::channel(false);
         let task = tokio::spawn(run_uploader(queue.clone(), transport.clone(), status, stop_rx, Duration::from_millis(10)));
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         drop(stop_tx);
-        tokio::time::timeout(Duration::from_secs(1), task).await.expect("loop must exit").unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task).await.expect("loop must exit").unwrap();
         assert!(transport.puts.lock().unwrap().len() <= 2, "no burst of retries");
         assert_eq!(queue.len().unwrap(), 2);
     }

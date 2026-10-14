@@ -37,7 +37,7 @@ sd-notify = "0.4"
 jsonschema = "0.26"
 serde_yaml = "0.9"
 tempfile = "3"
-tokio = { version = "1", features = ["test-util", "rt", "macros"] }
+tokio = { version = "1", features = ["test-util", "rt", "rt-multi-thread", "macros"] }
 wiremock = "0.6"
 
 [profile.release]
