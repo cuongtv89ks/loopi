@@ -10,7 +10,7 @@ use tokio::sync::watch;
 
 use crate::clock::Clock;
 use crate::item::ItemKind;
-use crate::queue::Queue;
+use crate::queue::{Queue, RecoveryReport};
 use crate::recorder::ogg_opus::{OggOpusWriter, FRAME_SAMPLES};
 use crate::recorder::video::{segment_start, to_chrono};
 use crate::status::StatusTx;
@@ -57,27 +57,40 @@ pub fn next_boundary(t: DateTime<Utc>, segment: Duration) -> DateTime<Utc> {
 }
 
 /// Queue `.opus.part` files left by a crash; they lack the end-of-stream page but still decode.
-pub fn recover_incoming(dir: &Path, queue: &Queue, segment: Duration) -> io::Result<u32> {
+pub fn recover_incoming(dir: &Path, queue: &Queue, segment: Duration) -> RecoveryReport {
+    let mut report = RecoveryReport::default();
     if !dir.exists() {
-        return Ok(0);
+        return report;
     }
     let segment = to_chrono(segment);
-    let mut recovered = 0;
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            report.problem(dir, "cannot list interrupted audio segments", &e);
+            return report;
+        }
+    };
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                report.problem(dir, "cannot read an audio entry", &e);
+                continue;
+            }
+        };
         let is_part = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(PART_SUFFIX));
         if !is_part {
             continue;
         }
         // Audio is never deleted automatically: a part file that cannot be read or queued stays
-        // where it is (and is retried on the next start) after the error is logged.
+        // where it is (and is retried on the next start) after the problem is reported.
         match recover_part(&path, queue, segment) {
-            Ok(true) => recovered += 1,
+            Ok(true) => report.recovered += 1,
             Ok(false) => {}
-            Err(error) => tracing::error!(path = %path.display(), %error, "cannot recover partial audio segment; keeping file"),
+            Err(e) => report.problem(&path, "cannot queue partial audio segment; keeping file", &e),
         }
     }
-    Ok(recovered)
+    report
 }
 
 /// `Ok(false)` for an empty file (nothing to keep, so it is removed).
@@ -406,7 +419,7 @@ mod tests {
         let dir = tmp.path().join("in");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("01JA2B3C4D5E6F7G8H9J0KMNPQ.opus.part"), b"OggS").unwrap();
-        assert_eq!(recover_incoming(&dir, &queue, Duration::from_secs(60)).unwrap(), 1);
+        assert_eq!(recover_incoming(&dir, &queue, Duration::from_secs(60)).recovered, 1);
         assert_eq!(queue.oldest().unwrap().unwrap().meta.kind, ItemKind::Audio);
     }
 
@@ -529,9 +542,21 @@ mod tests {
         let bad = dir.join("01JA2B3C4D5E6F7G8H9J0KMNPR.opus.part");
         std::fs::create_dir_all(&bad).unwrap();
         std::fs::write(dir.join("01JA2B3C4D5E6F7G8H9J0KMNPQ.opus.part"), b"OggS").unwrap();
-        assert_eq!(recover_incoming(&dir, &queue, Duration::from_secs(60)).unwrap(), 1);
+        let report = recover_incoming(&dir, &queue, Duration::from_secs(60));
+        assert_eq!(report.recovered, 1);
+        assert_eq!(report.problems.len(), 1, "the kept file is reported: {report:?}");
         assert!(bad.exists(), "unrecoverable audio is not deleted");
         assert_eq!(queue.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn unlistable_audio_dir_is_reported_not_fatal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let not_a_dir = tmp.path().join("in");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+        let report = recover_incoming(&not_a_dir, &queue, Duration::from_secs(60));
+        assert_eq!((report.recovered, report.problems.len()), (0, 1));
     }
 
     #[test]
@@ -541,7 +566,7 @@ mod tests {
         let dir = tmp.path().join("in");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("01JA2B3C4D5E6F7G8H9J0KMNPQ.opus.part"), b"").unwrap();
-        assert_eq!(recover_incoming(&dir, &queue, Duration::from_secs(60)).unwrap(), 0);
+        assert_eq!(recover_incoming(&dir, &queue, Duration::from_secs(60)), RecoveryReport::default());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     }
 

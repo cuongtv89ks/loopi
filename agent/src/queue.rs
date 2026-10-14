@@ -4,6 +4,10 @@
 //! The payload is renamed into place first, then the sidecar is written atomically, so only items
 //! with a sidecar are visible. `open()` removes anything a power cut left half-written.
 //! `<root>/quarantine/` keeps items the brain will never accept, with a `.reason` file.
+//!
+//! Recovery never aborts on one bad entry (an unreadable file on a failing SD card would otherwise
+//! stop the agent on every start): each problem is logged, the file is left in place or
+//! quarantined, and the problem is reported in the `RecoveryReport`.
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -29,6 +33,40 @@ pub struct QueuedItem {
 pub struct Queue {
     items: PathBuf,
     quarantine: PathBuf,
+}
+
+/// Outcome of a crash-recovery pass over the queue or an `incoming/` directory.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RecoveryReport {
+    /// Interrupted segments queued.
+    pub recovered: u32,
+    /// Leftovers deleted (temp files, orphans).
+    pub dropped: u32,
+    /// One line per entry that could not be handled; those files were left where they were.
+    pub problems: Vec<String>,
+}
+
+impl RecoveryReport {
+    /// Log and record a problem with `path`; recovery carries on with the next entry.
+    pub fn problem(&mut self, path: &Path, what: &str, error: &dyn std::fmt::Display) {
+        tracing::error!(path = %path.display(), %error, "recovery: {what}");
+        self.problems.push(format!("{}: {what}: {error}", path.display()));
+    }
+
+    #[must_use]
+    pub fn merge(self, other: RecoveryReport) -> RecoveryReport {
+        RecoveryReport {
+            recovered: self.recovered + other.recovered,
+            dropped: self.dropped + other.dropped,
+            problems: self.problems.into_iter().chain(other.problems).collect(),
+        }
+    }
+
+    /// Short note for `last_error`, or `None` when everything was handled.
+    pub fn summary(&self) -> Option<String> {
+        let first = self.problems.first()?;
+        Some(format!("startup recovery: {} file(s) left in place; first: {first}", self.problems.len()))
+    }
 }
 
 pub fn sha256_file(path: &Path) -> io::Result<(String, u64)> {
@@ -59,12 +97,14 @@ fn read_meta(path: &Path) -> io::Result<ItemMeta> {
 }
 
 impl Queue {
-    pub fn open(root: &Path) -> io::Result<(Self, u32)> {
+    /// Only failing to create the queue directories is an error; everything recovery cannot
+    /// handle is reported in the `RecoveryReport` instead.
+    pub fn open(root: &Path) -> io::Result<(Self, RecoveryReport)> {
         let queue = Self { items: root.join("items"), quarantine: root.join("quarantine") };
         fs::create_dir_all(&queue.items)?;
         fs::create_dir_all(&queue.quarantine)?;
-        let dropped = queue.recover()?;
-        Ok((queue, dropped))
+        let report = queue.recover();
+        Ok((queue, report))
     }
 
     pub fn items_dir(&self) -> &Path {
@@ -185,18 +225,30 @@ impl Queue {
     /// Crash recovery. Deleted and counted: temp files, true orphans (payload with no sidecar file)
     /// and sidecars without a payload. Payloads whose sidecar is unreadable, mismatched or disagrees
     /// on size are quarantined, never deleted, so audio and markers survive a corrupt sidecar.
-    fn recover(&self) -> io::Result<u32> {
-        let mut dropped = 0u32;
+    fn recover(&self) -> RecoveryReport {
+        let mut report = RecoveryReport::default();
         let mut sidecars: Vec<(String, PathBuf)> = Vec::new();
         let mut payloads: Vec<(String, PathBuf)> = Vec::new();
-        for entry in fs::read_dir(&self.items)? {
-            let path = entry?.path();
+        let entries = match fs::read_dir(&self.items) {
+            Ok(entries) => entries,
+            Err(e) => {
+                report.problem(&self.items, "cannot list queue items", &e);
+                return report;
+            }
+        };
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(e) => {
+                    report.problem(&self.items, "cannot read a queue entry", &e);
+                    continue;
+                }
+            };
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_string();
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
             if ext == TMP_EXT || name.starts_with('.') {
-                fs::remove_file(&path)?;
-                dropped += 1;
+                self.delete(&path, "cannot delete temp file", &mut report);
             } else if ext == META_EXT {
                 sidecars.push((stem, path));
             } else {
@@ -206,44 +258,71 @@ impl Queue {
         let mut claimed = HashSet::new();
         for (stem, sidecar) in &sidecars {
             let found = payloads.iter().find(|(s, _)| s == stem).map(|(_, p)| p.clone());
-            let verdict = match read_meta(sidecar) {
-                Err(e) => Err(format!("unreadable sidecar: {e}")),
-                Ok(m) if m.id != *stem => Err(format!("sidecar id {} does not match file name", m.id)),
-                Ok(m) => {
-                    let data = self.data_path(&m.id, m.kind);
-                    match fs::metadata(&data) {
-                        Ok(md) if md.len() == m.size => Ok(()),
-                        Ok(md) => Err(format!("payload size {} != sidecar size {}", md.len(), m.size)),
-                        Err(_) => Err(String::new()),
-                    }
-                }
-            };
-            match verdict {
-                Ok(()) => {
+            match (self.check_sidecar(stem, sidecar), found) {
+                (SidecarCheck::Valid, _) => {
                     claimed.insert(stem.clone());
                 }
-                Err(reason) => match found {
-                    Some(p) if !reason.is_empty() || p.exists() => {
-                        self.quarantine_raw(stem, Some(&p), sidecar, &reason)?;
-                        claimed.insert(stem.clone());
+                (SidecarCheck::Bad(reason), Some(payload)) => {
+                    // Claimed even if the move fails: the payload must never be deleted as an orphan.
+                    claimed.insert(stem.clone());
+                    if let Err(e) = self.quarantine_raw(stem, Some(&payload), sidecar, &reason) {
+                        report.problem(sidecar, "cannot quarantine", &e);
                     }
-                    _ => {
-                        tracing::warn!(path = %sidecar.display(), "dropping sidecar without payload");
-                        fs::remove_file(sidecar)?;
-                        dropped += 1;
+                }
+                (SidecarCheck::NoPayload, Some(payload)) => {
+                    claimed.insert(stem.clone());
+                    let reason = "payload extension does not match the sidecar kind";
+                    if let Err(e) = self.quarantine_raw(stem, Some(&payload), sidecar, reason) {
+                        report.problem(sidecar, "cannot quarantine", &e);
                     }
-                },
+                }
+                (SidecarCheck::Bad(_) | SidecarCheck::NoPayload, None) => {
+                    tracing::warn!(path = %sidecar.display(), "dropping sidecar without payload");
+                    self.delete(sidecar, "cannot delete sidecar without payload", &mut report);
+                }
             }
         }
         for (stem, path) in payloads {
             if !claimed.contains(&stem) {
                 tracing::warn!(path = %path.display(), "dropping orphan payload without sidecar");
-                fs::remove_file(&path)?;
-                dropped += 1;
+                self.delete(&path, "cannot delete orphan payload", &mut report);
             }
         }
-        Ok(dropped)
+        report
     }
+
+    fn check_sidecar(&self, stem: &str, sidecar: &Path) -> SidecarCheck {
+        let meta = match read_meta(sidecar) {
+            Ok(meta) => meta,
+            Err(e) => return SidecarCheck::Bad(format!("unreadable sidecar: {e}")),
+        };
+        if meta.id != stem {
+            return SidecarCheck::Bad(format!("sidecar id {} does not match file name", meta.id));
+        }
+        match fs::metadata(self.data_path(&meta.id, meta.kind)) {
+            Ok(md) if md.len() == meta.size => SidecarCheck::Valid,
+            Ok(md) => SidecarCheck::Bad(format!("payload size {} != sidecar size {}", md.len(), meta.size)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => SidecarCheck::NoPayload,
+            // EIO and friends: the payload may well be there, so it must not count as missing.
+            Err(e) => SidecarCheck::Bad(format!("payload unreadable: {e}")),
+        }
+    }
+
+    /// Delete a leftover and count it; on failure leave it and report.
+    fn delete(&self, path: &Path, what: &str, report: &mut RecoveryReport) {
+        match fs::remove_file(path) {
+            Ok(()) => report.dropped += 1,
+            Err(e) => report.problem(path, what, &e),
+        }
+    }
+}
+
+enum SidecarCheck {
+    Valid,
+    /// Quarantine the payload with this reason (or drop the sidecar if there is no payload).
+    Bad(String),
+    /// No payload at the path the sidecar names.
+    NoPayload,
 }
 
 #[cfg(test)]
@@ -264,8 +343,8 @@ mod tests {
     #[test]
     fn enqueue_moves_file_and_writes_sidecar() {
         let tmp = tempfile::tempdir().unwrap();
-        let (queue, dropped) = Queue::open(&tmp.path().join("q")).unwrap();
-        assert_eq!(dropped, 0);
+        let (queue, report) = Queue::open(&tmp.path().join("q")).unwrap();
+        assert_eq!(report, RecoveryReport::default());
         let src = payload(tmp.path(), "seg.h264", b"video-bytes");
         let meta = queue.enqueue_file(&src, ItemKind::Video, ts(0), ts(59), Some(2)).unwrap();
         assert!(!src.exists());
@@ -331,8 +410,9 @@ mod tests {
         fs::write(items.join("01JA2B3C4D5E6F7G8H9J0KMNPS.opus"), b"x").unwrap();
         drop(queue);
 
-        let (queue, dropped) = Queue::open(&root).unwrap();
-        assert_eq!(dropped, 3, "tmp file, true orphan, sidecar without payload");
+        let (queue, report) = Queue::open(&root).unwrap();
+        assert_eq!(report.dropped, 3, "tmp file, true orphan, sidecar without payload");
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
         assert_eq!(queue.len().unwrap(), 1);
         assert_eq!(queue.oldest().unwrap().unwrap().meta.id, kept.id);
         let leftovers: Vec<_> = fs::read_dir(&items).unwrap().map(|e| e.unwrap().file_name()).collect();
@@ -351,10 +431,82 @@ mod tests {
         let m = queue.enqueue_bytes(b"audio-bytes", ItemKind::Audio, ts(0), ts(1)).unwrap();
         fs::write(queue.items_dir().join(format!("{}.opus", m.id)), b"trunc").unwrap();
         drop(queue);
-        let (queue, dropped) = Queue::open(&root).unwrap();
-        assert_eq!(dropped, 0);
+        let (queue, report) = Queue::open(&root).unwrap();
+        assert_eq!(report.dropped, 0);
         assert_eq!(queue.len().unwrap(), 0);
         assert!(root.join("quarantine").join(format!("{}.opus", m.id)).exists());
+    }
+
+    /// A non-empty directory where a file is expected cannot be read or removed: a stand-in for
+    /// an unreadable file on a failing SD card that works for root too.
+    fn stuck_entry(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        fs::write(path.join("x"), b"x").unwrap();
+    }
+
+    #[test]
+    fn unhandled_entries_are_reported_and_do_not_abort_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("q");
+        let (queue, _) = Queue::open(&root).unwrap();
+        let kept = queue.enqueue_bytes(b"ok", ItemKind::Audio, ts(0), ts(1)).unwrap();
+        let items = root.join("items");
+        stuck_entry(&items.join(".stuck.tmp"));
+        stuck_entry(&items.join("01JA2B3C4D5E6F7G8H9J0KMNPQ.h264"));
+        stuck_entry(&items.join("01JA2B3C4D5E6F7G8H9J0KMNPR.meta"));
+        fs::write(items.join(".x.meta.tmp"), b"partial").unwrap();
+        fs::write(items.join("01JA2B3C4D5E6F7G8H9J0KMNPS.h264"), b"orphan").unwrap();
+        drop(queue);
+
+        let (queue, report) = Queue::open(&root).unwrap();
+        assert_eq!(report.dropped, 2, "the removable leftovers are still cleaned up");
+        assert_eq!(report.problems.len(), 3, "{:?}", report.problems);
+        assert!(report.summary().unwrap().starts_with("startup recovery: 3 file(s) left in place; first: "));
+        assert_eq!(queue.oldest().unwrap().unwrap().meta.id, kept.id, "valid items survive");
+        assert!(items.join(".stuck.tmp").exists() && items.join("01JA2B3C4D5E6F7G8H9J0KMNPQ.h264").exists());
+    }
+
+    #[test]
+    fn payload_is_kept_when_its_quarantine_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("q");
+        let (queue, _) = Queue::open(&root).unwrap();
+        let m = queue.enqueue_bytes(b"audio-bytes", ItemKind::Audio, ts(0), ts(1)).unwrap();
+        fs::write(queue.items_dir().join(format!("{}.opus", m.id)), b"trunc").unwrap();
+        // A directory where the .reason file must go makes the quarantine fail half-way.
+        stuck_entry(&root.join("quarantine").join(format!("{}.reason", m.id)));
+        drop(queue);
+        let (_queue, report) = Queue::open(&root).unwrap();
+        assert_eq!(report.problems.len(), 1, "{:?}", report.problems);
+        let moved = root.join("quarantine").join(format!("{}.opus", m.id));
+        let left = root.join("items").join(format!("{}.opus", m.id));
+        assert!(moved.exists() || left.exists(), "audio is never deleted");
+    }
+
+    #[test]
+    fn unlistable_items_dir_is_a_problem_not_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let queue = Queue { items: tmp.path().join("missing"), quarantine: tmp.path().join("quarantine") };
+        let report = queue.recover();
+        assert_eq!(report.problems.len(), 1);
+    }
+
+    #[test]
+    fn creating_the_queue_directories_is_still_fatal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let blocker = tmp.path().join("file");
+        fs::write(&blocker, b"x").unwrap();
+        assert!(Queue::open(&blocker.join("q")).is_err());
+    }
+
+    #[test]
+    fn reports_merge_and_summarise() {
+        let a = RecoveryReport { recovered: 1, dropped: 2, problems: vec!["a".into()] };
+        let b = RecoveryReport { recovered: 3, dropped: 0, problems: vec!["b".into(), "c".into()] };
+        let merged = a.merge(b);
+        assert_eq!((merged.recovered, merged.dropped), (4, 2));
+        assert_eq!(merged.summary().as_deref(), Some("startup recovery: 3 file(s) left in place; first: a"));
+        assert_eq!(RecoveryReport::default().summary(), None);
     }
 
     #[test]

@@ -255,3 +255,39 @@ async fn shutdown_while_recording_keeps_the_led_solid_until_both_recorders_stopp
     assert!(!any_camera_alive(&h.spawns), "no camera process outlives run()");
     assert!(!h.mic_open.load(Ordering::SeqCst), "the microphone is closed");
 }
+
+/// A non-empty directory where a file is expected: cannot be read, hashed or removed (even by
+/// root), standing in for an unreadable file on a failing SD card.
+fn stuck_entry(path: &Path) {
+    fs::create_dir_all(path.join("inner")).unwrap();
+}
+
+#[tokio::test]
+async fn unreadable_leftovers_in_every_recovery_path_do_not_stop_the_agent() {
+    let h = Harness::new();
+    let queue_dir = h.data_dir.join("queue");
+    stuck_entry(&queue_dir.join("items").join(".stuck.tmp"));
+    let run_dir = queue_dir.join("incoming/video/01JA2B3C4D5E6F7G8H9J0KMNPQ");
+    stuck_entry(&run_dir.join("v_000000.h264"));
+    fs::write(run_dir.join("v_000001.h264"), b"video after the bad one").unwrap();
+    let audio_dir = queue_dir.join("incoming/audio");
+    stuck_entry(&audio_dir.join("01JA2B3C4D5E6F7G8H9J0KMNPR.opus.part"));
+    fs::write(audio_dir.join("01JA2B3C4D5E6F7G8H9J0KMNPS.opus.part"), b"OggS").unwrap();
+    // Paused, so only recovery and uploads are exercised.
+    fs::create_dir_all(h.data_dir.join("config")).unwrap();
+    fs::write(h.data_dir.join("config/state.json"), br#"{"paused":true,"audio_enabled":true}"#).unwrap();
+
+    let (deps, stop_tx, stop_rx) = h.deps(Some(Box::new(h.led.clone())));
+    let agent = tokio::spawn(run(deps, stop_rx));
+    assert!(eventually(|| h.transport.puts.lock().unwrap().len() >= 2).await, "recovered segments are uploaded");
+    assert!(eventually(|| !h.transport.heartbeats.lock().unwrap().is_empty()).await);
+    let error = h.transport.heartbeats.lock().unwrap()[0].last_error.clone().unwrap_or_default();
+    assert!(error.starts_with("startup recovery: 3 file(s) left in place"), "{error}");
+
+    stop_tx.send(true).unwrap();
+    agent.await.unwrap().unwrap();
+    let kinds: Vec<_> = h.transport.puts.lock().unwrap().iter().map(|m| m.kind).collect();
+    assert!(kinds.contains(&loopi_agent::item::ItemKind::Video) && kinds.contains(&loopi_agent::item::ItemKind::Audio), "{kinds:?}");
+    assert!(run_dir.join("v_000000.h264").exists(), "the unreadable segment is left for the next start");
+    assert!(audio_dir.join("01JA2B3C4D5E6F7G8H9J0KMNPR.opus.part").exists(), "audio is never deleted");
+}

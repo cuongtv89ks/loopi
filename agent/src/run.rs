@@ -215,24 +215,27 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
     let paths = Paths::new(&config.paths.data_dir);
     let segment = Duration::from_secs(config.capture.segment_seconds.into());
 
-    let (queue, dropped) = Queue::open(&paths.queue).context("opening the upload queue")?;
-    let recovered = video::recover_incoming(&paths.video_incoming, &queue, segment, config.capture.video_fps)
-        .context("recovering interrupted video segments")?
-        + audio::recover_incoming(&paths.audio_incoming, &queue, segment).context("recovering interrupted audio segments")?;
-    tracing::info!(recovered, dropped, "queue ready");
+    // Only failing to create the queue directories is fatal; a file recovery cannot handle is
+    // left in place and reported, so one bad sector cannot stop the agent on every start.
+    let (queue, queue_recovery) = Queue::open(&paths.queue).context("opening the upload queue")?;
+    let recovery = queue_recovery
+        .merge(video::recover_incoming(&paths.video_incoming, &queue, segment, config.capture.video_fps))
+        .merge(audio::recover_incoming(&paths.audio_incoming, &queue, segment));
+    tracing::info!(recovered = recovery.recovered, dropped = recovery.dropped, problems = recovery.problems.len(), "queue ready");
     let queue = Arc::new(queue);
     let schedule = Schedule::from_config(&config.schedule).map_err(anyhow::Error::msg)?;
 
     let (control_tx, control_rx) = watch::channel(control::load_state(&paths.state, config.capture.audio_enabled));
     // The gates stay closed until the LED loop's first successful write confirms the LED works.
     let (led_health, led_error) = initial_led_status(led.as_deref());
+    let startup_errors: Vec<String> = led_error.into_iter().chain(recovery.summary()).collect();
     let status = status_channel(AgentStatus {
         paired: true,
         clock_synced: clock.is_synced(),
         quiet: schedule.is_quiet(clock.now()),
         led: led_health,
-        last_error: led_error,
-        dropped_since_heartbeat: dropped,
+        last_error: (!startup_errors.is_empty()).then(|| startup_errors.join("; ")),
+        dropped_since_heartbeat: recovery.dropped,
         ..AgentStatus::default()
     });
     let (video_gate_tx, video_gate_rx) = watch::channel(false);

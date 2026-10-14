@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use crate::clock::Clock;
 use crate::config::{CaptureConfig, CONTRACT_MAX_SEGMENT_SECONDS};
 use crate::item::{ItemKind, ItemMeta};
-use crate::queue::Queue;
+use crate::queue::{Queue, RecoveryReport};
 use crate::status::StatusTx;
 
 pub const SEGMENT_PATTERN: &str = "v_%06d.h264";
@@ -108,8 +108,25 @@ pub(crate) fn to_chrono(d: Duration) -> chrono::Duration {
     chrono::Duration::from_std(d).unwrap_or(chrono::Duration::seconds(FALLBACK_SEGMENT_SECONDS))
 }
 
-/// Queue finished segment files in order, discarding empty ones. Each segment starts where the
-/// previous one ended; the first starts at `chain_from`, or `ended - segment` when unknown.
+/// Queue one finished segment file; an empty one is deleted (`Ok(None)`). It starts where the
+/// previous one ended (`chain_from`), or at `ended - segment` when that is unknown.
+fn enqueue_segment(
+    queue: &Queue,
+    path: &Path,
+    chain_from: Option<DateTime<Utc>>,
+    segment: chrono::Duration,
+    fps: u32,
+) -> io::Result<Option<ItemMeta>> {
+    if fs::metadata(path)?.len() == 0 {
+        fs::remove_file(path)?;
+        return Ok(None);
+    }
+    let ended = mtime(path)?;
+    let started = segment_start(chain_from.unwrap_or(ended - segment), ended, segment);
+    queue.enqueue_file(path, ItemKind::Video, started, ended, Some(fps)).map(Some)
+}
+
+/// Queue finished segment files in order, discarding empty ones; stops at the first error.
 /// Returns the queued items and the end time of the last one.
 fn enqueue_segments(
     queue: &Queue,
@@ -121,14 +138,10 @@ fn enqueue_segments(
     let mut last_end = chain_from;
     let mut queued = Vec::with_capacity(files.len());
     for path in files {
-        if fs::metadata(&path)?.len() == 0 {
-            fs::remove_file(&path)?;
-            continue;
+        if let Some(meta) = enqueue_segment(queue, &path, last_end, segment, fps)? {
+            last_end = Some(meta.ended_at);
+            queued.push(meta);
         }
-        let ended = mtime(&path)?;
-        let started = segment_start(last_end.unwrap_or(ended - segment), ended, segment);
-        queued.push(queue.enqueue_file(&path, ItemKind::Video, started, ended, Some(fps))?);
-        last_end = Some(ended);
     }
     Ok((queued, last_end))
 }
@@ -160,22 +173,56 @@ impl SegmentCollector {
     }
 }
 
-/// After a crash or power cut, queue segments left in old run directories.
-pub fn recover_incoming(incoming: &Path, queue: &Queue, segment: Duration, fps: u32) -> io::Result<u32> {
+/// After a crash or power cut, queue segments left in old run directories. A segment that cannot
+/// be queued stays where it is (retried on the next start) and is reported; the others are queued.
+pub fn recover_incoming(incoming: &Path, queue: &Queue, segment: Duration, fps: u32) -> RecoveryReport {
+    let mut report = RecoveryReport::default();
     if !incoming.exists() {
-        return Ok(0);
+        return report;
     }
-    let mut recovered = 0;
-    for entry in fs::read_dir(incoming)? {
-        let run_dir = entry?.path();
-        if !run_dir.is_dir() {
-            continue;
+    let entries = match fs::read_dir(incoming) {
+        Ok(entries) => entries,
+        Err(e) => {
+            report.problem(incoming, "cannot list interrupted video runs", &e);
+            return report;
         }
-        let (queued, _) = enqueue_segments(queue, list_segments(&run_dir)?, None, to_chrono(segment), fps)?;
-        recovered += queued.len() as u32;
-        let _ = fs::remove_dir(&run_dir);
+    };
+    for entry in entries {
+        let run_dir = match entry {
+            Ok(entry) => entry.path(),
+            Err(e) => {
+                report.problem(incoming, "cannot read a video run entry", &e);
+                continue;
+            }
+        };
+        if run_dir.is_dir() {
+            recover_run_dir(&run_dir, queue, to_chrono(segment), fps, &mut report);
+        }
     }
-    Ok(recovered)
+    report
+}
+
+fn recover_run_dir(run_dir: &Path, queue: &Queue, segment: chrono::Duration, fps: u32, report: &mut RecoveryReport) {
+    let files = match list_segments(run_dir) {
+        Ok(files) => files,
+        Err(e) => {
+            report.problem(run_dir, "cannot list video segments", &e);
+            return;
+        }
+    };
+    let mut last_end = None;
+    for path in files {
+        match enqueue_segment(queue, &path, last_end, segment, fps) {
+            Ok(Some(meta)) => {
+                last_end = Some(meta.ended_at);
+                report.recovered += 1;
+            }
+            Ok(None) => {}
+            Err(e) => report.problem(&path, "cannot queue video segment", &e),
+        }
+    }
+    // Fails (harmlessly) while a segment that could not be queued is still inside.
+    let _ = fs::remove_dir(run_dir);
 }
 
 pub fn camera_backoff(failures: u32, max: Duration) -> Duration {
@@ -483,10 +530,44 @@ mod tests {
         fs::write(run.join("v_000000.h264"), b"left over").unwrap();
         set_mtime(&run.join("v_000000.h264"), ended);
 
-        assert_eq!(recover_incoming(&incoming, &queue, Duration::from_secs(60), 2).unwrap(), 1);
+        assert_eq!(recover_incoming(&incoming, &queue, Duration::from_secs(60), 2).recovered, 1);
         let item = queue.oldest().unwrap().unwrap().meta;
         assert_eq!((item.started_at, item.ended_at), (ended - chrono::Duration::seconds(60), ended));
         assert!(!run.exists());
+    }
+
+    #[test]
+    fn unqueueable_segment_is_left_and_reported_while_the_others_are_recovered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let incoming = tmp.path().join("incoming");
+        let first = incoming.join("01JA2B3C4D5E6F7G8H9J0KMNPQ");
+        let second = incoming.join("01JA2B3C4D5E6F7G8H9J0KMNPR");
+        // A directory named like a segment cannot be hashed: a stand-in for an unreadable file.
+        let stuck = first.join("v_000000.h264");
+        fs::create_dir_all(stuck.join("inner")).unwrap();
+        fs::write(first.join("v_000001.h264"), b"after the bad one").unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(second.join("v_000000.h264"), b"other run").unwrap();
+        fs::write(incoming.join("stray-file"), b"not a run dir").unwrap();
+
+        let report = recover_incoming(&incoming, &queue, Duration::from_secs(60), 2);
+        assert_eq!(report.recovered, 2, "{report:?}");
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert!(report.problems[0].contains("v_000000.h264"));
+        assert!(stuck.exists(), "left in place for the next start");
+        assert!(!second.exists(), "fully recovered runs are removed");
+        assert_eq!(queue.len().unwrap(), 2);
+    }
+
+    #[test]
+    fn unlistable_incoming_dir_is_reported_not_fatal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let not_a_dir = tmp.path().join("incoming");
+        fs::write(&not_a_dir, b"x").unwrap();
+        let report = recover_incoming(&not_a_dir, &queue, Duration::from_secs(60), 2);
+        assert_eq!((report.recovered, report.problems.len()), (0, 1));
     }
 
     #[tokio::test]
