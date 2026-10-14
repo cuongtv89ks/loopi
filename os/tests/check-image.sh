@@ -202,11 +202,29 @@ dropbear_is_key_only() {
     && rootfs_file_contains usr/lib/systemd/system/dropbear.service '^ExecStart=.* \$DROPBEAR_ARGS( |$)'
 }
 check "dropbear refuses password logins (-s from /etc/default/dropbear reaches its command line)" dropbear_is_key_only
-# The host key and authorized_keys directories must exist before dropbear starts (/data is the only writable place)
+# tmpfiles.d is only best effort for /data. A nofail mount is not ordered before local-fs.target (systemd.mount(5)),
+# so systemd-tmpfiles-setup.service normally runs before /data is mounted and acts on the squashfs mount point,
+# not on the ext4 that is mounted over it. What guarantees the SSH state directories is the drop-in below
+# (dropbear) and loopi-devkeys.service (authorized_keys), both of which run after /data is mounted.
 tmpfiles_make_ssh_dirs() {
   rootfs_file_contains etc/tmpfiles.d/loopi.conf '^d /data/dev/dropbear +0700 root root' \
     && rootfs_file_contains etc/tmpfiles.d/loopi.conf '^d /data/dev/ssh +0700 root root'
 }
-check "tmpfiles creates the SSH state directories on /data" tmpfiles_make_ssh_dirs
+check "tmpfiles.d declares the SSH state directories (best effort: runs before the nofail /data mount)" tmpfiles_make_ssh_dirs
+# Fix round 1 (ruling C26). `dropbear -R` creates its host key with open(O_CREAT|O_EXCL): without /data/dev/dropbear
+# it fails with ENOENT ("Couldn't read or generate hostkey") and every SSH connection dies. So dropbear.service must
+# wait for /data (RequiresMountsFor, as every unit that needs /data) and create the directory itself.
+unit_keys() {  # unit_keys <path in rootfs>: one "[Section] Key=Value" line per setting (a key in the wrong section is ignored by systemd)
+  local keys; keys="$(rootfs_cat "$1")" || return 1
+  awk '/^\[/ { s = $0; next } NF && !/^[#;]/ { print s " " $0 }' <<<"$keys"
+}
+dropbear_hostkey_dir_after_mount() {
+  local keys; keys="$(unit_keys etc/systemd/system/dropbear.service.d/10-loopi.conf)" || return 1
+  grep -Fx '[Unit] RequiresMountsFor=/data' <<<"$keys" \
+    && grep -Fx '[Service] ExecStartPre=/bin/mkdir -p -m 0700 /data/dev/dropbear' <<<"$keys"
+}
+check "dropbear waits for /data and creates /data/dev/dropbear itself (drop-in)" dropbear_hostkey_dir_after_mount
+# /bin -> usr/bin and mkdir is a busybox applet link there; the drop-in's ExecStartPre needs it
+check "mkdir for the dropbear drop-in is in the image" rootfs_has /usr/bin/mkdir
 
 exit $fail
