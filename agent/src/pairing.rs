@@ -145,6 +145,20 @@ async fn ensure_paired_with(
     Ok(identity)
 }
 
+/// Delay before the next pairing attempt after a network or server hiccup.
+pub const RETRY_FAST: std::time::Duration = std::time::Duration::from_secs(30);
+/// Delay when the failure needs a human fix (bad token, CA mismatch, rejected request).
+pub const RETRY_NEEDS_FIX: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// 401 (token used/expired/unknown), 422 and 426 will not fix themselves; network and 5xx might.
+pub fn retry_delay(error: &PairError) -> std::time::Duration {
+    match error {
+        PairError::NoToken | PairError::CaMismatch { .. } | PairError::BadCa => RETRY_NEEDS_FIX,
+        PairError::Transport(TransportError::Status(401 | 422 | 426)) => RETRY_NEEDS_FIX,
+        _ => RETRY_FAST,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +300,18 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, PairError::Transport(TransportError::Status(401))));
+    }
+
+    #[test]
+    fn retry_delay_classifies_errors() {
+        let status = |c| PairError::Transport(TransportError::Status(c));
+        assert_eq!(retry_delay(&PairError::NoToken), RETRY_NEEDS_FIX);
+        assert_eq!(retry_delay(&PairError::BadCa), RETRY_NEEDS_FIX);
+        assert_eq!(retry_delay(&PairError::CaMismatch { expected: "a".into(), actual: "b".into() }), RETRY_NEEDS_FIX);
+        for code in [401, 422, 426] {
+            assert_eq!(retry_delay(&status(code)), RETRY_NEEDS_FIX, "{code}");
+        }
+        assert_eq!(retry_delay(&status(503)), RETRY_FAST);
+        assert_eq!(retry_delay(&PairError::Transport(TransportError::Network("down".into()))), RETRY_FAST);
     }
 }
