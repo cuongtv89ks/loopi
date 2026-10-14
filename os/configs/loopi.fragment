@@ -35,3 +35,24 @@ BR2_PACKAGE_UTIL_LINUX_BINARIES=y
 BR2_PACKAGE_UTIL_LINUX_PARTX=y
 BR2_PACKAGE_E2FSPROGS=y
 BR2_PACKAGE_E2FSPROGS_RESIZE2FS=y
+# Networking: WiFi via wpa_supplicant + systemd-networkd, NTP, BLE stack for later features
+BR2_PACKAGE_SYSTEMD_NETWORKD=y
+BR2_PACKAGE_SYSTEMD_RESOLVED=y
+BR2_PACKAGE_SYSTEMD_TIMESYNCD=y
+BR2_PACKAGE_WPA_SUPPLICANT=y
+# Provisioning writes ctrl_interface= into the wpa_supplicant config. Without the control interface
+# the parser rejects that line and wpa_supplicant exits ("Failed to read or parse configuration").
+BR2_PACKAGE_WPA_SUPPLICANT_CTRL_IFACE=y
+BR2_PACKAGE_BRCMFMAC_SDIO_FIRMWARE_RPI=y
+BR2_PACKAGE_BRCMFMAC_SDIO_FIRMWARE_RPI_WIFI=y
+BR2_PACKAGE_BRCMFMAC_SDIO_FIRMWARE_RPI_BT=y
+BR2_PACKAGE_BLUEZ5_UTILS=y
+# bluetoothctl is a separate option (not part of the base bluez-utils install)
+BR2_PACKAGE_BLUEZ5_UTILS_CLIENT=y
+BR2_PACKAGE_CA_CERTIFICATES=y
+# Agent and its native libraries
+BR2_PACKAGE_HOST_RUSTC=y
+BR2_PACKAGE_HOST_RUST_BIN=y
+BR2_PACKAGE_ALSA_LIB=y
+BR2_PACKAGE_OPUS=y
+BR2_PACKAGE_LOOPI_AGENT=y

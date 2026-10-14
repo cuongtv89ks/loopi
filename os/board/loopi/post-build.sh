@@ -18,3 +18,7 @@ fi
 enable_unit loopi-growdata.service
 # Mount points for the fstab entries: systemd cannot create them on the read-only root
 mkdir -p "${TARGET_DIR}/boot" "${TARGET_DIR}/data"
+
+enable_unit loopi-provision.service
+enable_unit loopi-wifi.service
+enable_unit loopi-agent.service

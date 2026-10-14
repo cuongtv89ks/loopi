@@ -1,0 +1,12 @@
+[Unit]
+Description=Import Loopi settings from the boot partition
+RequiresMountsFor=/data /boot
+ConditionPathExists=/boot/loopi.toml
+Before=loopi-wifi.service loopi-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/loopi-agent provision --boot /boot/loopi.toml --data /data
+
+[Install]
+WantedBy=multi-user.target

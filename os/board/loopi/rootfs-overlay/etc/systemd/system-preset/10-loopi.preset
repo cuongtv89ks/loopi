@@ -1,0 +1,5 @@
+# Buildroot's "enable *" preset (80-buildroot.preset) runs after post-build.sh, so units cannot be
+# left disabled by removing their symlinks there; a lower-numbered preset wins instead.
+# The stock wpa_supplicant.service is D-Bus activated (D-Bus support is not built) and has no
+# interface. WiFi is loopi-wifi.service, which runs wpa_supplicant on wlan0 with the config from /data.
+disable wpa_supplicant.service

@@ -1,0 +1,20 @@
+[Unit]
+Description=Loopi capture agent
+After=loopi-provision.service loopi-growdata.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/data
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/libexec/loopi/run-agent
+Restart=always
+RestartSec=2
+WatchdogSec=30
+KillMode=control-group
+TimeoutStopSec=15
+Environment=RUST_LOG=info
+Environment=LIBCAMERA_LOG_LEVELS=*:WARN
+
+[Install]
+WantedBy=multi-user.target

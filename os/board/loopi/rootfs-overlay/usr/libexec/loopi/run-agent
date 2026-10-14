@@ -1,0 +1,7 @@
+#!/bin/sh
+# Dev images run /data/dev/loopi-agent when present (deployed with os/scripts/deploy-agent.sh);
+# otherwise the packaged binary. exec keeps the agent as the service's main PID (sd_notify).
+if [ -f /etc/loopi-dev ] && [ -x /data/dev/loopi-agent ]; then
+	exec /data/dev/loopi-agent run
+fi
+exec /usr/bin/loopi-agent run

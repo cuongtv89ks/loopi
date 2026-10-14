@@ -1,0 +1,16 @@
+[Unit]
+Description=WiFi for wlan0 (wpa_supplicant, config on /data)
+After=loopi-provision.service sys-subsystem-net-devices-wlan0.device
+BindsTo=sys-subsystem-net-devices-wlan0.device
+RequiresMountsFor=/data
+ConditionPathExists=/data/config/wpa_supplicant-wlan0.conf
+Before=network.target
+Wants=network.target
+
+[Service]
+ExecStart=/usr/sbin/wpa_supplicant -i wlan0 -c /data/config/wpa_supplicant-wlan0.conf
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

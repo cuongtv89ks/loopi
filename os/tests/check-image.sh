@@ -13,6 +13,7 @@ check() {  # check <description> <command...>
 rootfs_has() { unsquashfs -l "$IMAGES/rootfs.squashfs" | grep -E "^squashfs-root$1\$"; }
 rootfs_cat() { unsquashfs -cat "$IMAGES/rootfs.squashfs" "$1"; }
 rootfs_file_contains() { rootfs_cat "$1" | grep -E "$2"; }
+rootfs_lacks() { local list; list="$(unsquashfs -l "$IMAGES/rootfs.squashfs")" || return 1; ! grep -E "^squashfs-root$1\$" <<<"$list"; }
 boot_has() { mdir -i "$IMAGES/boot.vfat" "::$1"; }
 part_count() { [ "$(sfdisk -d "$IMAGES/sdcard.img" | grep -c '^/')" = "$1" ]; }
 # sfdisk pads one-digit types (" c"), so compare without whitespace
@@ -78,5 +79,61 @@ data_inode_ratio_is_high() {
 check "data image uses 4 KiB blocks" data_block_size_is_4k
 check "data image has a low inode density (>= 32 KiB per inode)" data_inode_ratio_is_high
 check "data image is labelled 'data'" bash -c "dumpe2fs -h '$IMAGES/data.ext4' 2>/dev/null | grep -q 'volume name: *data'"
+
+# --- Task 3: agent, networking, provisioning
+check "agent binary is 32-bit ARM" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs' usr/bin/loopi-agent > /tmp/loopi-agent.bin && file /tmp/loopi-agent.bin | grep -q 'ARM, EABI5'"
+# The Pi Zero W is an ARMv6 core (ARM1176JZF-S: no NEON, VFPv2): an ARMv7 object that is not behind
+# a run-time CPU check would SIGILL there. `readelf -A` on the final agent binary cannot be the test:
+# it reports the merged attributes, and ring's seven perlasm objects (<hash>-*-linux32.o: armv4-mont,
+# bsaes/vpaes-armv7, chacha/ghash/sha256/sha512-armv4) declare `.arch armv7-a` for their NEON paths, which
+# ring selects only after getauxval(AT_HWCAP) reports NEON (run under qemu's arm1176 model it passes, a
+# genuine ARMv7 binary gets SIGILL). So the merged tag is always v7. The same guarantee is checked at
+# the objects instead: every other C/asm object built for the agent, and the native libraries the agent
+# links, must be ARMv6 or older.
+cpu_arch_of() { readelf -A "$1" | sed -n 's/^ *Tag_CPU_arch: //p'; }
+is_v6_or_older() { case "$(cpu_arch_of "$1")" in v4*|v5*|v6*) return 0 ;; *) echo "not ARMv6: $1" >&2; return 1 ;; esac; }
+agent_c_objects_are_armv6() {  # needs the Buildroot build tree next to the images dir (Buildroot's O=)
+  local f n=0
+  for f in "$IMAGES"/../build/loopi-agent-*/target/*/release/build/*/out/*.o; do
+    [ -f "$f" ] || continue
+    case "$f" in *-linux32.o) continue ;; esac   # ring perlasm: run-time dispatched, see above
+    is_v6_or_older "$f" || return 1
+    n=$((n + 1))
+  done
+  [ "$n" -gt 0 ]   # a glob that matched nothing must not pass
+}
+agent_native_libs_are_armv6() {  # libopus and libasound as shipped in the rootfs
+  local tmp f n=0 rc=0; tmp="$(mktemp -d)"
+  unsquashfs -n -d "$tmp/root" "$IMAGES/rootfs.squashfs" 'usr/lib/libopus.so*' 'usr/lib/libasound.so*' >/dev/null || rc=1
+  for f in "$tmp"/root/usr/lib/libopus.so.0 "$tmp"/root/usr/lib/libasound.so.2; do
+    [ -f "$f" ] && is_v6_or_older "$f" && n=$((n + 1)) || rc=1
+  done
+  rm -rf "$tmp"; [ "$rc" = 0 ] && [ "$n" = 2 ]
+}
+check "agent C/asm objects are ARMv6 (ring's run-time dispatched perlasm excepted)" agent_c_objects_are_armv6
+check "libopus and libasound shipped for the agent are ARMv6" agent_native_libs_are_armv6
+check "agent service enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-agent.service
+check "provisioning enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-provision.service
+check "wifi enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-wifi.service
+check "agent has a systemd watchdog" rootfs_file_contains etc/systemd/system/loopi-agent.service '^WatchdogSec=30'
+check "recorders die with the agent" rootfs_file_contains etc/systemd/system/loopi-agent.service '^KillMode=control-group'
+check "wlan0 uses DHCP" rootfs_file_contains etc/systemd/network/20-wlan0.network '^DHCP=yes'
+check "usb0 serves DHCP to the dev computer" rootfs_file_contains etc/systemd/network/30-usb0.network '^DHCPServer=yes'
+check "usb0 does not take over the computer's default route" rootfs_file_contains etc/systemd/network/30-usb0.network '^EmitRouter=no'
+check "WiFi firmware present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q brcmfmac43430"
+check "BlueZ present" rootfs_has /usr/bin/bluetoothctl
+check "timesyncd present" rootfs_has /usr/lib/systemd/systemd-timesyncd
+# Added with the controller rulings and the unit paths (not in the brief's list)
+check "libcamera log noise is capped at WARN for the agent (and rpicam-vid it spawns)" rootfs_file_contains etc/systemd/system/loopi-agent.service '^Environment=LIBCAMERA_LOG_LEVELS=\*:WARN$'
+check "usb0 never holds network-online.target" rootfs_file_contains etc/systemd/network/30-usb0.network '^RequiredForOnline=no$'
+# merged /usr and merged bin: the unit says /usr/sbin/wpa_supplicant, which is listed as /usr/bin/wpa_supplicant
+check "wpa_supplicant (loopi-wifi ExecStart) is in the image" rootfs_has /usr/bin/wpa_supplicant
+# Provisioning writes `ctrl_interface=` into the wpa_supplicant config. A wpa_supplicant built without
+# CONFIG_CTRL_IFACE rejects that line as invalid and exits ("Failed to read or parse configuration");
+# "ctrl_interface_group" is a config field name that is only compiled in with the control interface.
+check "wpa_supplicant accepts ctrl_interface= (control interface compiled in)" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs' usr/bin/wpa_supplicant | strings -a | grep -x ctrl_interface_group"
+check "stock D-Bus wpa_supplicant.service is not enabled (loopi-wifi owns wlan0)" rootfs_lacks /etc/systemd/system/multi-user.target.wants/wpa_supplicant.service
+check "run-agent wrapper is executable" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -E '^-rwxr-xr-x .* squashfs-root/usr/libexec/loopi/run-agent\$'"
+check "dev image marker present" rootfs_has /etc/loopi-dev
 
 exit $fail
