@@ -4,6 +4,10 @@ BR2_TOOLCHAIN_BUILDROOT=y
 BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 BR2_KERNEL_HEADERS_6_1=y
+# Patches for upstream packages live in the external tree (os/patches/<package>/*.patch), e.g. libcamera-apps.
+# raspberrypi0w_defconfig already sets BR2_GLOBAL_PATCH_DIR="board/raspberrypi/patches" (the kernel and kernel
+# headers hash files); this line replaces it, so that directory has to stay in the list.
+BR2_GLOBAL_PATCH_DIR="board/raspberrypi/patches $(BR2_EXTERNAL_LOOPI_PATH)/patches"
 # System
 BR2_TARGET_GENERIC_HOSTNAME="loopi"
 BR2_TARGET_GENERIC_ISSUE="Loopi"

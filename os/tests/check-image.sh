@@ -237,4 +237,17 @@ check "KMS overlay shipped" boot_has overlays/vc4-kms-v3d.dtbo
 check "OV5647 overlay shipped" boot_has overlays/ov5647.dtbo
 check "arecord present (dev)" rootfs_has /usr/bin/arecord
 
+# --- Fix C1 (ruling C28): rpicam-apps v1.7.0 replaces Request::controls() with its own ControlList, which upstream
+# libcamera >= 0.7 refuses at queueRequest ("Overwriting Request::controls() is not allowed"), so rpicam-vid aborts with
+# "failed to queue request". os/patches/libcamera-apps/0001-*.patch (BR2_GLOBAL_PATCH_DIR) merges the pending controls
+# into the request's own list instead. The patched source is in the Buildroot O= tree (build/ next to the images dir).
+rpicam_request_controls_are_merged() {
+  local d f; d="$(ls -d "$IMAGES"/../build/libcamera-apps-*/ 2>/dev/null | head -n 1)"; f="$d/core/rpicam_app.cpp"
+  [ -f "$f" ] && [ -s "$d/.applied_patches_list" ] \
+    && grep -Eq '/os/patches/libcamera-apps/0001-[^/]*\.patch$' "$d/.applied_patches_list" \
+    && grep -Eq 'request->controls\(\)\.merge\(controls_, ControlList::MergePolicy::OverwriteExisting\);' "$f" \
+    && ! grep -Eq 'request->controls\(\) *= ' "$f"   # the replacing assignment is gone; an unpatched tree must not pass
+}
+check "rpicam-apps merges its controls into the request's own list (upstream libcamera 0.7 refuses replacing it)" rpicam_request_controls_are_merged
+
 exit $fail

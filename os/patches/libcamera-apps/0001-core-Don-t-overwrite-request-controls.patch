@@ -1,0 +1,46 @@
+From 5bf5f80e7674cefd668e2f55614c65588cea7dd9 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Mon, 2 Feb 2026 11:28:32 +0000
+Subject: [PATCH] core: Don't overwrite request controls
+
+Instead of overwriting the Request::controls() list, merge it with
+the local list as per the 0.7 libcamera API changes.
+
+Since libcamera v0.7.0, Camera::queueRequest() rejects a request whose
+controls().infoMap() is not the camera's own ControlInfoMap. A Request
+is created with such a list, but the assignment
+"request->controls() = std::move(controls_)" replaces it with the
+rpicam-apps ControlList, which is built from the global ControlIdMap and
+has no info map. queueRequest() then logs "Overwriting Request::controls()
+is not allowed", fails with -EINVAL and rpicam-apps aborts with "failed to
+queue request" on the first frame. The Raspberry Pi libcamera fork does
+not make this check, which is why rpicam-apps v1.7.0 still assigns.
+
+Merge the pending controls into the request's own list instead. The
+request list is empty at this point (Request::reuse() clears it), and
+OverwriteExisting keeps the old semantics where the pending controls win.
+controls_ is cleared afterwards, as the moved-from list used to be, so
+that the controls are applied to one request only. The locking around
+control_mutex_ is unchanged.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+
+Upstream: https://github.com/raspberrypi/rpicam-apps/commit/5bf5f80e7674cefd668e2f55614c65588cea7dd9
+---
+ core/rpicam_app.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/core/rpicam_app.cpp b/core/rpicam_app.cpp
+index 9f0f80f..c187dcb 100644
+--- a/core/rpicam_app.cpp
++++ b/core/rpicam_app.cpp
+@@ -895,7 +895,8 @@ void RPiCamApp::queueRequest(CompletedRequest *completed_request)
+ 
+ 	{
+ 		std::lock_guard<std::mutex> lock(control_mutex_);
+-		request->controls() = std::move(controls_);
++		request->controls().merge(controls_, ControlList::MergePolicy::OverwriteExisting);
++		controls_.clear();
+ 	}
+ 
+ 	if (camera_->queueRequest(request) < 0)
