@@ -1,11 +1,14 @@
 //! rustls client configurations: ring provider, TLS 1.3, ChaCha20 first (no AES hardware on ARMv6).
 use std::sync::Arc;
 
+use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{ring as ring_provider, verify_tls12_signature, verify_tls13_signature, CryptoProvider};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
-use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
+use sha2::{Digest, Sha256};
+use crate::config::normalize_fingerprint;
+use rustls::{CertificateError, ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TlsError {
@@ -50,31 +53,74 @@ pub fn mtls_config(ca_pem: &str, cert_pem: &str, key_pem: &str) -> Result<Client
         .with_client_auth_cert(chain, key)?)
 }
 
-/// Pairing only: the device has no CA yet, so it accepts the server certificate and instead
-/// checks the CA it receives against `brain.ca_fingerprint` (trust on first use).
-pub fn pairing_config() -> Result<ClientConfig, TlsError> {
+/// Pairing only: the device has no CA yet. Without `ca_fingerprint` this is plain trust on first
+/// use (any chain, handshake signatures still verified). With it, the handshake itself fails
+/// unless the server presents a certificate with that SHA-256 and the leaf chains to it, so the
+/// pairing token and CSR are never sent to an impostor.
+pub fn pairing_config(ca_fingerprint: Option<&str>) -> Result<ClientConfig, TlsError> {
+    let fingerprint = match ca_fingerprint {
+        Some(raw) => Some(normalize_fingerprint(raw).ok_or_else(|| TlsError::Pem("invalid ca_fingerprint".into()))?),
+        None => None,
+    };
     let provider = Arc::new(provider());
     Ok(ClientConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert { provider }))
+        .with_custom_certificate_verifier(Arc::new(PairingVerifier { provider, fingerprint }))
         .with_no_client_auth())
 }
 
 #[derive(Debug)]
-struct AcceptAnyServerCert {
+struct PairingVerifier {
     provider: Arc<CryptoProvider>,
+    /// Normalized (lowercase hex) SHA-256 of the pinned CA certificate DER.
+    fingerprint: Option<String>,
 }
 
-impl ServerCertVerifier for AcceptAnyServerCert {
+impl PairingVerifier {
+    /// Chain validation against the pinned CA only. The name is not checked: the brain is
+    /// reached by LAN address and its certificate is authenticated by the pin, not by DNS.
+    fn verify_pinned(
+        &self,
+        pin: &str,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        now: UnixTime,
+    ) -> Result<(), rustls::Error> {
+        let ca = std::iter::once(end_entity)
+            .chain(intermediates)
+            .find(|cert| hex::encode(Sha256::digest(cert.as_ref())) == pin)
+            .ok_or_else(|| rustls::Error::General("server did not present the pinned CA certificate".into()))?;
+        let mut roots = RootCertStore::empty();
+        roots.add(ca.clone().into_owned())?;
+        let inner = WebPkiServerVerifier::builder_with_provider(Arc::new(roots), self.provider.clone())
+            .build()
+            .map_err(|e| rustls::Error::General(e.to_string()))?;
+        // Any valid name works: webpki validates the chain before the name, and a name mismatch
+        // (the only error tolerated below) therefore implies the chain was good.
+        let name = ServerName::try_from("loopi.invalid").expect("static name");
+        match inner.verify_server_cert(end_entity, intermediates, &name, &[], now) {
+            Ok(_) => Ok(()),
+            Err(rustls::Error::InvalidCertificate(
+                CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. },
+            )) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl ServerCertVerifier for PairingVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
-        _now: UnixTime,
+        now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
+        if let Some(pin) = &self.fingerprint {
+            self.verify_pinned(pin, end_entity, intermediates, now)?;
+        }
         Ok(ServerCertVerified::assertion())
     }
 
@@ -142,6 +188,95 @@ pub(crate) mod tests {
 
     #[test]
     fn pairing_config_builds() {
-        assert!(pairing_config().is_ok());
+        assert!(pairing_config(None).is_ok());
+        assert!(pairing_config(Some(&"ab".repeat(32))).is_ok());
+        assert!(pairing_config(Some("nope")).is_err());
+    }
+
+    /// One-shot TLS server on 127.0.0.1 serving `chain_pems` (leaf first). Returns the port and a
+    /// handle yielding whether any application bytes (an HTTP request) reached the server.
+    fn tls_server(chain_pems: &str, key_pem: &str) -> (u16, std::thread::JoinHandle<bool>) {
+        use std::io::{Read, Write};
+        let chain: Vec<CertificateDer<'static>> =
+            CertificateDer::pem_slice_iter(chain_pems.as_bytes()).collect::<Result<_, _>>().unwrap();
+        let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).unwrap();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(provider()))
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let mut conn = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+            let mut stream = rustls::Stream::new(&mut conn, &mut tcp);
+            let mut buf = [0u8; 4096];
+            match stream.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    let _ = stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                    let _ = stream.flush();
+                    true
+                }
+                _ => false,
+            }
+        });
+        (port, handle)
+    }
+
+    async fn post(config: ClientConfig, port: u16) -> Result<u16, String> {
+        let client = crate::transport::build_client(config).map_err(|e| e.to_string())?;
+        let response = client.post(format!("https://127.0.0.1:{port}/v1/pair")).body("secret-token").send().await;
+        response.map(|r| r.status().as_u16()).map_err(|e| e.to_string())
+    }
+
+    fn fingerprint(ca_pem: &str) -> String {
+        crate::pairing::sha256_of_first_cert(ca_pem).unwrap()
+    }
+
+    #[tokio::test]
+    async fn pinned_ca_in_presented_chain_is_accepted() {
+        let (ca, leaf, key) = test_pki();
+        let (port, server) = tls_server(&format!("{leaf}{ca}"), &key);
+        let status = post(pairing_config(Some(&fingerprint(&ca).to_uppercase())).unwrap(), port).await;
+        assert_eq!(status, Ok(201));
+        assert!(server.join().unwrap());
+    }
+
+    #[tokio::test]
+    async fn wrong_fingerprint_fails_before_any_request_bytes() {
+        let (ca, leaf, key) = test_pki();
+        let (port, server) = tls_server(&format!("{leaf}{ca}"), &key);
+        let status = post(pairing_config(Some(&"cd".repeat(32))).unwrap(), port).await;
+        assert!(status.is_err(), "{status:?}");
+        assert!(!server.join().unwrap(), "server must not observe a request");
+    }
+
+    #[tokio::test]
+    async fn leaf_not_issued_by_pinned_ca_is_rejected() {
+        let (_, leaf, key) = test_pki();
+        let (other_ca, _, _) = test_pki();
+        let (port, server) = tls_server(&format!("{leaf}{other_ca}"), &key);
+        let status = post(pairing_config(Some(&fingerprint(&other_ca))).unwrap(), port).await;
+        assert!(status.is_err(), "{status:?}");
+        assert!(!server.join().unwrap());
+    }
+
+    #[tokio::test]
+    async fn missing_ca_in_chain_is_rejected_when_pinned() {
+        let (ca, leaf, key) = test_pki();
+        let (port, server) = tls_server(&leaf, &key);
+        let status = post(pairing_config(Some(&fingerprint(&ca))).unwrap(), port).await;
+        assert!(status.is_err(), "{status:?}");
+        assert!(!server.join().unwrap());
+    }
+
+    #[tokio::test]
+    async fn without_fingerprint_any_server_is_accepted_tofu() {
+        let (ca, leaf, key) = test_pki();
+        let (port, server) = tls_server(&format!("{leaf}{ca}"), &key);
+        assert_eq!(post(pairing_config(None).unwrap(), port).await, Ok(201));
+        assert!(server.join().unwrap());
     }
 }

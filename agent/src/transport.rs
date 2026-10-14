@@ -302,6 +302,6 @@ mod tests {
 
     #[test]
     fn production_client_builds() {
-        assert!(build_client(crate::tls::pairing_config().unwrap()).is_ok());
+        assert!(build_client(crate::tls::pairing_config(None).unwrap()).is_ok());
     }
 }
