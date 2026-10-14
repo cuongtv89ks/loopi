@@ -20,3 +20,4 @@ pub mod uploader;
 pub mod heartbeat;
 pub mod sysinfo;
 pub mod recorder;
+pub mod run;
