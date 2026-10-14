@@ -126,7 +126,17 @@ pub async fn run_uploader(
         if *shutdown.borrow() {
             return;
         }
-        let delay = match upload_once(&queue, transport.as_ref(), &mut breaker).await {
+        // A PUT is idempotent, so a slow upload is simply abandoned on shutdown.
+        let step = tokio::select! {
+            step = upload_once(&queue, transport.as_ref(), &mut breaker) => step,
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+                continue;
+            }
+        };
+        let delay = match step {
             Ok(UploadStep::Uploaded(_)) => {
                 failures = 0;
                 if let Some(old) = reported.take() {
@@ -392,6 +402,35 @@ mod tests {
         assert_eq!(status.borrow().last_error, None);
         stop_tx.send(true).unwrap();
         task.await.unwrap();
+    }
+
+    struct HangingTransport;
+
+    #[async_trait::async_trait]
+    impl Transport for HangingTransport {
+        async fn put_item(&self, _meta: &ItemMeta, _data: &std::path::Path) -> Result<PutOutcome, TransportError> {
+            std::future::pending().await
+        }
+
+        async fn heartbeat(
+            &self,
+            _request: &crate::wire::HeartbeatRequest,
+        ) -> Result<Vec<crate::wire::RemoteCommand>, TransportError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_abandons_an_upload_in_flight() {
+        let (_t, queue) = queue_with(1);
+        let queue = Arc::new(queue);
+        let status = status_channel(AgentStatus::default());
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let task = tokio::spawn(run_uploader(queue.clone(), Arc::new(HangingTransport), status, stop_rx, Duration::from_millis(10)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        stop_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task).await.expect("the upload is raced against shutdown").unwrap();
+        assert_eq!(queue.len().unwrap(), 1, "the item stays queued for the next start");
     }
 
     // Real time on a multi-thread runtime: if the fix regresses and the loop never yields, the

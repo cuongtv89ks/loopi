@@ -11,7 +11,47 @@ use crate::item::{ItemKind, ItemMeta};
 use crate::wire::{HeartbeatRequest, HeartbeatResponse, PairRequest, PairResponse, RemoteCommand, AGENT_VERSION};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Client default, used by requests without their own timeout (pairing).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// A hung heartbeat would delay remote commands such as Pause, so it gives up quickly.
+pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Every upload gets at least this long...
+pub const UPLOAD_TIMEOUT_FLOOR: Duration = Duration::from_secs(120);
+/// ...and as long as its body takes at this rate, so a large item on a slow link can finish.
+pub const UPLOAD_MIN_BYTES_PER_SEC: u64 = 64 * 1024;
+/// Dead connections (WiFi dropped mid-request) are noticed by keepalive probes, and pooled
+/// connections are not reused after they may have been silently dropped by the AP or a NAT.
+const TCP_KEEPALIVE: Duration = Duration::from_secs(15);
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Read size for streamed upload bodies (the default 4 KiB costs many syscalls on a Pi Zero).
+const UPLOAD_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Per-request time limits; overridable for tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timeouts {
+    pub heartbeat: Duration,
+    pub upload_floor: Duration,
+    pub upload_min_bytes_per_sec: u64,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self {
+            heartbeat: HEARTBEAT_TIMEOUT,
+            upload_floor: UPLOAD_TIMEOUT_FLOOR,
+            upload_min_bytes_per_sec: UPLOAD_MIN_BYTES_PER_SEC,
+        }
+    }
+}
+
+impl Timeouts {
+    /// `max(upload_floor, size / upload_min_bytes_per_sec)`.
+    pub fn upload(&self, size: u64) -> Duration {
+        let millis = size.saturating_mul(1000).div_ceil(self.upload_min_bytes_per_sec.max(1));
+        let at_min_rate = Duration::from_millis(millis);
+        at_min_rate.max(self.upload_floor)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PutOutcome {
@@ -68,12 +108,16 @@ fn decode(e: reqwest::Error) -> TransportError {
 }
 
 /// Shared by production and tests. Redirects are never followed: a 303 would turn a PUT into a
-/// GET whose 200 looks like "duplicate" and the uploader would delete unsent data.
+/// GET whose 200 looks like "duplicate" and the uploader would delete unsent data. No proxy: the
+/// brain is on the LAN and an environment proxy would only break mTLS.
 fn base_builder() -> reqwest::ClientBuilder {
     Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
+        .tcp_keepalive(TCP_KEEPALIVE)
+        .pool_idle_timeout(POOL_IDLE_TIMEOUT)
 }
 
 /// Production client: https only (wiremock tests use plain http, so they build from `base_builder`).
@@ -101,11 +145,17 @@ pub fn map_put_status(status: u16) -> Result<PutOutcome, TransportError> {
 pub struct HttpTransport {
     client: Client,
     base_url: String,
+    timeouts: Timeouts,
 }
 
 impl HttpTransport {
     pub fn new(client: Client, base_url: &str) -> Self {
-        Self { client, base_url: base_url.trim_end_matches('/').to_string() }
+        Self { client, base_url: base_url.trim_end_matches('/').to_string(), timeouts: Timeouts::default() }
+    }
+
+    #[must_use]
+    pub fn with_timeouts(self, timeouts: Timeouts) -> Self {
+        Self { timeouts, ..self }
     }
 }
 
@@ -124,7 +174,8 @@ impl Transport for HttpTransport {
             .header("X-Loopi-Agent-Version", AGENT_VERSION)
             .header(header::CONTENT_TYPE, meta.kind.content_type())
             .header(header::CONTENT_LENGTH, size)
-            .body(reqwest::Body::wrap_stream(ReaderStream::new(file)));
+            .timeout(self.timeouts.upload(size))
+            .body(reqwest::Body::wrap_stream(ReaderStream::with_capacity(file, UPLOAD_CHUNK_BYTES)));
         if let (ItemKind::Video, Some(fps)) = (meta.kind, meta.video_fps) {
             request = request.header("X-Loopi-Video-Fps", fps);
         }
@@ -137,6 +188,7 @@ impl Transport for HttpTransport {
             .client
             .post(format!("{}/v1/heartbeat", self.base_url))
             .header("X-Loopi-Agent-Version", AGENT_VERSION)
+            .timeout(self.timeouts.heartbeat)
             .json(request)
             .send()
             .await
@@ -299,6 +351,55 @@ mod tests {
         let Err(TransportError::Network(message)) = transport.put_item(&meta, &data).await else { panic!("expected network error") };
         assert!(message.contains(": "), "{message}");
         assert!(message.to_lowercase().contains("refused") || message.contains("os error"), "{message}");
+    }
+
+    #[test]
+    fn upload_timeout_grows_with_size_above_the_floor() {
+        let t = Timeouts::default();
+        assert_eq!(t.upload(0), Duration::from_secs(120));
+        assert_eq!(t.upload(64 * 1024 * 120), Duration::from_secs(120));
+        assert_eq!(t.upload(64 * 1024 * 121), Duration::from_secs(121));
+        assert_eq!(t.upload(crate::config::MAX_ITEM_BYTES), Duration::from_secs(1024), "64 MiB at 64 KiB/s");
+        assert_eq!(t.heartbeat, Duration::from_secs(10));
+        let zero_rate = Timeouts { upload_min_bytes_per_sec: 0, ..t };
+        assert_eq!(zero_rate.upload(10), Duration::from_secs(120), "no division by zero");
+    }
+
+    fn short(heartbeat_ms: u64, upload_floor_ms: u64, rate: u64) -> Timeouts {
+        Timeouts {
+            heartbeat: Duration::from_millis(heartbeat_ms),
+            upload_floor: Duration::from_millis(upload_floor_ms),
+            upload_min_bytes_per_sec: rate,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hanging_heartbeat_gives_up_after_its_timeout() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"commands": []})).set_delay(Duration::from_millis(1500)))
+            .mount(&server)
+            .await;
+        let transport = HttpTransport::new(base_builder().build().unwrap(), &server.uri()).with_timeouts(short(200, 60_000, 1));
+        let started = std::time::Instant::now();
+        let result = transport.heartbeat(&crate::wire::tests::sample_heartbeat()).await;
+        assert!(matches!(&result, Err(TransportError::Network(m)) if m.contains("timed out")), "{result:?}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn upload_timeout_follows_the_item_size() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT")).respond_with(ResponseTemplate::new(201).set_delay(Duration::from_millis(400))).mount(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (meta, data) = video_item(dir.path());
+        let client = base_builder().build().unwrap();
+        // 6 bytes at 1 B/s: 6 s allowed, so the slow brain answers in time.
+        let patient = HttpTransport::new(client.clone(), &server.uri()).with_timeouts(short(60_000, 100, 1));
+        assert_eq!(patient.put_item(&meta, &data).await.unwrap(), PutOutcome::Created);
+        // A fast minimum rate leaves only the 100 ms floor.
+        let hasty = HttpTransport::new(client, &server.uri()).with_timeouts(short(60_000, 100, u64::MAX));
+        assert!(matches!(hasty.put_item(&meta, &data).await, Err(TransportError::Network(_))));
     }
 
     #[test]
