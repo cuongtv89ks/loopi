@@ -3,6 +3,10 @@ start_file=start.elf
 fixup_file=fixup.dat
 kernel=zImage
 disable_overscan=1
+# Base device-tree parameters go before the first dtoverlay= line: a dtparam= after one is looked up in that overlay first.
+# A GPIO returns to an input when its owner releases it, also when the agent is killed. The Raspberry Pi kernel otherwise
+# keeps a freed output at its last level (pinctrl_bcm2835.persist_gpio_outputs), so an external LED would stay lit.
+dtparam=strict_gpiod
 # Camera: auto-detect the kit sensor (OV5647 / IMX219 / IMX708)
 camera_auto_detect=1
 dtoverlay=vc4-kms-v3d

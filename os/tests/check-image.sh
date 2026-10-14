@@ -15,6 +15,22 @@ rootfs_cat() { unsquashfs -cat "$IMAGES/rootfs.squashfs" "$1"; }
 rootfs_file_contains() { rootfs_cat "$1" | grep -E "$2"; }
 rootfs_lacks() { local list; list="$(unsquashfs -l "$IMAGES/rootfs.squashfs")" || return 1; ! grep -E "^squashfs-root$1\$" <<<"$list"; }
 boot_has() { mdir -i "$IMAGES/boot.vfat" "::$1"; }
+boot_cat() { mtype -i "$IMAGES/boot.vfat" "::$1"; }
+# base_dtparam <param>: config.txt in the boot partition sets dtparam=<param> before its first dtoverlay= line (a dtparam=
+# after an overlay is looked up in that overlay first, so a base DT parameter belongs above them)
+base_dtparam() {
+  local cfg; cfg="$(boot_cat config.txt)" || return 1
+  awk -v want="dtparam=$1" '/^dtoverlay=/ { exit } $0 == want { found = 1 } END { exit !found }' <<<"$cfg"
+}
+# dtb_override <name> <ERE>: the Zero W DTB in the boot partition defines dtparam <name>; its decompiled __overrides__
+# entry matches "<name> = <ERE>;". A parameter the DTB does not define is ignored by the firmware without a word.
+dtb_override() {
+  local tmp rc=1; tmp="$(mktemp -d)" || return 1
+  if mcopy -n -i "$IMAGES/boot.vfat" ::bcm2708-rpi-zero-w.dtb "$tmp/zero-w.dtb"; then
+    "$IMAGES/../host/bin/dtc" -q -I dtb -O dts "$tmp/zero-w.dtb" | grep -E "^[[:space:]]*$1 = $2;\$" && rc=0
+  fi
+  rm -rf "$tmp"; return $rc
+}
 part_count() { [ "$(sfdisk -d "$IMAGES/sdcard.img" | grep -c '^/')" = "$1" ]; }
 # sfdisk pads one-digit types (" c"), so compare without whitespace
 part_type() { [ "$(sfdisk --part-type "$IMAGES/sdcard.img" "$1" | tr -d '[:space:]')" = "$2" ]; }
@@ -357,5 +373,13 @@ usbmode_boot_window() {
   rm -rf "$tmp"; return $rc
 }
 check "loopi-usbmode opens its mount point read-write only for the edit, closes it also on error, never mounts off /boot" usbmode_boot_window
+
+# --- Final fix C-1: the Raspberry Pi kernel keeps a released GPIO's output level (pinctrl-bcm2835 persist_gpio_outputs;
+# dmesg "GPIO_OUT persistence: yes"), so an LED on a GPIO stayed lit after the agent was killed (SIGKILL, abort, watchdog).
+# dtparam=strict_gpiod (bcm270x-rpi.dtsi) appends pinctrl_bcm2835.persist_gpio_outputs=n to the kernel command line.
+strict_gpiod_enabled() {
+  base_dtparam strict_gpiod && dtb_override strict_gpiod '.*bootargs=pinctrl_bcm2835\.persist_gpio_outputs=n"'
+}
+check "released GPIOs return to inputs (dtparam=strict_gpiod before any overlay; the shipped DTB defines it)" strict_gpiod_enabled
 
 exit $fail
