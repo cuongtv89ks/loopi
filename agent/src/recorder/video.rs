@@ -56,12 +56,13 @@ impl VideoOptions {
 }
 
 /// `--inline` repeats SPS/PPS so every segment decodes on its own; `--intra` keeps I-frames
-/// frequent enough that `--segment` can cut close to the requested length. `--verbose 0` keeps
-/// rpicam-vid's routine stderr output out of the device's small volatile journal (rpicam-apps
-/// still prints errors at that level).
+/// frequent enough that `--segment` can cut close to the requested length. `--verbose 1`: at 0
+/// rpicam-apps (options.cpp) sets libcamera's log target to none, which hides libcamera's ERROR
+/// lines from the journal; rpicam-vid's per-frame lines only start at 2, and libcamera's own output
+/// is capped at WARN by the unit's LIBCAMERA_LOG_LEVELS.
 pub fn rpicam_args(opts: &VideoOptions, run_dir: &Path) -> Vec<String> {
     let mut args: Vec<String> =
-        ["-t", "0", "-n", "--codec", "h264", "--inline", "--verbose", "0"].iter().map(|s| s.to_string()).collect();
+        ["-t", "0", "-n", "--codec", "h264", "--inline", "--verbose", "1"].iter().map(|s| s.to_string()).collect();
     args.extend([
         "--intra".to_string(),
         (opts.fps * INTRA_SECONDS).to_string(),
@@ -478,7 +479,9 @@ mod tests {
     fn args_request_segmented_inline_h264() {
         let args = rpicam_args(&opts(Path::new("/tmp"), "rpicam-vid".into()), Path::new("/data/run"));
         let joined = args.join(" ");
-        assert!(joined.starts_with("-t 0 -n --codec h264 --inline --verbose 0"));
+        // Verbose 1: at 0 rpicam-apps sets libcamera's log target to none and its ERROR lines never reach the journal.
+        assert!(joined.starts_with("-t 0 -n --codec h264 --inline --verbose 1 "), "{joined}");
+        assert_eq!(args.iter().filter(|a| *a == "--verbose").count(), 1);
         assert!(joined.contains("--intra 10 --framerate 2 --width 640 --height 480 --bitrate 500000"));
         assert!(joined.contains("--segment 60000"));
         assert_eq!(args.last().unwrap(), "/data/run/v_%06d.h264");
