@@ -22,15 +22,15 @@ base_dtparam() {
   local cfg; cfg="$(boot_cat config.txt)" || return 1
   awk -v want="dtparam=$1" '/^dtoverlay=/ { exit } $0 == want { found = 1 } END { exit !found }' <<<"$cfg"
 }
-# dtb_override <name> <ERE>: the Zero W DTB in the boot partition defines dtparam <name>; its decompiled __overrides__
-# entry matches "<name> = <ERE>;". A parameter the DTB does not define is ignored by the firmware without a word.
-dtb_override() {
+dtb_dts() {  # the Zero W DTB in the boot partition, decompiled
   local tmp rc=1; tmp="$(mktemp -d)" || return 1
-  if mcopy -n -i "$IMAGES/boot.vfat" ::bcm2708-rpi-zero-w.dtb "$tmp/zero-w.dtb"; then
-    "$IMAGES/../host/bin/dtc" -q -I dtb -O dts "$tmp/zero-w.dtb" | grep -E "^[[:space:]]*$1 = $2;\$" && rc=0
-  fi
+  mcopy -n -i "$IMAGES/boot.vfat" ::bcm2708-rpi-zero-w.dtb "$tmp/zero-w.dtb" \
+    && "$IMAGES/../host/bin/dtc" -q -I dtb -O dts "$tmp/zero-w.dtb" && rc=0
   rm -rf "$tmp"; return $rc
 }
+# dtb_override <name> <ERE>: the shipped DTB defines dtparam <name>; its decompiled __overrides__ entry matches
+# "<name> = <ERE>;". A parameter the DTB does not define is ignored by the firmware without a word.
+dtb_override() { local dts; dts="$(dtb_dts)" || return 1; grep -E "^[[:space:]]*$1 = $2;\$" <<<"$dts"; }
 part_count() { [ "$(sfdisk -d "$IMAGES/sdcard.img" | grep -c '^/')" = "$1" ]; }
 # sfdisk pads one-digit types (" c"), so compare without whitespace
 part_type() { [ "$(sfdisk --part-type "$IMAGES/sdcard.img" "$1" | tr -d '[:space:]')" = "$2" ]; }
@@ -381,5 +381,33 @@ strict_gpiod_enabled() {
   base_dtparam strict_gpiod && dtb_override strict_gpiod '.*bootargs=pinctrl_bcm2835\.persist_gpio_outputs=n"'
 }
 check "released GPIOs return to inputs (dtparam=strict_gpiod before any overlay; the shipped DTB defines it)" strict_gpiod_enabled
+
+# --- Final fix D18: the green ACT LED is the privacy LED. Only the agent drives it: act_led_trigger=none (a base parameter
+# of the Zero W DTB) removes the kernel's default trigger, actpwr. The agent's default LED is /sys/class/leds/ACT, the label
+# of the DTB's led-act node. A LED class device keeps its brightness when its writer dies, so the agent unit switches it
+# off after every exit (ExecStopPost runs once the control group, recorders included, is gone) with the shipped binary.
+act_led_has_no_kernel_trigger() {
+  base_dtparam act_led_trigger=none && dtb_override act_led_trigger '.*linux,default-trigger"'
+}
+act_led_is_labelled_ACT() {
+  local dts; dts="$(dtb_dts)" || return 1
+  awk '/^[[:space:]]*led-act \{$/ { inside = 1; next }
+       inside && /^[[:space:]]*\};$/ { inside = 0 }
+       inside && /^[[:space:]]*label = "ACT";$/ { found = 1 }
+       END { exit !found }' <<<"$dts"
+}
+agent_unit_switches_the_led_off_after_any_exit() {
+  local keys; keys="$(unit_keys etc/systemd/system/loopi-agent.service)" || return 1
+  grep -Fx '[Service] ExecStopPost=-/usr/bin/loopi-agent led-off' <<<"$keys" \
+    && grep -Fx '[Service] KillMode=control-group' <<<"$keys"
+}
+agent_binary_knows_led_off_and_the_act_led() {
+  local text; text="$(rootfs_cat usr/bin/loopi-agent | strings -a)" || return 1
+  grep -F 'selftest | led-off' <<<"$text" && grep -F '/sys/class/leds/ACT' <<<"$text"
+}
+check "no kernel trigger drives the ACT LED (dtparam=act_led_trigger=none before any overlay; the DTB defines it)" act_led_has_no_kernel_trigger
+check "the DTB names the ACT LED \"ACT\" (the agent's default /sys/class/leds/ACT)" act_led_is_labelled_ACT
+check "the agent unit switches the privacy LED off after any agent exit (ExecStopPost=-/usr/bin/loopi-agent led-off)" agent_unit_switches_the_led_off_after_any_exit
+check "the shipped agent has the led-off command and defaults to /sys/class/leds/ACT" agent_binary_knows_led_off_and_the_act_led
 
 exit $fail

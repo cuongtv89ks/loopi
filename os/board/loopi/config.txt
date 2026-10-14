@@ -7,6 +7,9 @@ disable_overscan=1
 # A GPIO returns to an input when its owner releases it, also when the agent is killed. The Raspberry Pi kernel otherwise
 # keeps a freed output at its last level (pinctrl_bcm2835.persist_gpio_outputs), so an external LED would stay lit.
 dtparam=strict_gpiod
+# The green ACT LED is the privacy LED (spec D18), driven only by the agent: no kernel trigger after boot (the default,
+# actpwr, would flash it with SD card activity). Its active-low wiring stays as the device tree defines it.
+dtparam=act_led_trigger=none
 # Camera: auto-detect the kit sensor (OV5647 / IMX219 / IMX708)
 camera_auto_detect=1
 dtoverlay=vc4-kms-v3d

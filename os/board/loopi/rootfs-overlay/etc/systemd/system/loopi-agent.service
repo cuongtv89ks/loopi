@@ -8,6 +8,11 @@ RequiresMountsFor=/data
 Type=notify
 NotifyAccess=main
 ExecStart=/usr/libexec/loopi/run-agent
+# The privacy LED (the ACT LED by default, spec D18) is a LED class device and keeps its level when the agent dies. This
+# runs after every exit of the agent, also SIGKILL or a watchdog abort, once the whole control group (recorders
+# included) is gone, and switches the configured LED off. It is the packaged binary also when run-agent starts a
+# deployed dev build. "-": a failure here never fails the unit.
+ExecStopPost=-/usr/bin/loopi-agent led-off
 Restart=always
 RestartSec=2
 WatchdogSec=30
