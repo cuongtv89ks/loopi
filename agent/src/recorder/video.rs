@@ -13,7 +13,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::clock::Clock;
-use crate::config::CaptureConfig;
+use crate::config::{CaptureConfig, CONTRACT_MAX_SEGMENT_SECONDS};
 use crate::item::{ItemKind, ItemMeta};
 use crate::queue::Queue;
 use crate::status::StatusTx;
@@ -81,11 +81,10 @@ pub fn rpicam_args(opts: &VideoOptions, run_dir: &Path) -> Vec<String> {
 /// A segment starts where the previous one ended. If the wall clock jumped backwards, fall back
 /// to `ended - segment` so `ended_at` is never before `started_at`.
 pub fn segment_start(previous_end: DateTime<Utc>, ended: DateTime<Utc>, segment: chrono::Duration) -> DateTime<Utc> {
-    if ended > previous_end {
-        previous_end
-    } else {
-        ended - segment
-    }
+    let start = if ended > previous_end { previous_end } else { ended - segment };
+    // The brain rejects items longer than the contract maximum (a forward clock jump or a camera
+    // stall can open a long gap), so never let End - Start exceed it.
+    start.max(ended - chrono::Duration::seconds(CONTRACT_MAX_SEGMENT_SECONDS.into()))
 }
 
 fn list_segments(dir: &Path) -> io::Result<Vec<PathBuf>> {
@@ -270,7 +269,11 @@ async fn record_once(
                 break RunEnd::Exited { ran_for: started.elapsed(), code: exit.ok().and_then(|s| s.code()) };
             }
             changed = gate.changed() => {
-                if changed.is_err() || !*gate.borrow() {
+                if changed.is_err() {
+                    stop_child(&mut child, opts.stop_grace).await;
+                    break RunEnd::Shutdown;
+                }
+                if !*gate.borrow() {
                     stop_child(&mut child, opts.stop_grace).await;
                     break RunEnd::GateClosed;
                 }
@@ -293,7 +296,7 @@ async fn record_once(
 /// Wait until recording is allowed; false means the agent is shutting down.
 async fn wait_for_gate(gate: &mut watch::Receiver<bool>, shutdown: &mut watch::Receiver<bool>) -> bool {
     loop {
-        if *shutdown.borrow_and_update() || shutdown.has_changed().is_err() {
+        if *shutdown.borrow_and_update() || shutdown.has_changed().is_err() || gate.has_changed().is_err() {
             return false;
         }
         if *gate.borrow_and_update() {
@@ -590,7 +593,7 @@ mod tests {
 
         drop(stop_tx);
         let finished = tokio::time::timeout(Duration::from_secs(5), task).await;
-        assert!(finished.is_ok(), "run_video must return when the shutdown sender is dropped");
+        assert!(matches!(finished, Ok(Ok(()))), "run_video must return when the shutdown sender is dropped");
         assert!(!status.borrow().recording_video);
         assert_eq!(files_under(&incoming), 0);
     }
@@ -606,7 +609,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         drop(stop_tx);
-        assert!(tokio::time::timeout(Duration::from_secs(5), task).await.is_ok());
+        assert!(matches!(tokio::time::timeout(Duration::from_secs(5), task).await, Ok(Ok(()))));
     }
 
     #[test]
@@ -614,5 +617,40 @@ mod tests {
         let cap = Duration::from_secs(60);
         let steps: Vec<u64> = (0..9).map(|n| camera_backoff(n, cap).as_secs()).collect();
         assert_eq!(steps, vec![1, 2, 4, 8, 16, 32, 60, 60, 60]);
+    }
+
+    #[test]
+    fn segment_start_is_clamped_to_contract_maximum() {
+        let segment = chrono::Duration::seconds(60);
+        let previous_end = Utc.with_ymd_and_hms(2026, 10, 14, 1, 0, 0).unwrap();
+        let ended = previous_end + chrono::Duration::seconds(7200);
+        let start = segment_start(previous_end, ended, segment);
+        assert_eq!(start, ended - chrono::Duration::seconds(3600));
+        assert!(start <= ended);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_gate_sender_while_recording_returns_without_respawning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let status = status_channel(AgentStatus::default());
+        let (gate_tx, gate_rx) = watch::channel(true);
+        let (_stop_tx, stop_rx) = watch::channel(false);
+        let spawns = tmp.path().join("spawns");
+        let script = format!("#!/bin/sh\necho x >> '{}'\ntrap 'exit 0' INT TERM\nwhile :; do sleep 0.1; done\n", spawns.display());
+        let camera = executable(tmp.path(), "counting-camera.sh", script.as_bytes());
+        let options = opts(tmp.path(), camera);
+        let incoming = options.incoming_dir.clone();
+        let task = tokio::spawn(run_video(options, Arc::new(queue), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
+        assert!(eventually(|| spawns.exists()).await);
+
+        drop(gate_tx);
+        let finished = tokio::time::timeout(Duration::from_secs(5), task).await;
+        assert!(matches!(finished, Ok(Ok(()))), "run_video must return when the gate sender is dropped");
+        let count = fs::read_to_string(&spawns).unwrap().lines().count();
+        assert_eq!(count, 1, "camera spawned once, not in a respawn loop");
+        assert!(!status.borrow().recording_video);
+        assert_eq!(files_under(&incoming), 0);
+        assert!(!incoming.exists() || fs::read_dir(&incoming).unwrap().next().is_none(), "no stray run dirs");
     }
 }
