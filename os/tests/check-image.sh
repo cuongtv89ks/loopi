@@ -410,4 +410,21 @@ check "the DTB names the ACT LED \"ACT\" (the agent's default /sys/class/leds/AC
 check "the agent unit switches the privacy LED off after any agent exit (ExecStopPost=-/usr/bin/loopi-agent led-off)" agent_unit_switches_the_led_off_after_any_exit
 check "the shipped agent has the led-off command and defaults to /sys/class/leds/ACT" agent_binary_knows_led_off_and_the_act_led
 
+# --- Final fix I-2: loopi-wifi.service BindsTo= wlan0, so a brcmfmac reset or module reload (wlan0 removed and created
+# again) stops it, and being wanted only by multi-user.target nothing started it again. The wlan0 device now wants it.
+wifi_follows_wlan0() {
+  local keys; keys="$(unit_keys etc/systemd/system/loopi-wifi.service)" || return 1
+  grep -Fx '[Unit] BindsTo=sys-subsystem-net-devices-wlan0.device' <<<"$keys" \
+    && grep -Ex '\[Install\] WantedBy=(.* )?sys-subsystem-net-devices-wlan0\.device( .*)?' <<<"$keys" \
+    && unsquashfs -ll "$IMAGES/rootfs.squashfs" | grep -E \
+      ' squashfs-root/etc/systemd/system/sys-subsystem-net-devices-wlan0\.device\.wants/loopi-wifi\.service -> (\.\./|/etc/systemd/system/)loopi-wifi\.service$'
+}
+check "WiFi starts again when wlan0 reappears (wanted by the wlan0 device, link in its .wants)" wifi_follows_wlan0
+# M-7: the machine ID is new at every boot (read-only root), and so is the default DUID-based DHCP client identifier.
+wlan0_dhcp_identity_is_the_mac() {
+  local keys; keys="$(unit_keys etc/systemd/network/20-wlan0.network)" || return 1
+  grep -Fx '[DHCPv4] ClientIdentifier=mac' <<<"$keys"
+}
+check "wlan0 asks DHCP with its MAC as client identifier (same IP across power cuts)" wlan0_dhcp_identity_is_the_mac
+
 exit $fail

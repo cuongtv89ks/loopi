@@ -21,6 +21,11 @@ mkdir -p "${TARGET_DIR}/boot" "${TARGET_DIR}/data"
 
 enable_unit loopi-provision.service
 enable_unit loopi-wifi.service
+# ...and from the wlan0 device too (WantedBy= in its [Install]): after a brcmfmac reset re-creates wlan0, the device's
+# Wants= starts WiFi again; BindsTo= had stopped it when the old wlan0 went away.
+WLAN0_WANTS="${TARGET_DIR}/etc/systemd/system/sys-subsystem-net-devices-wlan0.device.wants"
+mkdir -p "$WLAN0_WANTS"
+ln -sf ../loopi-wifi.service "$WLAN0_WANTS/loopi-wifi.service"
 enable_unit loopi-agent.service
 
 # Dev access: the root filesystem is read-only, so SSH host keys and authorized_keys live on /data.

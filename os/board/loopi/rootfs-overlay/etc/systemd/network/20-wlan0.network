@@ -3,3 +3,8 @@ Name=wlan0
 
 [Network]
 DHCP=yes
+
+[DHCPv4]
+# The machine ID, and with it the default DUID-based client identifier, is new at every boot on the read-only root. The
+# MAC address keeps the same lease (and IP) across power cuts.
+ClientIdentifier=mac

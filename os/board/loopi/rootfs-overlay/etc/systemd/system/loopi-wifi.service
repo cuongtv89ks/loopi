@@ -13,4 +13,6 @@ Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+# BindsTo= stops this when wlan0 disappears (a brcmfmac reset or module reload); being wanted by the wlan0 device starts
+# it again when wlan0 is back (the stock wpa_supplicant-nl80211@.service pattern). multi-user.target covers the first start.
+WantedBy=multi-user.target sys-subsystem-net-devices-wlan0.device
