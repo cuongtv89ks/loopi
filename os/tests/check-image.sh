@@ -82,36 +82,87 @@ check "data image is labelled 'data'" bash -c "dumpe2fs -h '$IMAGES/data.ext4' 2
 
 # --- Task 3: agent, networking, provisioning
 check "agent binary is 32-bit ARM" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs' usr/bin/loopi-agent > /tmp/loopi-agent.bin && file /tmp/loopi-agent.bin | grep -q 'ARM, EABI5'"
-# The Pi Zero W is an ARMv6 core (ARM1176JZF-S: no NEON, VFPv2): an ARMv7 object that is not behind
-# a run-time CPU check would SIGILL there. `readelf -A` on the final agent binary cannot be the test:
-# it reports the merged attributes, and ring's seven perlasm objects (<hash>-*-linux32.o: armv4-mont,
-# bsaes/vpaes-armv7, chacha/ghash/sha256/sha512-armv4) declare `.arch armv7-a` for their NEON paths, which
-# ring selects only after getauxval(AT_HWCAP) reports NEON (run under qemu's arm1176 model it passes, a
-# genuine ARMv7 binary gets SIGILL). So the merged tag is always v7. The same guarantee is checked at
-# the objects instead: every other C/asm object built for the agent, and the native libraries the agent
-# links, must be ARMv6 or older.
-cpu_arch_of() { readelf -A "$1" | sed -n 's/^ *Tag_CPU_arch: //p'; }
-is_v6_or_older() { case "$(cpu_arch_of "$1")" in v4*|v5*|v6*) return 0 ;; *) echo "not ARMv6: $1" >&2; return 1 ;; esac; }
-agent_c_objects_are_armv6() {  # needs the Buildroot build tree next to the images dir (Buildroot's O=)
-  local f n=0
-  for f in "$IMAGES"/../build/loopi-agent-*/target/*/release/build/*/out/*.o; do
+# --- ARM1176JZF-S guard. The Pi Zero W core is ARMv6KZ with VFPv2: no Thumb-2, no VFPv3, no NEON. Code that
+# uses them traps (SIGILL) unless it is only reached after a run-time CPU feature check.
+# `readelf -A` on the final agent binary cannot judge that: it shows the merge over all inputs (v7, VFPv3,
+# NEON) and the tag alone says nothing about whether the code is dispatched: ring's perlasm files carry v7
+# partly from a top-of-file `.arch armv7-a` that also covers their baseline code. So every input is checked,
+# and the only objects allowed to carry v7/VFPv3/NEON are on an exact list of run-time dispatched ones.
+#   ring: its NEON paths are entered only after getauxval(AT_HWCAP) reports NEON (neon_available, set in
+#     src/cpu/arm.rs; x25519_NEON in src/ec/curve25519/x25519.rs). The Pi Zero W has no NEON.
+#   libopus: built with OPUS_HAVE_RTCD and NEON never presumed (config.h: OPUS_ARM_MAY_HAVE_NEON(_INTR),
+#     no OPUS_ARM_PRESUME_NEON*); celt/arm/arm_celt_map.c selects the NEON functions from a run-time table.
+# Not proven by the tags but by running them: a ring probe over every one of these routines and the opus
+# codec ran to completion under qemu-user's `-cpu arm1176` model, where a plain ARMv7 program gets SIGILL.
+arm_cpu_ok() { case "$1" in v4|v4T|v5T|v5TE|v5TEJ|v6|v6K|v6KZ) return 0 ;; *) return 1 ;; esac; }  # v6T2 (Thumb-2) is not ARM1176
+arm_fp_ok() { case "$1" in ""|No|VFPv1|VFPv2) return 0 ;; *) return 1 ;; esac; }
+arm_simd_ok() { case "$1" in ""|No) return 0 ;; *) return 1 ;; esac; }
+arm_table() {  # arm_table <file>: "<object>|<cpu arch>|<fp arch>|<simd arch>" per ELF object (archive member) in <file>
+  readelf -A "$1" 2>/dev/null | awk -v base="$(basename "$1")" '
+    function flush() { if (seen) print name "|" arch "|" fp "|" simd }
+    BEGIN { name = base }
+    /^File: / { flush(); name = $0; sub(/^File: /, "", name); n = split(name, parts, "/"); name = parts[n]; arch = fp = simd = ""; seen = 0; next }
+    $1 == "Tag_CPU_arch:" { arch = $2; seen = 1 }
+    $1 == "Tag_FP_arch:" { fp = $2 }
+    $1 == "Tag_Advanced_SIMD_arch:" { simd = $2 }
+    END { flush() }'
+}
+arm_dispatched() {  # <object>: exact allowlist (cc crate prefixes every object with a 16 hex digit path hash)
+  local o="${1##*(}"; o="${o%)}"
+  [[ "$o" =~ ^[0-9a-f]{16}-(.*)$ ]] && o="${BASH_REMATCH[1]}"
+  case "$o" in
+    armv4-mont-linux32.o|bsaes-armv7-linux32.o|chacha-armv4-linux32.o|ghash-armv4-linux32.o|\
+    sha256-armv4-linux32.o|sha512-armv4-linux32.o|vpaes-armv7-linux32.o|x25519-asm-arm.o|poly1305_arm_asm.o) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+arm_seen=0
+arm_scan() {  # arm_scan <file> <strict|dispatch|cpu-only>: every ELF object in the file within ARM1176 limits
+  local obj arch fp simd rc=0
+  while IFS='|' read -r obj arch fp simd; do
+    arm_seen=$((arm_seen + 1))
+    if [ "$2" = cpu-only ]; then arm_cpu_ok "$arch" && continue
+    elif arm_cpu_ok "$arch" && arm_fp_ok "$fp" && arm_simd_ok "$simd"; then continue
+    elif [ "$2" = dispatch ] && arm_dispatched "$obj"; then continue; fi
+    echo "not ARM1176-safe: $1: $obj (arch=$arch fp=${fp:-none} simd=${simd:-none})" >&2; rc=1
+  done < <(arm_table "$1")
+  return $rc
+}
+agent_objects_are_armv6() {  # needs the Buildroot O= tree: build/ and host/ next to the images dir
+  local b="$IMAGES/../build" f rc=0 out=0 rlib=0 std=0
+  arm_seen=0   # C/asm objects the build scripts made (ring), loose and in archives
+  for f in "$b"/loopi-agent-*/target/*/release/build/*/out/*.o "$b"/loopi-agent-*/target/*/release/build/*/out/*.a; do
+    [ -f "$f" ] && { arm_scan "$f" dispatch || rc=1; }
+  done; out=$arm_seen
+  arm_seen=0   # the Rust code: every member of every rlib; ring's rlib bundles its C/asm objects
+  for f in "$b"/loopi-agent-*/target/*/release/deps/*.rlib; do
     [ -f "$f" ] || continue
-    case "$f" in *-linux32.o) continue ;; esac   # ring perlasm: run-time dispatched, see above
-    is_v6_or_older "$f" || return 1
-    n=$((n + 1))
-  done
-  [ "$n" -gt 0 ]   # a glob that matched nothing must not pass
+    case "$(basename "$f")" in libring-*) arm_scan "$f" dispatch || rc=1 ;; *) arm_scan "$f" strict || rc=1 ;; esac
+  done; rlib=$arm_seen
+  arm_seen=0   # the prebuilt Rust standard library linked into the agent
+  for f in "$IMAGES"/../host/lib/rustlib/*/lib/*.rlib; do
+    [ -f "$f" ] && { arm_scan "$f" strict || rc=1; }
+  done; std=$arm_seen
+  [ "$out" -gt 0 ] && [ "$rlib" -gt 0 ] && [ "$std" -gt 0 ] && [ "$rc" = 0 ]   # an empty glob must not pass
+}
+opus_neon_is_run_time_dispatched() {  # the config.h of the opus that was built into the image
+  local c; c="$(ls "$IMAGES"/../build/opus-*/config.h 2>/dev/null | head -n 1)"
+  [ -f "$c" ] && grep -Eq '^#define OPUS_HAVE_RTCD 1' "$c" \
+    && grep -Eq '^#define OPUS_ARM_MAY_HAVE_NEON' "$c" \
+    && ! grep -Eq '^#define OPUS_ARM_PRESUME_(NEON|NEON_INTR|AARCH64_NEON_INTR|DOTPROD)' "$c"
 }
 agent_native_libs_are_armv6() {  # libopus and libasound as shipped in the rootfs
-  local tmp f n=0 rc=0; tmp="$(mktemp -d)"
+  local tmp rc=0 opus_mode=strict; tmp="$(mktemp -d)"
   unsquashfs -n -d "$tmp/root" "$IMAGES/rootfs.squashfs" 'usr/lib/libopus.so*' 'usr/lib/libasound.so*' >/dev/null || rc=1
-  for f in "$tmp"/root/usr/lib/libopus.so.0 "$tmp"/root/usr/lib/libasound.so.2; do
-    [ -f "$f" ] && is_v6_or_older "$f" && n=$((n + 1)) || rc=1
-  done
-  rm -rf "$tmp"; [ "$rc" = 0 ] && [ "$n" = 2 ]
+  # libopus is the only shipped library allowed VFPv3/NEON, and only while its NEON is run-time dispatched
+  opus_neon_is_run_time_dispatched && opus_mode=cpu-only
+  arm_seen=0
+  arm_scan "$tmp/root/usr/lib/libasound.so.2" strict || rc=1
+  arm_scan "$tmp/root/usr/lib/libopus.so.0" "$opus_mode" || rc=1
+  rm -rf "$tmp"; [ "$arm_seen" = 2 ] && [ "$rc" = 0 ]
 }
-check "agent C/asm objects are ARMv6 (ring's run-time dispatched perlasm excepted)" agent_c_objects_are_armv6
-check "libopus and libasound shipped for the agent are ARMv6" agent_native_libs_are_armv6
+check "agent objects (C/asm, Rust rlibs, std) stay within ARM1176: ARMv6, VFPv2, no NEON; exact run-time dispatch allowlist" agent_objects_are_armv6
+check "libasound and libopus shipped for the agent are ARMv6 (libopus NEON only while run-time dispatched)" agent_native_libs_are_armv6
 check "agent service enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-agent.service
 check "provisioning enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-provision.service
 check "wifi enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-wifi.service
