@@ -25,3 +25,13 @@ BR2_PACKAGE_HOST_E2FSPROGS=y
 BR2_PACKAGE_HOST_GENIMAGE=y
 BR2_PACKAGE_HOST_DOSFSTOOLS=y
 BR2_PACKAGE_HOST_MTOOLS=y
+# Read-only root support and first-boot data partition grow
+# The upstream defconfig remounts / read-write; BR2_INIT_SYSTEMD_VAR_FACTORY depends on that being off.
+# BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set
+BR2_INIT_SYSTEMD_VAR_FACTORY=y
+BR2_PACKAGE_UTIL_LINUX=y
+# sfdisk (used by grow-data.sh) comes with the "basic set"; there is no separate fdisks option
+BR2_PACKAGE_UTIL_LINUX_BINARIES=y
+BR2_PACKAGE_UTIL_LINUX_PARTX=y
+BR2_PACKAGE_E2FSPROGS=y
+BR2_PACKAGE_E2FSPROGS_RESIZE2FS=y

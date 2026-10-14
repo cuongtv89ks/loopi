@@ -1,0 +1,12 @@
+[Unit]
+Description=Grow the Loopi data partition to fill the SD card
+RequiresMountsFor=/data
+ConditionPathExists=!/data/.grown
+Before=loopi-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/loopi/grow-data.sh
+
+[Install]
+WantedBy=multi-user.target

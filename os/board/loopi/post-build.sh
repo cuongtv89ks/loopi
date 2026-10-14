@@ -14,3 +14,7 @@ enable_unit loopi-usbgadget.service
 if [ -f "${TARGET_DIR}/etc/securetty" ] && ! grep -qx ttyGS0 "${TARGET_DIR}/etc/securetty"; then
 	echo ttyGS0 >> "${TARGET_DIR}/etc/securetty"
 fi
+
+enable_unit loopi-growdata.service
+# Mount points for the fstab entries: systemd cannot create them on the read-only root
+mkdir -p "${TARGET_DIR}/boot" "${TARGET_DIR}/data"
