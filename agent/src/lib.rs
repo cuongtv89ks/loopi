@@ -16,3 +16,4 @@ pub mod tls;
 pub mod transport;
 pub mod wire;
 pub mod pairing;
+pub mod uploader;

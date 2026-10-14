@@ -103,3 +103,47 @@ impl LedDriver for RecordingLed {
         Ok(())
     }
 }
+
+use std::collections::VecDeque;
+use std::path::Path;
+
+use async_trait::async_trait;
+
+use crate::item::ItemMeta;
+use crate::transport::{PutOutcome, Transport, TransportError};
+use crate::wire::{HeartbeatRequest, RemoteCommand};
+
+/// Scripted brain. Unscripted calls succeed (`Created` / no commands).
+#[derive(Default)]
+pub struct FakeTransport {
+    pub put_results: Mutex<VecDeque<Result<PutOutcome, TransportError>>>,
+    pub heartbeat_results: Mutex<VecDeque<Result<Vec<RemoteCommand>, TransportError>>>,
+    pub puts: Mutex<Vec<ItemMeta>>,
+    pub heartbeats: Mutex<Vec<HeartbeatRequest>>,
+}
+
+impl FakeTransport {
+    pub fn push_put(&self, result: Result<PutOutcome, TransportError>) {
+        self.put_results.lock().unwrap().push_back(result);
+    }
+
+    pub fn push_heartbeat(&self, result: Result<Vec<RemoteCommand>, TransportError>) {
+        self.heartbeat_results.lock().unwrap().push_back(result);
+    }
+}
+
+#[async_trait]
+impl Transport for FakeTransport {
+    async fn put_item(&self, meta: &ItemMeta, data: &Path) -> Result<PutOutcome, TransportError> {
+        if !data.exists() {
+            return Err(TransportError::Io(io::Error::new(io::ErrorKind::NotFound, "payload missing")));
+        }
+        self.puts.lock().unwrap().push(meta.clone());
+        self.put_results.lock().unwrap().pop_front().unwrap_or(Ok(PutOutcome::Created))
+    }
+
+    async fn heartbeat(&self, request: &HeartbeatRequest) -> Result<Vec<RemoteCommand>, TransportError> {
+        self.heartbeats.lock().unwrap().push(request.clone());
+        self.heartbeat_results.lock().unwrap().pop_front().unwrap_or(Ok(Vec::new()))
+    }
+}
