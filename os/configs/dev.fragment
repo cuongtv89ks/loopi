@@ -1,1 +1,4 @@
-# Dev variant additions (Task 4)
+# Dev variant: SSH (key-only via /data/dev/ssh), file sync, tracing
+BR2_PACKAGE_DROPBEAR=y
+BR2_PACKAGE_RSYNC=y
+BR2_PACKAGE_STRACE=y

@@ -1,0 +1,13 @@
+[Unit]
+Description=Install SSH authorized_keys from the boot partition (dev image)
+RequiresMountsFor=/data /boot
+ConditionPathExists=/boot/loopi-authorized_keys
+After=systemd-tmpfiles-setup.service
+Before=dropbear.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'install -d -m 0700 /data/dev/ssh && install -m 0600 /boot/loopi-authorized_keys /data/dev/ssh/authorized_keys'
+
+[Install]
+WantedBy=multi-user.target

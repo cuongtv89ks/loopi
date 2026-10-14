@@ -187,4 +187,26 @@ check "stock D-Bus wpa_supplicant.service is not enabled (loopi-wifi owns wlan0)
 check "run-agent wrapper is executable" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -E '^-rwxr-xr-x .* squashfs-root/usr/libexec/loopi/run-agent\$'"
 check "dev image marker present" rootfs_has /etc/loopi-dev
 
+# --- Task 4: dev access (key-only SSH, rsync)
+check "dropbear enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/dropbear.service
+check "SSH host keys persist on /data" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -q 'etc/dropbear -> /data/dev/dropbear'"
+check "authorized_keys live on /data" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -q 'root/.ssh -> /data/dev/ssh'"
+check "SSH keys imported from the boot partition" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-devkeys.service
+check "rsync present" rootfs_has /usr/bin/rsync
+check "dev marker present" rootfs_has /etc/loopi-dev
+# Added with controller ruling C5 (spec section 6: SSH is key-only). Without it key-only rests on dropbear
+# refusing root's empty password, which stops being true the day a root password is set.
+dropbear_is_key_only() {
+  rootfs_file_contains etc/default/dropbear '^DROPBEAR_ARGS="([^"]* )?-s( [^"]*)?"$' \
+    && rootfs_file_contains usr/lib/systemd/system/dropbear.service '^EnvironmentFile=-?/etc/default/dropbear$' \
+    && rootfs_file_contains usr/lib/systemd/system/dropbear.service '^ExecStart=.* \$DROPBEAR_ARGS( |$)'
+}
+check "dropbear refuses password logins (-s from /etc/default/dropbear reaches its command line)" dropbear_is_key_only
+# The host key and authorized_keys directories must exist before dropbear starts (/data is the only writable place)
+tmpfiles_make_ssh_dirs() {
+  rootfs_file_contains etc/tmpfiles.d/loopi.conf '^d /data/dev/dropbear +0700 root root' \
+    && rootfs_file_contains etc/tmpfiles.d/loopi.conf '^d /data/dev/ssh +0700 root root'
+}
+check "tmpfiles creates the SSH state directories on /data" tmpfiles_make_ssh_dirs
+
 exit $fail

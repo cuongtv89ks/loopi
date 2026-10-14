@@ -1,0 +1,3 @@
+# Read by dropbear.service (EnvironmentFile=-/etc/default/dropbear). -s: no password logins, so SSH
+# stays key-only even if a root password is ever set. Keys come from /data/dev/ssh (loopi-devkeys.service).
+DROPBEAR_ARGS="-s"

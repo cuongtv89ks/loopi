@@ -22,3 +22,13 @@ mkdir -p "${TARGET_DIR}/boot" "${TARGET_DIR}/data"
 enable_unit loopi-provision.service
 enable_unit loopi-wifi.service
 enable_unit loopi-agent.service
+
+# Dev access: the root filesystem is read-only, so SSH host keys and authorized_keys live on /data.
+if [ -e "${TARGET_DIR}/etc/loopi-dev" ]; then
+	rm -rf "${TARGET_DIR}/etc/dropbear" "${TARGET_DIR}/root/.ssh"
+	ln -s /data/dev/dropbear "${TARGET_DIR}/etc/dropbear"
+	mkdir -p "${TARGET_DIR}/root"
+	ln -s /data/dev/ssh "${TARGET_DIR}/root/.ssh"
+	ln -sf /usr/lib/systemd/system/dropbear.service "$WANTS/dropbear.service"
+	enable_unit loopi-devkeys.service
+fi
