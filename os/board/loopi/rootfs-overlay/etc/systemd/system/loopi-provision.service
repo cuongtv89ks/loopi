@@ -6,7 +6,14 @@ Before=loopi-wifi.service loopi-agent.service
 
 [Service]
 Type=oneshot
+# /boot is mounted read-only (fstab): a power cut while a FAT is writable can corrupt it. This is the one place that
+# writes /boot at run time (provisioning scrubs the secrets from loopi.toml), so it is writable only while this runs.
+# The ro remount runs on success (ExecStartPost) and after every failure (ExecStopPost, also when the rw remount or
+# the import failed). Both lines are "-" prefixed and log their own failure: a failed final remount never fails the unit.
+ExecStartPre=/usr/bin/mount -o remount,rw /boot
 ExecStart=/usr/bin/loopi-agent provision --boot /boot/loopi.toml --data /data
+ExecStartPost=-/bin/sh -c 'sync; /usr/bin/mount -o remount,ro /boot || echo "loopi-provision: could not remount /boot read-only" >&2'
+ExecStopPost=-/bin/sh -c 'sync; /usr/bin/mount -o remount,ro /boot || echo "loopi-provision: could not remount /boot read-only" >&2'
 
 [Install]
 WantedBy=multi-user.target

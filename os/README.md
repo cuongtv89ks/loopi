@@ -23,8 +23,19 @@ from the boot partition), joins WiFi, pairs with the brain and starts recording 
 - `host`: the microphone goes into `USB` (OTG adapter if needed) and the charger into `PWR`; reach the
   device over WiFi (`ssh root@<wifi-ip>`).
 
-Switch with `loopi-usbmode host` or `loopi-usbmode gadget`, then `reboot`. Without SSH, edit `config.txt`
-on the boot partition: `# ` in front of `dtoverlay=dwc2,dr_mode=peripheral` means host mode.
+Switch with `loopi-usbmode host` or `loopi-usbmode gadget`, then `reboot`. On the running device `/boot` is
+read-only (see below), so do not edit `config.txt` there by hand: `loopi-usbmode` opens it for the edit and closes
+it again. Without SSH, put the card in a computer and edit `config.txt` on the boot partition: `# ` in front of
+`dtoverlay=dwc2,dr_mode=peripheral` means host mode.
+
+## Boot partition and power cuts
+The device loses power without warning, and a FAT volume that was open for writing is then left dirty. So `/boot`
+(`config.txt`, `cmdline.txt`, kernel, `loopi.toml`) is mounted read-only and is writable only while `loopi-provision`
+runs at boot (the first boot imports `loopi.toml` and removes the secrets from it) and while `loopi-usbmode` edits
+`config.txt`. At every boot `fsck.fat -a` checks and repairs it before it is mounted
+(`journalctl -u systemd-fsck@dev-mmcblk0p1`). If it cannot be repaired the device still boots, without `/boot`
+(`nofail`): reflash the card. To change a file in `/boot` by hand: `mount -o remount,rw /boot`, edit, `sync`,
+`mount -o remount,ro /boot`.
 
 ## Develop the agent without reflashing
 `os/scripts/deploy-agent.sh <device-ip>` rebuilds the ARMv6 binary and runs it from `/data/dev/`.

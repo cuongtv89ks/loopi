@@ -250,4 +250,112 @@ rpicam_request_controls_are_merged() {
 }
 check "rpicam-apps merges its controls into the request's own list (upstream libcamera 0.7 refuses replacing it)" rpicam_request_controls_are_merged
 
+# --- Fix F1 (ruling C30): the boot FAT must survive the frequent power cuts of this device.
+# Observed: power pulled during first-boot provisioning (which rewrites /boot/loopi.toml) left the FAT dirty, the next
+# boot had /boot remounted read-only by a FAT error and `loopi-usbmode host` failed. The image had no fsck.fat, so the
+# damage was never repaired and Linux (which keeps the dirty flag it found at mount time) warned on every later boot.
+#   (a) repair at boot: fstab pass 2 makes systemd-fsck@dev-mmcblk0p1.service run `fsck -a`, which needs fsck.vfat;
+#   (b) exposure: /boot is mounted read-only and opened for writing only while the system writes it.
+# systemd-fsck runs util-linux `fsck`, which searches for the fsck.<type> helper only in the directories of $PATH
+# (its built-in default of /sbin applies only when PATH is unset); systemd's own lookup (generator and systemd-fsck) and the
+# PATH it gives its services (/usr/local/sbin:/usr/local/bin:/usr/bin on a merged-bin rootfs) both contain /usr/bin.
+# /usr/sbin and /sbin are links to bin here (merged bin), so the helper must resolve to the real fsck.fat through them.
+fsck_vfat_helper_resolves() {
+  local tmp rc=0; tmp="$(mktemp -d)"
+  unsquashfs -n -d "$tmp/root" "$IMAGES/rootfs.squashfs" sbin usr/sbin usr/bin/fsck usr/bin/fsck.fat usr/bin/fsck.vfat >/dev/null || rc=1
+  if [ "$rc" = 0 ]; then
+    local real; real="$(readlink -f "$tmp/root/usr/sbin/fsck.vfat")"
+    [ "$real" = "$(readlink -f "$tmp/root/usr/bin/fsck.fat")" ] && [ -x "$real" ] \
+      && [ "$(readlink -f "$tmp/root/sbin/fsck.vfat")" = "$real" ] \
+      && [ -x "$tmp/root/usr/bin/fsck" ] && [ "$(readlink -f "$tmp/root/usr/sbin/fsck")" = "$(readlink -f "$tmp/root/usr/bin/fsck")" ] \
+      && file -L "$real" | grep -E 'ELF 32-bit .*ARM' || rc=1
+  fi
+  rm -rf "$tmp"; return $rc
+}
+check "fsck.vfat -> fsck.fat (ARM) is in the image and resolves from /sbin and /usr/sbin next to the util-linux fsck" fsck_vfat_helper_resolves
+# A pass of 0 would make systemd-fstab-generator skip the check; the generator also skips it when no fsck.vfat exists.
+# `ro` keeps the FAT clean (the dirty flag is set only by a read-write mount); nofail keeps a /boot that cannot be
+# mounted (or whose fsck fails) from stopping the boot: nofail mounts are only Wants= of local-fs.target.
+fstab_boot_is_ro_and_checked() {
+  rootfs_cat etc/fstab | awk '
+    $1 !~ /^#/ && $2 == "/boot" {
+      found = 1; n = split($4, o, ","); for (i = 1; i <= n; i++) opt[o[i]] = 1
+      ok = ($1 == "/dev/mmcblk0p1" && $3 == "vfat" && ("ro" in opt) && !("rw" in opt) && !("defaults" in opt) \
+            && ("nofail" in opt) && ("noatime" in opt) && $6 == 2)
+    }
+    END { exit !(found && ok) }'
+}
+check "fstab mounts /boot read-only with fsck pass 2 (and nofail)" fstab_boot_is_ro_and_checked
+# loopi-provision.service is the only writer of /boot at run time: `loopi-agent provision` scrubs the secrets from
+# /boot/loopi.toml. rw remount before; ro after on success (ExecStartPost) and on every failure path (ExecStopPost).
+# The ro lines are `-` prefixed and log their own failure, so a failed final remount never fails the unit.
+provision_opens_and_closes_boot_window() {
+  local keys; keys="$(unit_keys etc/systemd/system/loopi-provision.service)" || return 1
+  grep -Fx '[Service] ExecStartPre=/usr/bin/mount -o remount,rw /boot' <<<"$keys" \
+    && grep -Fx '[Service] ExecStart=/usr/bin/loopi-agent provision --boot /boot/loopi.toml --data /data' <<<"$keys" \
+    && grep -E '^\[Service\] ExecStartPost=-.*mount -o remount,ro /boot .*\|\| .*echo .*>&2' <<<"$keys" \
+    && grep -E '^\[Service\] ExecStopPost=-.*mount -o remount,ro /boot .*\|\| .*echo .*>&2' <<<"$keys" \
+    && grep -Fx '[Unit] RequiresMountsFor=/data /boot' <<<"$keys" \
+    && grep -Fx '[Unit] ConditionPathExists=/boot/loopi.toml' <<<"$keys" \
+    && grep -Fx '[Unit] Before=loopi-wifi.service loopi-agent.service' <<<"$keys" \
+    && grep -Fx '[Service] Type=oneshot' <<<"$keys"
+}
+check "loopi-provision.service opens /boot read-write only around the provisioning (ro again on success and on failure)" provision_opens_and_closes_boot_window
+# loopi-devkeys.service only reads /boot (install -m 0600 /boot/loopi-authorized_keys /data/...): it must stay without a
+# remount, i.e. nothing may open /boot for writing for a read.
+devkeys_only_reads_boot() {
+  rootfs_file_contains etc/systemd/system/loopi-devkeys.service "install -m 0600 /boot/loopi-authorized_keys /data/dev/ssh/authorized_keys" \
+    && ! rootfs_cat etc/systemd/system/loopi-devkeys.service | grep -E 'remount'
+}
+check "loopi-devkeys.service only reads /boot (copies the key out, no remount)" devkeys_only_reads_boot
+# The shipped loopi-usbmode against a fake boot mount point: stub `mountpoint` (true for the fake /boot only) and `mount`
+# (logs its arguments and whether the dwc2 line was active at that moment, can be told to fail). The real mount is never
+# called, so this is safe on the build host; usbmode_roundtrip above still runs the script without any stub.
+usbmode_boot_window() {
+  local tmp rc=0; tmp="$(mktemp -d)" || return 1
+  mkdir "$tmp/bin" "$tmp/boot" "$tmp/plain"
+  rootfs_cat usr/bin/loopi-usbmode > "$tmp/loopi-usbmode" && chmod +x "$tmp/loopi-usbmode" || { rm -rf "$tmp"; return 1; }
+  printf '#!/bin/sh\n[ "$1" = -q ] && [ "$2" = "%s" ]\n' "$tmp/boot" > "$tmp/bin/mountpoint"
+  printf '#!/bin/sh\necho "$* [active=$(grep -c "^dtoverlay=dwc2" "%s/boot/config.txt" 2>/dev/null)]" >> "%s/mount.log"\ncase "$*" in *"${MOCK_FAIL:-NONE}"*) exit 32 ;; esac\n' \
+    "$tmp" "$tmp" > "$tmp/bin/mount"
+  chmod +x "$tmp/bin/mountpoint" "$tmp/bin/mount"
+  local line='dtoverlay=dwc2,dr_mode=peripheral'
+  um() { env PATH="$tmp/bin:$PATH" "$@"; }
+  reset() { rm -f "$tmp/mount.log"; printf 'camera_auto_detect=1\n%s\n' "$1" > "$tmp/boot/config.txt"; cp "$tmp/boot/config.txt" "$tmp/plain/config.txt"; }
+  # 1. the switch: rw first, the edit inside the window (line still active at rw, gone at ro), ro last
+  reset "$line"
+  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 \
+    && [ "$(cat "$tmp/mount.log")" = "$(printf -- '-o remount,rw %s/boot [active=1]\n-o remount,ro %s/boot [active=0]' "$tmp" "$tmp")" ] \
+    && grep -qx "# $line" "$tmp/boot/config.txt" || rc=1
+  # 1b. and back: the edit again lies between the two remounts (line commented at rw, active at ro)
+  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" gadget >/dev/null 2>&1 \
+    && [ "$(tail -n 2 "$tmp/mount.log")" = "$(printf -- '-o remount,rw %s/boot [active=0]\n-o remount,ro %s/boot [active=1]' "$tmp" "$tmp")" ] \
+    && grep -qx "$line" "$tmp/boot/config.txt" || rc=1
+  # 2. a failing edit still ends with the window closed and a non-zero exit: (a) no line to enable, (b) sed itself fails
+  # (config.txt missing), which stops the script inside the window, so only the EXIT trap can close it
+  reset "# something else"
+  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" gadget >/dev/null 2>&1 && rc=1
+  [ "$(tail -n 1 "$tmp/mount.log" 2>/dev/null)" = "-o remount,ro $tmp/boot [active=0]" ] || rc=1
+  reset "$line"; rm -f "$tmp/boot/config.txt"
+  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 && rc=1
+  [ "$(sed -n '1p;$p' "$tmp/mount.log" 2>/dev/null)" = "$(printf -- '-o remount,rw %s/boot [active=]\n-o remount,ro %s/boot [active=]' "$tmp" "$tmp")" ] || rc=1
+  # 3. cannot open the window: nothing is edited, non-zero exit
+  reset "$line"
+  um MOCK_FAIL=remount,rw LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 && rc=1
+  cmp -s "$tmp/boot/config.txt" "$tmp/plain/config.txt" || rc=1
+  # 4. cannot close it again: the switch is done and reported, the warning is printed
+  reset "$line"
+  um MOCK_FAIL=remount,ro LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>"$tmp/err" \
+    && grep -q 'read-only' "$tmp/err" && grep -qx "# $line" "$tmp/boot/config.txt" || rc=1
+  # 5. reading the mode and a config that is not on a mount point never call mount
+  reset "$line"
+  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" >/dev/null 2>&1 || rc=1
+  um LOOPI_BOOT_CONFIG="$tmp/plain/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 || rc=1
+  um LOOPI_BOOT_CONFIG="$tmp/plain/config.txt" "$tmp/loopi-usbmode" bogus >/dev/null 2>&1 && rc=1
+  [ ! -e "$tmp/mount.log" ] || rc=1
+  grep -qx "# $line" "$tmp/plain/config.txt" || rc=1
+  rm -rf "$tmp"; return $rc
+}
+check "loopi-usbmode opens its mount point read-write only for the edit, closes it also on error, never mounts off /boot" usbmode_boot_window
+
 exit $fail

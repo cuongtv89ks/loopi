@@ -3,27 +3,59 @@
 #   gadget  console + network over the cable to your computer (bring-up, no microphone)
 #   host    USB host for the microphone (default dwc_otg driver)
 # Without an argument, print the mode configured for the next boot.
+# /boot is mounted read-only (a power cut while a FAT is writable can corrupt it), so the edit opens /boot for
+# writing, syncs and closes it again, also when the edit fails.
 set -eu
 CONFIG="${LOOPI_BOOT_CONFIG:-/boot/config.txt}"
 LINE='dtoverlay=dwc2,dr_mode=peripheral'
+BOOT_DIR="$(dirname "$CONFIG")"
+window=""   # the mount point that is currently open for writing
 
 configured_mode() {
 	if grep -qx "$LINE" "$CONFIG"; then echo gadget; else echo host; fi
 }
+
+# Only a real mount point is remounted: with LOOPI_BOOT_CONFIG in a plain directory (the image checks run this script
+# on the build host) the file is edited in place and mount is never called.
+open_window() {
+	mountpoint -q "$BOOT_DIR" 2>/dev/null || return 0
+	if ! mount -o remount,rw "$BOOT_DIR"; then
+		echo "cannot open $BOOT_DIR for writing (after a FAT error it stays read-only until the next boot's fsck)" >&2
+		exit 1
+	fi
+	window="$BOOT_DIR"
+}
+
+close_window() {
+	[ -n "$window" ] || return 0
+	closing="$window"
+	window=""   # one attempt: the EXIT trap must not repeat it (and its warning) after the explicit call
+	sync || true
+	mount -o remount,ro "$closing" || echo "warning: could not remount $closing read-only; it stays writable until reboot" >&2
+}
+
+trap close_window EXIT
+trap 'exit 1' HUP INT TERM
 
 case "${1:-}" in
 	"")
 		configured_mode
 		exit 0
 		;;
-	gadget) sed -i "s|^# *$LINE\$|$LINE|" "$CONFIG" ;;
-	host) sed -i "s|^$LINE\$|# $LINE|" "$CONFIG" ;;
+	gadget | host) ;;
 	*)
 		echo "usage: loopi-usbmode [gadget|host]" >&2
 		exit 2
 		;;
 esac
+
+open_window
+case "$1" in
+	gadget) sed -i "s|^# *$LINE\$|$LINE|" "$CONFIG" ;;
+	host) sed -i "s|^$LINE\$|# $LINE|" "$CONFIG" ;;
+esac
 sync
+close_window
 if [ "$(configured_mode)" != "$1" ]; then
 	echo "could not switch: no '$LINE' line in $CONFIG" >&2
 	exit 1

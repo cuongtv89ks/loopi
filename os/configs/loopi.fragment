@@ -39,6 +39,10 @@ BR2_PACKAGE_UTIL_LINUX_BINARIES=y
 BR2_PACKAGE_UTIL_LINUX_PARTX=y
 BR2_PACKAGE_E2FSPROGS=y
 BR2_PACKAGE_E2FSPROGS_RESIZE2FS=y
+# Boot FAT repair at startup: fstab pass 2 for /boot makes systemd-fsck@dev-mmcblk0p1.service run `fsck -a`, which needs
+# fsck.vfat (a link to fsck.fat). Needed in prod too: the device loses power often and /boot holds config.txt and the kernel.
+BR2_PACKAGE_DOSFSTOOLS=y
+BR2_PACKAGE_DOSFSTOOLS_FSCK_FAT=y
 # Networking: WiFi via wpa_supplicant + systemd-networkd, NTP, BLE stack for later features
 BR2_PACKAGE_SYSTEMD_NETWORKD=y
 BR2_PACKAGE_SYSTEMD_RESOLVED=y
