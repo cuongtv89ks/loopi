@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::disk::{DiskUsage, StatvfsUsage, DROP_ABOVE_PCT};
+#[cfg(any(test, target_os = "linux"))]
+use crate::led::{while_solid, LedDriver};
 use crate::pairing::load_identity;
 
 const CAMERA_TIMEOUT: Duration = Duration::from_secs(20);
@@ -79,8 +81,26 @@ async fn camera_check(camera_cmd: &str) -> Check {
     }
 }
 
+/// Privacy: the microphone is only opened while the LED is solid (and never with it dark).
+#[cfg(any(test, target_os = "linux"))]
+fn with_privacy_led(led: &mut dyn LedDriver, capture: impl FnOnce() -> Check) -> Check {
+    while_solid(led, capture)
+        .unwrap_or_else(|e| Check::fail("microphone", format!("privacy LED unavailable ({e}): microphone not tested")))
+}
+
 #[cfg(target_os = "linux")]
-fn mic_check(device: &str) -> Check {
+fn mic_check(config: &Config) -> Check {
+    let mut led = match crate::led::GpioLed::open(&config.gpio.chip, config.gpio.led) {
+        Ok(led) => led,
+        Err(e) => {
+            return Check::fail("microphone", format!("privacy LED unavailable ({e}): microphone not tested"));
+        }
+    };
+    with_privacy_led(&mut led, || capture_one_second(&config.capture.audio_device))
+}
+
+#[cfg(target_os = "linux")]
+fn capture_one_second(device: &str) -> Check {
     use crate::recorder::audio::alsa_source::factory;
     use crate::recorder::ogg_opus::FRAME_SAMPLES;
 
@@ -100,7 +120,7 @@ fn mic_check(device: &str) -> Check {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn mic_check(_device: &str) -> Check {
+fn mic_check(_config: &Config) -> Check {
     Check::fail("microphone", "audio capture needs Linux/ALSA")
 }
 
@@ -122,7 +142,7 @@ pub async fn run_selftest(config_path: &Path) -> Vec<Check> {
         Check::fail("clock", "waiting for NTP")
     });
     checks.push(camera_check(&config.capture.camera_cmd).await);
-    checks.push(mic_check(&config.capture.audio_device));
+    checks.push(mic_check(&config));
     checks.push(match StatvfsUsage::new(data).and_then(|d| d.used_pct()) {
         Ok(pct) => Check { name: "disk", ok: pct < DROP_ABOVE_PCT, detail: format!("{pct:.1}% used") },
         Err(e) => Check::fail("disk", e.to_string()),
@@ -195,6 +215,31 @@ mod tests {
     fn failed_count_counts_only_failures() {
         assert_eq!(failed_count(&[Check::pass("a", ""), Check::fail("b", ""), Check::fail("c", "")]), 2);
         assert_eq!(failed_count(&[]), 0);
+    }
+
+    #[test]
+    fn microphone_is_captured_only_while_the_led_is_solid() {
+        let mut led = crate::testing::RecordingLed::default();
+        let states = led.states.clone();
+        let check = with_privacy_led(&mut led, || {
+            assert_eq!(*states.lock().unwrap(), vec![true], "LED solid during capture");
+            Check::pass("microphone", "1 s captured")
+        });
+        assert!(check.ok);
+        assert_eq!(*led.states.lock().unwrap(), vec![true, false], "LED off afterwards");
+    }
+
+    #[test]
+    fn microphone_is_not_opened_when_the_led_fails() {
+        struct DeadLed;
+        impl LedDriver for DeadLed {
+            fn set(&mut self, _on: bool) -> std::io::Result<()> {
+                Err(std::io::Error::other("line busy"))
+            }
+        }
+        let check = with_privacy_led(&mut DeadLed, || panic!("must not capture"));
+        assert!(!check.ok);
+        assert!(check.detail.contains("privacy LED unavailable"), "{}", check.detail);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::fsutil::write_atomic;
-use crate::status::AgentStatus;
+use crate::status::{AgentStatus, LedHealth};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlState {
@@ -60,11 +60,14 @@ pub fn parse_remote_command(kind: &str, payload: &Value) -> Result<Command, Stri
 
 /// Persisted state. A missing file silently yields defaults. Any other read error or a corrupt
 /// file is logged with the path and fails closed: paused (the user may have paused; the brain can
-/// resume), with `audio_enabled` at its default.
-pub fn load_state(path: &Path, default_audio: bool) -> ControlState {
-    let default = ControlState::initial(default_audio);
+/// resume), with `audio_enabled` from the config.
+///
+/// Privacy first: `config_audio_enabled = false` (the provisioned `capture.audio_enabled`) always
+/// wins at startup; the saved state can only turn audio off, never back on over the config.
+pub fn load_state(path: &Path, config_audio_enabled: bool) -> ControlState {
+    let default = ControlState::initial(config_audio_enabled);
     let fail_closed = ControlState { paused: true, ..default };
-    match std::fs::read(path) {
+    let loaded = match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
             tracing::warn!(error = %e, path = %path.display(), "corrupt control state, failing closed (paused)");
             fail_closed
@@ -74,7 +77,8 @@ pub fn load_state(path: &Path, default_audio: bool) -> ControlState {
             tracing::warn!(error = %e, path = %path.display(), "cannot read control state, failing closed (paused)");
             fail_closed
         }
-    }
+    };
+    ControlState { audio_enabled: loaded.audio_enabled && config_audio_enabled, ..loaded }
 }
 
 pub fn save_state(path: &Path, state: &ControlState) -> io::Result<()> {
@@ -91,8 +95,14 @@ pub struct Gates {
     pub audio: bool,
 }
 
+/// Privacy: nothing records unless the LED that shows it is known to work.
 pub fn recording_gates(state: &ControlState, status: &AgentStatus) -> Gates {
-    let video = status.paired && status.clock_synced && !state.paused && !status.quiet && !status.disk_stopped;
+    let video = status.led == LedHealth::Working
+        && status.paired
+        && status.clock_synced
+        && !state.paused
+        && !status.quiet
+        && !status.disk_stopped;
     Gates { video, audio: video && state.audio_enabled }
 }
 
@@ -145,6 +155,17 @@ mod tests {
     }
 
     #[test]
+    fn config_audio_off_wins_over_saved_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        save_state(&path, &ControlState { paused: false, audio_enabled: true }).unwrap();
+        assert_eq!(load_state(&path, false), ControlState { paused: false, audio_enabled: false }, "config off wins");
+        assert_eq!(load_state(&path, true).audio_enabled, true);
+        save_state(&path, &ControlState { paused: true, audio_enabled: false }).unwrap();
+        assert_eq!(load_state(&path, true), ControlState { paused: true, audio_enabled: false }, "state may turn it off");
+    }
+
+    #[test]
     fn unreadable_state_path_fails_closed_paused() {
         // A directory at the state path yields a non-NotFound read error.
         let dir = tempfile::tempdir().unwrap();
@@ -153,7 +174,7 @@ mod tests {
 
     #[test]
     fn gates_need_every_condition() {
-        let ready = AgentStatus { paired: true, clock_synced: true, ..AgentStatus::default() };
+        let ready = AgentStatus { paired: true, clock_synced: true, led: LedHealth::Working, ..AgentStatus::default() };
         let on = ControlState::initial(true);
         assert_eq!(recording_gates(&on, &ready), Gates { video: true, audio: true });
         assert_eq!(recording_gates(&on.apply(&Command::SetAudio(false)), &ready), Gates { video: true, audio: false });
@@ -162,6 +183,8 @@ mod tests {
             AgentStatus { clock_synced: false, ..ready.clone() },
             AgentStatus { quiet: true, ..ready.clone() },
             AgentStatus { disk_stopped: true, ..ready.clone() },
+            AgentStatus { led: LedHealth::Unconfirmed, ..ready.clone() },
+            AgentStatus { led: LedHealth::Failed, ..ready.clone() },
         ];
         for status in blocked {
             assert_eq!(recording_gates(&on, &status), Gates { video: false, audio: false }, "{status:?}");
@@ -171,24 +194,25 @@ mod tests {
 
     #[test]
     fn gates_match_truth_table_for_every_combination() {
-        for bits in 0u32..64 {
+        for bits in 0u32..128 {
             let flag = |n: u32| bits & (1 << n) != 0;
-            let (paired, synced, paused, quiet, disk_stopped, audio_enabled) =
-                (flag(0), flag(1), flag(2), flag(3), flag(4), flag(5));
+            let (paired, synced, paused, quiet, disk_stopped, audio_enabled, led_working) =
+                (flag(0), flag(1), flag(2), flag(3), flag(4), flag(5), flag(6));
             let status = AgentStatus {
                 paired,
                 clock_synced: synced,
                 quiet,
                 disk_stopped,
+                led: if led_working { LedHealth::Working } else { LedHealth::Failed },
                 ..AgentStatus::default()
             };
             let state = ControlState { paused, audio_enabled };
-            let expected_video = paired && synced && !paused && !quiet && !disk_stopped;
+            let expected_video = led_working && paired && synced && !paused && !quiet && !disk_stopped;
             let expected_audio = expected_video && audio_enabled;
             assert_eq!(
                 recording_gates(&state, &status),
                 Gates { video: expected_video, audio: expected_audio },
-                "bits {bits:06b}"
+                "bits {bits:07b}"
             );
         }
     }

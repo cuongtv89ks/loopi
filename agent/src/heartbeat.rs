@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 
 use crate::control::{parse_remote_command, Command, ControlState};
+use crate::led::LED_UNAVAILABLE_ERROR;
 use crate::queue::Queue;
-use crate::status::{AgentStatus, StatusTx};
+use crate::status::{AgentStatus, LedHealth, StatusTx};
 use crate::sysinfo::SysProbe;
 use crate::transport::{Transport, TransportError};
 use crate::wire::{HeartbeatRequest, RemoteCommand, AGENT_VERSION};
@@ -157,22 +158,32 @@ impl HeartbeatDeps {
 
 /// One heartbeat. On failure the acks and the dropped-item count are kept for the next attempt;
 /// at most `MAX_ACKED_PER_HEARTBEAT` acks go out at a time, the rest wait for the next one.
+/// `last_error` is one slot that other tasks overwrite; while the LED is failed (recording
+/// disabled) the brain must still learn why, so that reason is restated unless already present.
+fn led_overlay(status: &AgentStatus) -> Option<String> {
+    let already = status.last_error.as_deref().is_some_and(|e| e.starts_with(LED_UNAVAILABLE_ERROR));
+    (status.led == LedHealth::Failed && !already).then(|| LED_UNAVAILABLE_ERROR.to_string())
+}
+
 pub async fn heartbeat_once(deps: &HeartbeatDeps, acked: &mut Vec<String>) -> Result<(), TransportError> {
     let (depth, queue_error) = deps.queue_depth();
     let (request, carried_error) = {
         let mut status = deps.status.borrow().clone();
         let mut memory = deps.memory.lock().unwrap_or_else(|p| p.into_inner());
-        let mut overlays: Vec<String> = queue_error.into_iter().collect();
+        // Most important first: truncation to MAX_ERROR_LEN drops the tail, so the LED fault and
+        // the status error (camera, disk, ...) go before the per-heartbeat overlays.
+        let mut parts: Vec<String> = led_overlay(&status).into_iter().collect();
+        parts.extend(status.last_error.take());
+        parts.extend(queue_error);
         if status.disk_used_pct.is_finite() {
             memory.last_disk_pct = Some(status.disk_used_pct);
         } else {
             status.disk_used_pct = memory.last_disk_pct.unwrap_or(UNKNOWN_DISK_PCT);
-            overlays.push(DISK_UNREADABLE.into());
+            parts.push(DISK_UNREADABLE.into());
         }
         let carried = memory.pending_error.clone();
-        overlays.extend(carried.clone());
-        overlays.extend(status.last_error.take());
-        status.last_error = (!overlays.is_empty()).then(|| overlays.join("; "));
+        parts.extend(carried.clone());
+        status.last_error = (!parts.is_empty()).then(|| parts.join("; "));
         let control = *deps.control.borrow();
         let request =
             build_request(&status, &control, depth, deps.started.elapsed().as_secs(), deps.probe.as_ref(), acked.clone());
@@ -489,7 +500,7 @@ mod tests {
         let sent = transport.heartbeats.lock().unwrap();
         assert_eq!(sent[0].last_error.as_deref(), Some("camera: gone"));
         let second = sent[1].last_error.clone().unwrap();
-        assert!(second.contains("reboot") && second.ends_with("camera: gone"), "{second}");
+        assert!(second.contains("reboot") && second.starts_with("camera: gone; "), "{second}");
         assert_eq!(sent[2].last_error.as_deref(), Some("camera: gone"), "command error dropped after delivery");
         assert_eq!(status.borrow().last_error.as_deref(), Some("camera: gone"));
         for r in sent.iter() {
@@ -546,6 +557,47 @@ mod tests {
         for r in sent.iter() {
             assert_matches("Heartbeat", &serde_json::to_value(r).unwrap());
         }
+    }
+
+    #[tokio::test]
+    async fn status_error_survives_truncation_of_long_overlays() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push_heartbeat(Ok(vec![remote("reboot", json!({"why": "x".repeat(700)}))]));
+        let status = status_channel(AgentStatus {
+            disk_used_pct: f32::NAN,
+            last_error: Some("camera: gone".into()),
+            ..AgentStatus::default()
+        });
+        let (deps, _commands, _tmp) = deps(transport.clone(), status);
+        let mut acked = Vec::new();
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        let sent = transport.heartbeats.lock().unwrap();
+        let error = sent[1].last_error.clone().unwrap();
+        assert_eq!(error.chars().count(), 500, "the long command error was truncated");
+        assert!(error.starts_with("camera: gone; disk usage unreadable; command "), "{error}");
+        assert_matches("Heartbeat", &serde_json::to_value(&sent[1]).unwrap());
+    }
+
+    #[tokio::test]
+    async fn failed_led_is_reported_even_when_another_error_took_the_slot() {
+        let transport = Arc::new(FakeTransport::default());
+        let status = status_channel(AgentStatus {
+            led: LedHealth::Failed,
+            last_error: Some("network error: down".into()),
+            ..AgentStatus::default()
+        });
+        let (deps, _commands, _tmp) = deps(transport.clone(), status.clone());
+        heartbeat_once(&deps, &mut Vec::new()).await.unwrap();
+        status.send_modify(|s| s.last_error = Some(LED_UNAVAILABLE_ERROR.into()));
+        heartbeat_once(&deps, &mut Vec::new()).await.unwrap();
+        status.send_modify(|s| s.led = LedHealth::Working);
+        status.send_modify(|s| s.last_error = None);
+        heartbeat_once(&deps, &mut Vec::new()).await.unwrap();
+        let sent = transport.heartbeats.lock().unwrap();
+        assert_eq!(sent[0].last_error.as_deref(), Some("privacy LED unavailable: recording disabled; network error: down"));
+        assert_eq!(sent[1].last_error.as_deref(), Some(LED_UNAVAILABLE_ERROR), "not repeated");
+        assert_eq!(sent[2].last_error, None);
     }
 
     #[tokio::test]

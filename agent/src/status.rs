@@ -3,6 +3,18 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+/// Whether the privacy LED is known to work. Recording is allowed only while it is `Working`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LedHealth {
+    /// No LED write has succeeded yet.
+    #[default]
+    Unconfirmed,
+    /// The most recent write succeeded (or fewer than `led::LED_FAILURE_LIMIT` failed since).
+    Working,
+    /// The GPIO line could not be opened, or `led::LED_FAILURE_LIMIT` writes in a row failed.
+    Failed,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentStatus {
     pub paired: bool,
@@ -14,6 +26,7 @@ pub struct AgentStatus {
     pub mic_missing: bool,
     pub disk_used_pct: f32,
     pub disk_stopped: bool,
+    pub led: LedHealth,
     pub last_error: Option<String>,
     pub dropped_since_heartbeat: u32,
 }

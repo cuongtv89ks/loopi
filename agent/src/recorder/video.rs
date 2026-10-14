@@ -258,6 +258,7 @@ async fn record_once(
     let started = Instant::now();
     let mut collector = SegmentCollector::new(run_dir.clone(), clock.now(), opts.segment, opts.fps);
     let mut ticker = tokio::time::interval(opts.poll);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let end = loop {
         tokio::select! {
             _ = ticker.tick() => {

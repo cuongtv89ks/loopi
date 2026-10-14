@@ -15,6 +15,11 @@ const PUBLIC: u32 = 0o644;
 
 /// Brain per-item upload limit: `x-loopi-max-item-bytes` in `docs/protocol/v1.openapi.yaml` (64 MiB).
 pub const MAX_ITEM_BYTES: u64 = 67_108_864;
+/// Share of `MAX_ITEM_BYTES` a segment may use at the *nominal* bitrate. The rest absorbs encoder
+/// overshoot (H.264 rate control is not exact) and segments that run past their nominal length.
+const ITEM_BUDGET_PERCENT: u64 = 75;
+/// Largest nominal segment (`bitrate x segment_seconds / 8`) the config accepts.
+pub const MAX_NOMINAL_SEGMENT_BYTES: u64 = MAX_ITEM_BYTES * ITEM_BUDGET_PERCENT / 100;
 /// Brain per-segment duration limit: `x-loopi-max-segment-seconds` in `docs/protocol/v1.openapi.yaml`.
 pub const CONTRACT_MAX_SEGMENT_SECONDS: u32 = 3600;
 /// The agent's own accepted segment length range (validated in `Config::validate`).
@@ -103,7 +108,7 @@ impl Default for CaptureConfig {
     }
 }
 
-/// Upper bound on the size of one video segment at the configured bitrate.
+/// Size of one video segment at the configured (nominal) bitrate.
 pub fn max_segment_bytes(capture: &CaptureConfig) -> u64 {
     u64::from(capture.video_bitrate_bps) * u64::from(capture.segment_seconds) / 8
 }
@@ -200,10 +205,11 @@ impl Config {
             ));
         }
         let max_bytes = max_segment_bytes(c);
-        if max_bytes > MAX_ITEM_BYTES {
+        if max_bytes > MAX_NOMINAL_SEGMENT_BYTES {
             return invalid(format!(
-                "capture.video_bitrate_bps x segment_seconds allows {max_bytes}-byte segments, \
-                 above the brain's {MAX_ITEM_BYTES}-byte item limit"
+                "capture.video_bitrate_bps x segment_seconds allows {max_bytes}-byte segments, above \
+                 {MAX_NOMINAL_SEGMENT_BYTES} bytes ({ITEM_BUDGET_PERCENT} % of the brain's {MAX_ITEM_BYTES}-byte \
+                 item limit, leaving room for encoder overshoot)"
             ));
         }
         if c.audio_device.trim().is_empty() || c.camera_cmd.trim().is_empty() {
@@ -340,7 +346,8 @@ mod tests {
     #[test]
     fn default_config_fits_brain_item_limit() {
         let c = CaptureConfig::default();
-        assert!(max_segment_bytes(&c) <= MAX_ITEM_BYTES);
+        assert!(max_segment_bytes(&c) <= MAX_NOMINAL_SEGMENT_BYTES);
+        assert_eq!(MAX_NOMINAL_SEGMENT_BYTES, 50_331_648, "75 % of 64 MiB");
         assert!(Config::parse(MINIMAL).is_ok());
     }
 
@@ -350,8 +357,11 @@ mod tests {
         let text = format!("{MINIMAL}[capture]\nvideo_bitrate_bps = 10000000\nsegment_seconds = 600\n");
         let err = Config::parse(&text).unwrap_err().to_string();
         assert!(err.contains("67108864"), "{err}");
-        // Just under the limit passes: 8 Mbps x 60 s / 8 = 60 MB.
-        let ok = format!("{MINIMAL}[capture]\nvideo_bitrate_bps = 8000000\nsegment_seconds = 60\n");
+        // 8 Mbps x 60 s / 8 = 60 MB fits 64 MiB only nominally: no room for overshoot.
+        let tight = format!("{MINIMAL}[capture]\nvideo_bitrate_bps = 8000000\nsegment_seconds = 60\n");
+        assert!(Config::parse(&tight).is_err());
+        // 6 Mbps x 60 s / 8 = 45 MB is inside the 75 % budget.
+        let ok = format!("{MINIMAL}[capture]\nvideo_bitrate_bps = 6000000\nsegment_seconds = 60\n");
         assert!(Config::parse(&ok).is_ok());
     }
 
@@ -363,13 +373,13 @@ mod tests {
             c.capture.segment_seconds = secs;
             c
         };
-        // 1_048_576 bps x 512 s / 8 == 67_108_864 bytes exactly.
-        let at_limit = with(1_048_576, 512);
-        assert_eq!(max_segment_bytes(&at_limit.capture), MAX_ITEM_BYTES);
+        // 786_432 bps x 512 s / 8 == 50_331_648 bytes == 75 % of 64 MiB exactly.
+        let at_limit = with(786_432, 512);
+        assert_eq!(max_segment_bytes(&at_limit.capture), MAX_NOMINAL_SEGMENT_BYTES);
         assert!(at_limit.validate().is_ok());
-        // 1_048_577 bps x 512 s / 8 == 67_108_928 bytes, over the limit.
-        let over = with(1_048_577, 512);
-        assert!(max_segment_bytes(&over.capture) > MAX_ITEM_BYTES);
+        // 786_433 bps x 512 s / 8 == 50_331_712 bytes, over the budget.
+        let over = with(786_433, 512);
+        assert!(max_segment_bytes(&over.capture) > MAX_NOMINAL_SEGMENT_BYTES);
         assert!(over.validate().is_err());
     }
 

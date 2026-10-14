@@ -185,7 +185,7 @@ async fn records_uploads_and_obeys_a_remote_pause() {
         disk: Arc::new(FixedDisk::new(10.0)),
         transport: Arc::new(HttpTransport::new(reqwest::Client::new(), &brain.uri())),
         audio_factory: factory,
-        led: Box::new(led),
+        led: Some(Box::new(led)),
         presses,
         probe: Arc::new(NoProbe),
         timings: Timings {

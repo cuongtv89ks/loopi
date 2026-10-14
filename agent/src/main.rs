@@ -8,7 +8,7 @@ use loopi_agent::button::Press;
 use loopi_agent::clock::SystemClock;
 use loopi_agent::config::{import_boot_config, Config};
 use loopi_agent::disk::StatvfsUsage;
-use loopi_agent::led::{blink_while, LedDriver, NoopLed};
+use loopi_agent::led::{blink_while, LedDriver};
 use loopi_agent::pairing::{ensure_paired, retry_delay, Identity};
 use loopi_agent::recorder::audio::AudioSourceFactory;
 use loopi_agent::run::{run, Deps, Timings};
@@ -72,20 +72,22 @@ fn provision(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `None` when the privacy LED cannot be opened: the agent then never records (see `run`).
 #[cfg(target_os = "linux")]
-fn open_led(config: &Config) -> Box<dyn LedDriver> {
+fn open_led(config: &Config) -> Option<Box<dyn LedDriver>> {
     match loopi_agent::led::GpioLed::open(&config.gpio.chip, config.gpio.led) {
-        Ok(led) => Box::new(led),
+        Ok(led) => Some(Box::new(led)),
         Err(e) => {
-            tracing::warn!(error = %e, "LED unavailable");
-            Box::new(NoopLed)
+            tracing::error!(error = %e, chip = %config.gpio.chip, line = config.gpio.led, "privacy LED unavailable: recording disabled");
+            None
         }
     }
 }
 
+/// Dev hosts have no LED.
 #[cfg(not(target_os = "linux"))]
-fn open_led(_config: &Config) -> Box<dyn LedDriver> {
-    Box::new(NoopLed)
+fn open_led(_config: &Config) -> Option<Box<dyn LedDriver>> {
+    Some(Box::new(loopi_agent::led::NoopLed))
 }
 
 #[cfg(target_os = "linux")]
@@ -218,9 +220,13 @@ async fn agent_main() -> Result<()> {
 
     let mut led = open_led(&config);
     let keys = config.paths.data_dir.join("keys");
-    let identity = blink_while(led.as_mut(), pair_until_done(&config, &keys, shutdown.clone(), &liveness)).await?;
+    let pairing = pair_until_done(&config, &keys, shutdown.clone(), &liveness);
+    let identity = match led.as_deref_mut() {
+        Some(led) => blink_while(led, pairing).await?,
+        None => pairing.await?,
+    };
     tracing::info!(device_id = %identity.device_id, "paired");
-    set_status("recording");
+    set_status(if led.is_some() { "running" } else { "privacy LED unavailable: recording disabled" });
 
     let tls = tls::mtls_config(&identity.ca_cert_pem, &identity.cert_pem, &identity.key_pem)?;
     let transport: Arc<dyn Transport> = Arc::new(HttpTransport::new(build_client(tls)?, &config.brain.url));

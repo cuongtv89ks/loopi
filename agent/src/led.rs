@@ -6,9 +6,14 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::control::ControlState;
-use crate::status::AgentStatus;
+use crate::status::{AgentStatus, LedHealth, StatusTx};
 
 pub const CAMERA_FAILURE_LIMIT: u32 = 5;
+/// Consecutive failed LED writes after which the LED counts as broken and recording stops.
+pub const LED_FAILURE_LIMIT: u32 = 20;
+/// `status.last_error` (prefix) while recording is disabled because the LED does not work.
+pub const LED_UNAVAILABLE_ERROR: &str = "privacy LED unavailable: recording disabled";
+pub(crate) const LED_WRITE_ERROR_PREFIX: &str = "privacy LED write failed: ";
 const SLOW_PERIOD_MS: u64 = 1000;
 const FAST_PERIOD_MS: u64 = 200;
 const BLINK_FRAME: Duration = Duration::from_millis(50);
@@ -25,9 +30,11 @@ pub fn led_pattern(status: &AgentStatus, state: &ControlState) -> LedPattern {
     if status.recording_video || status.recording_audio {
         return LedPattern::Solid;
     }
+    // A failed LED keeps blinking: the toggling writes are what detect its recovery.
     let error = !status.paired
         || !status.clock_synced
         || status.disk_stopped
+        || status.led == LedHealth::Failed
         || status.camera_failures >= CAMERA_FAILURE_LIMIT;
     if error {
         LedPattern::FastBlink
@@ -51,8 +58,12 @@ pub trait LedDriver: Send {
     fn set(&mut self, on: bool) -> io::Result<()>;
 }
 
+/// Dev hosts only (they have no LED). It does not exist in Linux builds, so a missing GPIO LED on
+/// the device can never be papered over with a driver that pretends to work.
+#[cfg(not(target_os = "linux"))]
 pub struct NoopLed;
 
+#[cfg(not(target_os = "linux"))]
 impl LedDriver for NoopLed {
     fn set(&mut self, _on: bool) -> io::Result<()> {
         Ok(())
@@ -63,6 +74,86 @@ fn set_logged(led: &mut dyn LedDriver, on: bool) {
     if let Err(e) = led.set(on) {
         tracing::warn!(error = %e, on, "LED driver set failed");
     }
+}
+
+/// Run `capture` with the LED solid, then switch it off. `capture` does not run at all when the
+/// LED cannot be switched on: nothing is captured with the LED dark.
+pub fn while_solid<T>(led: &mut dyn LedDriver, capture: impl FnOnce() -> T) -> io::Result<T> {
+    led.set(true)?;
+    let out = capture();
+    set_logged(led, false);
+    Ok(out)
+}
+
+/// Drives the privacy LED and keeps `status.led` / `status.last_error` in step with whether its
+/// writes work. `LED_FAILURE_LIMIT` failures in a row mark it `Failed` (the recording gates
+/// close); the next successful write marks it `Working` again.
+pub struct LedWriter {
+    driver: Box<dyn LedDriver>,
+    /// Level of the last *successful* write, so a failed one is retried on the next frame.
+    last: Option<bool>,
+    failures: u32,
+}
+
+impl LedWriter {
+    pub fn new(driver: Box<dyn LedDriver>) -> Self {
+        Self { driver, last: None, failures: 0 }
+    }
+
+    /// Write `on` unless it is already the confirmed level. `status` is `None` only for the
+    /// final write after shutdown, when nobody reads it any more.
+    pub fn set(&mut self, on: bool, status: Option<&StatusTx>) {
+        if self.last == Some(on) {
+            return;
+        }
+        match self.driver.set(on) {
+            Ok(()) => {
+                self.last = Some(on);
+                if self.failures >= LED_FAILURE_LIMIT {
+                    tracing::info!(failures = self.failures, "privacy LED works again");
+                }
+                self.failures = 0;
+                if let Some(status) = status {
+                    status.send_if_modified(mark_working);
+                }
+            }
+            Err(e) => {
+                self.failures = self.failures.saturating_add(1);
+                if self.failures == 1 || self.failures == LED_FAILURE_LIMIT {
+                    tracing::error!(error = %e, on, failures = self.failures, "privacy LED write failed");
+                }
+                let Some(status) = status else { return };
+                let failed = self.failures >= LED_FAILURE_LIMIT;
+                let message = if failed {
+                    format!("{LED_UNAVAILABLE_ERROR} (writes keep failing: {e})")
+                } else {
+                    format!("{LED_WRITE_ERROR_PREFIX}{e}")
+                };
+                // Below the limit the health is left as it was (a single glitch does not stop
+                // recording); only the report changes.
+                status.send_if_modified(|s| {
+                    let health = if failed { LedHealth::Failed } else { s.led };
+                    let changed = s.led != health || s.last_error.as_deref() != Some(message.as_str());
+                    s.led = health;
+                    s.last_error = Some(message);
+                    changed
+                });
+            }
+        }
+    }
+}
+
+fn mark_working(s: &mut AgentStatus) -> bool {
+    let ours = s
+        .last_error
+        .as_deref()
+        .is_some_and(|e| e.starts_with(LED_WRITE_ERROR_PREFIX) || e.starts_with(LED_UNAVAILABLE_ERROR));
+    if ours {
+        s.last_error = None;
+    }
+    let changed = ours || s.led != LedHealth::Working;
+    s.led = LedHealth::Working;
+    changed
 }
 
 /// Fast-blink `led` until `fut` completes (used while pairing), then switch it off.
@@ -118,7 +209,7 @@ mod tests {
     use crate::testing::RecordingLed;
 
     fn ok_status() -> AgentStatus {
-        AgentStatus { paired: true, clock_synced: true, ..AgentStatus::default() }
+        AgentStatus { paired: true, clock_synced: true, led: LedHealth::Working, ..AgentStatus::default() }
     }
 
     #[test]
@@ -136,6 +227,12 @@ mod tests {
         assert_eq!(led_pattern(&ok_status(), &state.apply(&Command::Pause)), LedPattern::SlowBlink);
         assert_eq!(led_pattern(&AgentStatus { quiet: true, ..ok_status() }, &state), LedPattern::SlowBlink);
         assert_eq!(led_pattern(&ok_status(), &state), LedPattern::Off);
+        assert_eq!(led_pattern(&AgentStatus { led: LedHealth::Failed, ..ok_status() }, &state), LedPattern::FastBlink);
+        assert_eq!(
+            led_pattern(&AgentStatus { led: LedHealth::Unconfirmed, ..ok_status() }, &state),
+            LedPattern::Off,
+            "no flash at startup before the first write"
+        );
     }
 
     #[test]
@@ -203,6 +300,70 @@ mod tests {
         fn set(&mut self, _on: bool) -> io::Result<()> {
             Err(io::Error::other("gpio gone"))
         }
+    }
+
+    #[test]
+    fn while_solid_lights_the_led_only_around_the_capture() {
+        let mut led = RecordingLed::default();
+        let states = led.states.clone();
+        let seen = while_solid(&mut led, || states.lock().unwrap().clone()).unwrap();
+        assert_eq!(seen, vec![true], "solid during the capture");
+        assert_eq!(*led.states.lock().unwrap(), vec![true, false], "off afterwards");
+    }
+
+    #[test]
+    fn while_solid_does_not_capture_with_a_dark_led() {
+        let mut ran = false;
+        assert!(while_solid(&mut FailingLed, || ran = true).is_err());
+        assert!(!ran);
+    }
+
+    /// Fails while `broken` is set.
+    struct SwitchLed(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl LedDriver for SwitchLed {
+        fn set(&mut self, _on: bool) -> io::Result<()> {
+            if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(io::Error::other("gpio gone"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn writer_marks_the_led_failed_after_the_limit_and_working_again_on_success() {
+        use crate::status::status_channel;
+        let broken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut writer = LedWriter::new(Box::new(SwitchLed(broken.clone())));
+        let status = status_channel(AgentStatus::default());
+        assert_eq!(status.borrow().led, LedHealth::Unconfirmed);
+        writer.set(false, Some(&status));
+        assert_eq!(status.borrow().led, LedHealth::Working, "confirmed by the first successful write");
+
+        broken.store(true, std::sync::atomic::Ordering::SeqCst);
+        for _ in 0..LED_FAILURE_LIMIT - 1 {
+            writer.set(true, Some(&status));
+        }
+        assert_eq!(status.borrow().led, LedHealth::Working, "a few glitches do not stop recording");
+        assert!(status.borrow().last_error.as_deref().unwrap().starts_with(LED_WRITE_ERROR_PREFIX));
+        writer.set(true, Some(&status));
+        assert_eq!(status.borrow().led, LedHealth::Failed);
+        assert!(status.borrow().last_error.as_deref().unwrap().starts_with(LED_UNAVAILABLE_ERROR));
+        assert_eq!(led_pattern(&status.borrow(), &ControlState::initial(true)), LedPattern::FastBlink);
+
+        broken.store(false, std::sync::atomic::Ordering::SeqCst);
+        writer.set(true, Some(&status));
+        assert_eq!(status.borrow().led, LedHealth::Working);
+        assert_eq!(status.borrow().last_error, None, "our error is cleared");
+    }
+
+    #[test]
+    fn writer_leaves_other_errors_alone_on_success() {
+        use crate::status::status_channel;
+        let mut writer = LedWriter::new(Box::new(RecordingLed::default()));
+        let status = status_channel(AgentStatus { last_error: Some("camera: gone".into()), ..AgentStatus::default() });
+        writer.set(true, Some(&status));
+        assert_eq!(status.borrow().last_error.as_deref(), Some("camera: gone"));
     }
 
     #[tokio::test]
