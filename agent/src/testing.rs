@@ -147,3 +147,48 @@ impl Transport for FakeTransport {
         self.heartbeat_results.lock().unwrap().pop_front().unwrap_or(Ok(Vec::new()))
     }
 }
+
+use crate::recorder::audio::AudioSource;
+use crate::recorder::ogg_opus::{FRAME_SAMPLES, SAMPLE_RATE};
+
+/// 440 Hz tone. `stepping` advances a ManualClock by 20 ms per frame and fails after `frames`
+/// (simulating an unplugged mic); `realtime` sleeps 20 ms per frame and never fails.
+pub struct ToneSource {
+    frames_left: Option<u64>,
+    step_clock: Option<Arc<ManualClock>>,
+    realtime: bool,
+    sample: u64,
+}
+
+impl ToneSource {
+    pub fn stepping(clock: Arc<ManualClock>, frames: u64) -> Self {
+        Self { frames_left: Some(frames), step_clock: Some(clock), realtime: false, sample: 0 }
+    }
+
+    pub fn realtime() -> Self {
+        Self { frames_left: None, step_clock: None, realtime: true, sample: 0 }
+    }
+}
+
+impl AudioSource for ToneSource {
+    fn read_frame(&mut self, frame: &mut [i16; FRAME_SAMPLES]) -> io::Result<()> {
+        if let Some(left) = self.frames_left.as_mut() {
+            if *left == 0 {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "microphone unplugged"));
+            }
+            *left -= 1;
+        }
+        for value in frame.iter_mut() {
+            let t = self.sample as f32 / SAMPLE_RATE as f32;
+            *value = ((t * 440.0 * std::f32::consts::TAU).sin() * 8000.0) as i16;
+            self.sample += 1;
+        }
+        if let Some(clock) = &self.step_clock {
+            clock.advance(chrono::Duration::milliseconds(20));
+        }
+        if self.realtime {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        Ok(())
+    }
+}

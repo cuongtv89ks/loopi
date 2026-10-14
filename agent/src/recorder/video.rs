@@ -104,7 +104,7 @@ fn mtime(path: &Path) -> io::Result<DateTime<Utc>> {
     Ok(fs::metadata(path)?.modified()?.into())
 }
 
-fn to_chrono(d: Duration) -> chrono::Duration {
+pub(crate) fn to_chrono(d: Duration) -> chrono::Duration {
     chrono::Duration::from_std(d).unwrap_or(chrono::Duration::seconds(FALLBACK_SEGMENT_SECONDS))
 }
 
