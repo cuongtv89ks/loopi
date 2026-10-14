@@ -4,7 +4,7 @@
 //! here must satisfy the Heartbeat schema: bounded ack list, bounded `last_error`, finite
 //! `disk_used_pct` within 0..=100, finite optional readings.
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
@@ -22,12 +22,18 @@ const MAX_ERROR_LEN: usize = 500;
 /// Contract `acked_command_ids.maxItems`.
 pub const MAX_ACKED_PER_HEARTBEAT: usize = 100;
 
-/// Disk usage clamped into the contract range; an unreadable (NaN) value reports 0.
+/// Reported when no finite disk reading has ever been seen: assume the worst.
+const UNKNOWN_DISK_PCT: f32 = 100.0;
+const DISK_UNREADABLE: &str = "disk usage unreadable";
+const CONTROL_UNAVAILABLE: &str = "control loop unavailable";
+
+/// Last-resort clamp into the contract range; `heartbeat_once` substitutes the last finite
+/// reading before this runs, so a non-finite value here reports the pessimistic default.
 fn sanitize_disk_pct(pct: f32) -> f32 {
-    if pct.is_nan() {
-        0.0
-    } else {
+    if pct.is_finite() {
         pct.clamp(0.0, 100.0)
+    } else {
+        UNKNOWN_DISK_PCT
     }
 }
 
@@ -65,6 +71,10 @@ pub struct Translated {
     pub commands: Vec<Command>,
     pub acked: Vec<String>,
     pub errors: Vec<String>,
+    /// Ids of the valid commands, parallel to `commands`.
+    pub command_ids: Vec<String>,
+    /// Ids of commands that failed to parse (acked immediately).
+    pub invalid_ids: Vec<String>,
 }
 
 /// Every received command is acked — invalid ones too, so the brain stops re-sending them;
@@ -73,8 +83,14 @@ pub fn translate(remote: Vec<RemoteCommand>) -> Translated {
     let mut out = Translated::default();
     for command in remote {
         match parse_remote_command(&command.kind, &command.payload) {
-            Ok(parsed) => out.commands.push(parsed),
-            Err(e) => out.errors.push(format!("command {}: {e}", command.id)),
+            Ok(parsed) => {
+                out.commands.push(parsed);
+                out.command_ids.push(command.id.clone());
+            }
+            Err(e) => {
+                out.errors.push(format!("command {}: {e}", command.id));
+                out.invalid_ids.push(command.id.clone());
+            }
         }
         out.acked.push(command.id);
     }
@@ -92,6 +108,15 @@ pub struct HeartbeatDeps {
     pub interval: Duration,
     /// Last queue depth that could be read; reported when the queue becomes unreadable.
     pub last_queue_depth: AtomicU64,
+    memory: Mutex<Memory>,
+}
+
+/// State carried between heartbeats that is reported through `last_error` overlays.
+#[derive(Default)]
+struct Memory {
+    /// Command problems not yet delivered to the brain; dropped once a heartbeat carrying them succeeds.
+    pending_error: Option<String>,
+    last_disk_pct: Option<f32>,
 }
 
 impl HeartbeatDeps {
@@ -114,6 +139,7 @@ impl HeartbeatDeps {
             started: Instant::now(),
             interval,
             last_queue_depth: AtomicU64::new(0),
+            memory: Mutex::default(),
         }
     }
 
@@ -133,32 +159,49 @@ impl HeartbeatDeps {
 /// at most `MAX_ACKED_PER_HEARTBEAT` acks go out at a time, the rest wait for the next one.
 pub async fn heartbeat_once(deps: &HeartbeatDeps, acked: &mut Vec<String>) -> Result<(), TransportError> {
     let (depth, queue_error) = deps.queue_depth();
-    let request = {
+    let (request, carried_error) = {
         let mut status = deps.status.borrow().clone();
-        if let Some(message) = queue_error {
-            status.last_error = Some(match status.last_error.take() {
-                Some(existing) => format!("{message}; {existing}"),
-                None => message,
-            });
+        let mut memory = deps.memory.lock().unwrap_or_else(|p| p.into_inner());
+        let mut overlays: Vec<String> = queue_error.into_iter().collect();
+        if status.disk_used_pct.is_finite() {
+            memory.last_disk_pct = Some(status.disk_used_pct);
+        } else {
+            status.disk_used_pct = memory.last_disk_pct.unwrap_or(UNKNOWN_DISK_PCT);
+            overlays.push(DISK_UNREADABLE.into());
         }
+        let carried = memory.pending_error.clone();
+        overlays.extend(carried.clone());
+        overlays.extend(status.last_error.take());
+        status.last_error = (!overlays.is_empty()).then(|| overlays.join("; "));
         let control = *deps.control.borrow();
-        build_request(&status, &control, depth, deps.started.elapsed().as_secs(), deps.probe.as_ref(), acked.clone())
+        let request =
+            build_request(&status, &control, depth, deps.started.elapsed().as_secs(), deps.probe.as_ref(), acked.clone());
+        (request, carried)
     };
     let remote = deps.transport.heartbeat(&request).await?;
     acked.drain(..request.acked_command_ids.len());
     let reported = request.dropped_items;
     deps.status.send_modify(|s| s.dropped_since_heartbeat = s.dropped_since_heartbeat.saturating_sub(reported));
     let translated = translate(remote);
-    acked.extend(translated.acked);
-    if !translated.errors.is_empty() {
-        let error = translated.errors.join("; ");
-        tracing::warn!(%error, "invalid command from brain");
-        deps.status.send_modify(|s| s.last_error = Some(error));
-    }
-    for command in translated.commands {
+    let mut errors = translated.errors;
+    // Invalid commands are acked now; valid ones only once they are in the control channel.
+    acked.extend(translated.invalid_ids);
+    for (id, command) in translated.command_ids.into_iter().zip(translated.commands) {
         if deps.commands.send(command).await.is_err() {
+            tracing::error!("control loop unavailable, leaving commands un-acked for redelivery");
+            errors.push(CONTROL_UNAVAILABLE.into());
             break;
         }
+        acked.push(id);
+    }
+    let mut memory = deps.memory.lock().unwrap_or_else(|p| p.into_inner());
+    if memory.pending_error == carried_error {
+        memory.pending_error = None;
+    }
+    if !errors.is_empty() {
+        let error = errors.join("; ");
+        tracing::warn!(%error, "command problem");
+        memory.pending_error = Some(error);
     }
     Ok(())
 }
@@ -265,6 +308,7 @@ mod tests {
             started: Instant::now(),
             interval: HEARTBEAT_INTERVAL,
             last_queue_depth: AtomicU64::new(0),
+            memory: Mutex::default(),
         };
         (deps, cmd_rx, tmp)
     }
@@ -332,7 +376,7 @@ mod tests {
     #[test]
     fn disk_percentage_is_always_finite_and_in_range() {
         for (input, expected) in
-            [(f32::NAN, 0.0), (150.0, 100.0), (-5.0, 0.0), (f32::INFINITY, 100.0), (f32::NEG_INFINITY, 0.0)]
+            [(f32::NAN, 100.0), (150.0, 100.0), (-5.0, 0.0), (f32::INFINITY, 100.0), (f32::NEG_INFINITY, 100.0)]
         {
             let status = AgentStatus { disk_used_pct: input, ..AgentStatus::default() };
             let request = build_request(&status, &ControlState::initial(true), 0, 0, &NoProbe, vec![]);
@@ -380,12 +424,16 @@ mod tests {
         let transport = Arc::new(FakeTransport::default());
         transport.push_heartbeat(Ok(vec![remote("reboot", json!({})), remote("wipe", json!({}))]));
         let status = status_channel(AgentStatus::default());
+        let transport_ref = transport.clone();
         let (deps, _commands, _tmp) = deps(transport, status.clone());
         let mut acked = Vec::new();
         heartbeat_once(&deps, &mut acked).await.unwrap();
-        let error = status.borrow().last_error.clone().unwrap();
+        assert_eq!(status.borrow().last_error, None, "overlay, not shared status");
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        let sent = transport_ref.heartbeats.lock().unwrap();
+        let error = sent[1].last_error.clone().unwrap();
         assert!(error.contains("reboot") && error.contains("wipe"), "{error}");
-        assert_eq!(acked.len(), 2);
+        assert_eq!(sent[1].acked_command_ids.len(), 2);
     }
 
     #[tokio::test]
@@ -426,5 +474,92 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         stop_tx.send(true).unwrap();
         tokio::time::timeout(Duration::from_secs(2), task).await.expect("loop must exit").unwrap();
+    }
+
+    #[tokio::test]
+    async fn command_error_overlays_existing_error_then_clears() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push_heartbeat(Ok(vec![remote("reboot", json!({}))]));
+        let status = status_channel(AgentStatus { last_error: Some("camera: gone".into()), ..AgentStatus::default() });
+        let (deps, _commands, _tmp) = deps(transport.clone(), status.clone());
+        let mut acked = Vec::new();
+        for _ in 0..3 {
+            heartbeat_once(&deps, &mut acked).await.unwrap();
+        }
+        let sent = transport.heartbeats.lock().unwrap();
+        assert_eq!(sent[0].last_error.as_deref(), Some("camera: gone"));
+        let second = sent[1].last_error.clone().unwrap();
+        assert!(second.contains("reboot") && second.ends_with("camera: gone"), "{second}");
+        assert_eq!(sent[2].last_error.as_deref(), Some("camera: gone"), "command error dropped after delivery");
+        assert_eq!(status.borrow().last_error.as_deref(), Some("camera: gone"));
+        for r in sent.iter() {
+            assert_matches("Heartbeat", &serde_json::to_value(r).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn command_error_survives_a_failed_heartbeat() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push_heartbeat(Ok(vec![remote("reboot", json!({}))]));
+        transport.push_heartbeat(Err(TransportError::Network("down".into())));
+        let (deps, _commands, _tmp) = deps(transport.clone(), status_channel(AgentStatus::default()));
+        let mut acked = Vec::new();
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        assert!(heartbeat_once(&deps, &mut acked).await.is_err());
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        let sent = transport.heartbeats.lock().unwrap();
+        assert!(sent[1].last_error.is_some() && sent[2].last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn closed_command_channel_leaves_commands_unacked_and_reports() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push_heartbeat(Ok(vec![remote("pause", json!({})), remote("reboot", json!({}))]));
+        let (deps, commands, _tmp) = deps(transport.clone(), status_channel(AgentStatus::default()));
+        drop(commands);
+        let mut acked = Vec::new();
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        assert_eq!(acked.len(), 1, "only the invalid command is acked; the valid one is redelivered");
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        let sent = transport.heartbeats.lock().unwrap();
+        assert!(sent[1].last_error.as_deref().unwrap().contains("control loop unavailable"));
+        assert_matches("Heartbeat", &serde_json::to_value(&sent[1]).unwrap());
+    }
+
+    #[tokio::test]
+    async fn unreadable_disk_reports_last_finite_value_and_overlay() {
+        let transport = Arc::new(FakeTransport::default());
+        let status = status_channel(AgentStatus { disk_used_pct: f32::NAN, ..AgentStatus::default() });
+        let (deps, _commands, _tmp) = deps(transport.clone(), status.clone());
+        let mut acked = Vec::new();
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        status.send_modify(|s| s.disk_used_pct = 42.0);
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        status.send_modify(|s| s.disk_used_pct = f32::NAN);
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        let sent = transport.heartbeats.lock().unwrap();
+        assert_eq!(sent[0].disk_used_pct, 100.0);
+        assert_eq!(sent[1].disk_used_pct, 42.0);
+        assert!(sent[1].last_error.is_none());
+        assert_eq!(sent[2].disk_used_pct, 42.0);
+        assert_eq!(sent[2].last_error.as_deref(), Some("disk usage unreadable"));
+        for r in sent.iter() {
+            assert_matches("Heartbeat", &serde_json::to_value(r).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn merged_last_error_stays_within_500_chars() {
+        let transport = Arc::new(FakeTransport::default());
+        let status = status_channel(AgentStatus {
+            disk_used_pct: f32::NAN,
+            last_error: Some("é".repeat(600)),
+            ..AgentStatus::default()
+        });
+        let (deps, _commands, _tmp) = deps(transport.clone(), status);
+        heartbeat_once(&deps, &mut Vec::new()).await.unwrap();
+        let sent = transport.heartbeats.lock().unwrap();
+        assert_eq!(sent[0].last_error.as_ref().unwrap().chars().count(), 500);
+        assert_matches("Heartbeat", &serde_json::to_value(&sent[0]).unwrap());
     }
 }
