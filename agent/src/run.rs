@@ -162,21 +162,41 @@ fn check_disk(queue: &Queue, disk: &dyn DiskUsage, status: &StatusTx) {
     }
 }
 
-fn set_led(led: &mut dyn LedDriver, last: &mut Option<bool>, on: bool) {
+const LED_ERROR_PREFIX: &str = "privacy LED write failed: ";
+
+/// Writes the level; `last` only records successful writes so a failed one is retried next frame
+/// (the privacy LED must not stay dark because of one transient GPIO error).
+fn set_led(led: &mut dyn LedDriver, last: &mut Option<bool>, on: bool, status: Option<&StatusTx>) {
     if *last == Some(on) {
         return;
     }
-    if let Err(e) = led.set(on) {
-        tracing::warn!(error = %e, on, "LED write failed");
+    match led.set(on) {
+        Ok(()) => {
+            *last = Some(on);
+            if let Some(status) = status {
+                status.send_if_modified(|s| {
+                    let ours = s.last_error.as_deref().is_some_and(|e| e.starts_with(LED_ERROR_PREFIX));
+                    if ours {
+                        s.last_error = None;
+                    }
+                    ours
+                });
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, on, "LED write failed, will retry");
+            if let Some(status) = status {
+                status.send_modify(|s| s.last_error = Some(format!("{LED_ERROR_PREFIX}{e}")));
+            }
+        }
     }
-    *last = Some(on);
 }
 
 /// Drives the LED from status. Privacy invariant: once shutdown starts the LED is forced on until
 /// `run` reports (`LedPhase::Done`) that both recorders have actually stopped; only then it goes off.
 async fn led_loop(
     mut led: Box<dyn LedDriver>,
-    status: watch::Receiver<AgentStatus>,
+    status: StatusTx,
     control: watch::Receiver<ControlState>,
     frame: Duration,
     mut phase: watch::Receiver<LedPhase>,
@@ -191,14 +211,14 @@ async fn led_loop(
             LedPhase::Draining => LedPattern::Solid,
             LedPhase::Running => led_pattern(&status.borrow(), &control.borrow()),
         };
-        set_led(led.as_mut(), &mut last, level_at(pattern, start.elapsed().as_millis() as u64));
+        set_led(led.as_mut(), &mut last, level_at(pattern, start.elapsed().as_millis() as u64), Some(&status));
         tokio::select! {
             _ = ticker.tick() => {}
             // A dropped sender means `run` is gone: treat it as the end, never spin.
             changed = phase.changed() => if changed.is_err() { break },
         }
     }
-    set_led(led.as_mut(), &mut last, false);
+    set_led(led.as_mut(), &mut last, false, None);
 }
 
 pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
@@ -241,7 +261,7 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
         ),
         shutdown.clone(),
     ));
-    tasks.spawn(led_loop(led, status.subscribe(), control_rx, timings.led_frame, led_phase_rx));
+    tasks.spawn(led_loop(led, status.clone(), control_rx, timings.led_frame, led_phase_rx));
 
     let video_opts = VideoOptions { poll: timings.video_poll, ..VideoOptions::from_config(&config.capture, paths.video_incoming.clone()) };
     let video_task = tokio::spawn(video::run_video(
@@ -265,6 +285,8 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
             .context("starting the audio thread")?
     };
 
+    // Before the first gate computation: recording must never start on a full disk.
+    check_disk(&queue, disk.as_ref(), &status);
     let mut tick = tokio::time::interval(timings.tick);
     let mut disk_tick = tokio::time::interval(timings.disk_check);
     loop {
@@ -373,7 +395,7 @@ mod tests {
         let status = status_channel(AgentStatus::default());
         let (_control_tx, control_rx) = watch::channel(ControlState::initial(true));
         let (phase_tx, phase_rx) = watch::channel(LedPhase::Running);
-        let task = tokio::spawn(led_loop(Box::new(led), status.subscribe(), control_rx, Duration::from_millis(5), phase_rx));
+        let task = tokio::spawn(led_loop(Box::new(led), status.clone(), control_rx, Duration::from_millis(5), phase_rx));
         tokio::time::sleep(Duration::from_millis(30)).await;
         phase_tx.send_replace(LedPhase::Draining);
         tokio::time::sleep(Duration::from_millis(60)).await;
@@ -389,8 +411,54 @@ mod tests {
         let status = status_channel(AgentStatus::default());
         let (_control_tx, control_rx) = watch::channel(ControlState::initial(true));
         let (phase_tx, phase_rx) = watch::channel(LedPhase::Running);
-        let task = tokio::spawn(led_loop(Box::new(led), status.subscribe(), control_rx, Duration::from_millis(5), phase_rx));
+        let task = tokio::spawn(led_loop(Box::new(led), status.clone(), control_rx, Duration::from_millis(5), phase_rx));
         drop(phase_tx);
         tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    }
+
+    struct FlakyLed {
+        failures_left: u32,
+        on: Arc<std::sync::Mutex<bool>>,
+    }
+
+    impl LedDriver for FlakyLed {
+        fn set(&mut self, on: bool) -> std::io::Result<()> {
+            if self.failures_left > 0 {
+                self.failures_left -= 1;
+                return Err(std::io::Error::other("gpio busy"));
+            }
+            *self.on.lock().unwrap() = on;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_led_writes_are_retried_and_reported_until_they_succeed() {
+        let on = Arc::new(std::sync::Mutex::new(false));
+        let led = FlakyLed { failures_left: 3, on: on.clone() };
+        let status = status_channel(AgentStatus { recording_video: true, ..AgentStatus::default() });
+        let (_control_tx, control_rx) = watch::channel(ControlState::initial(true));
+        let (phase_tx, phase_rx) = watch::channel(LedPhase::Running);
+        let task = tokio::spawn(led_loop(Box::new(led), status.clone(), control_rx, Duration::from_millis(5), phase_rx));
+        tokio::time::sleep(Duration::from_millis(8)).await;
+        assert!(status.borrow().last_error.as_deref().is_some_and(|e| e.starts_with(LED_ERROR_PREFIX)));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(*on.lock().unwrap(), "LED ends up on while recording despite early failures");
+        assert_eq!(status.borrow().last_error, None, "error cleared after a successful write");
+        phase_tx.send_replace(LedPhase::Done);
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn disk_is_checked_before_recording_can_start() {
+        // check_disk is what run() calls before the first gate computation.
+        let tmp = tempfile::tempdir().unwrap();
+        let queue = open_queue(tmp.path());
+        let status = status_channel(AgentStatus { paired: true, clock_synced: true, ..AgentStatus::default() });
+        let state = ControlState::initial(true);
+        assert!(recording_gates(&state, &status.borrow()).video, "open before the check");
+        check_disk(&queue, &FixedDisk::new(99.0), &status);
+        let gates = recording_gates(&state, &status.borrow());
+        assert!(!gates.video && !gates.audio, "closed once the full disk is seen");
     }
 }

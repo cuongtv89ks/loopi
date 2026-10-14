@@ -24,6 +24,7 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const PAUSE_ID: &str = "01JA2B3C4D5E6F7G8H9J0KMNPQ";
+const AUDIO_SEGMENT: Duration = Duration::from_secs(1);
 const MAX_SEGMENT_SECONDS: i64 = 3600;
 
 type Violations = Arc<Mutex<Vec<String>>>;
@@ -116,6 +117,15 @@ fn record(violations: &Violations, found: Vec<String>) -> bool {
     ok
 }
 
+/// All regular files below `dir`, recursively (empty when `dir` is missing).
+fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .filter_map(Result::ok)
+        .flat_map(|e| if e.path().is_dir() { files_under(&e.path()) } else { vec![e.path()] })
+        .collect()
+}
+
 fn stray_camera_processes(script: &str) -> bool {
     std::process::Command::new("pgrep").args(["-f", script]).output().unwrap().status.success()
 }
@@ -185,7 +195,7 @@ async fn records_uploads_and_obeys_a_remote_pause() {
             tick: Duration::from_millis(50),
             led_frame: Duration::from_millis(20),
             audio_retry: Duration::from_millis(100),
-            audio_segment: Some(Duration::from_secs(1)),
+            audio_segment: Some(AUDIO_SEGMENT),
         },
     };
     let (stop_tx, stop_rx) = watch::channel(false);
@@ -217,6 +227,19 @@ async fn records_uploads_and_obeys_a_remote_pause() {
     agent.await.unwrap().unwrap();
     assert_eq!(led_states.lock().unwrap().last(), Some(&false));
     assert_eq!(fs::read_dir(data_dir.join("queue/items")).unwrap().count(), 0, "everything was uploaded");
+    let leftovers = files_under(&data_dir.join("queue/incoming"));
+    assert!(leftovers.is_empty(), "nothing stays in incoming/: {leftovers:?}");
+    let final_requests = brain.received_requests().await.unwrap();
+    let shortest_audio = final_requests
+        .iter()
+        .filter(|r| r.method.as_str() == "PUT" && header(r, "x-loopi-kind") == Some("audio"))
+        .map(|r| {
+            let at = |name: &str| DateTime::parse_from_rfc3339(header(r, name).unwrap()).unwrap();
+            (at("x-loopi-end") - at("x-loopi-start")).to_std().unwrap()
+        })
+        .min()
+        .expect("audio was uploaded");
+    assert!(shortest_audio < AUDIO_SEGMENT, "the pause cut a partial audio segment ({shortest_audio:?}) that was uploaded");
     assert!(!stray_camera_processes(&camera), "no camera process outlives the agent");
     assert_eq!(violations.lock().unwrap().clone(), Vec::<String>::new(), "the mock brain saw contract violations");
 }
