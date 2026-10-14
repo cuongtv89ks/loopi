@@ -1,6 +1,18 @@
 {
 	auto_https off
 	admin off
+
+	# client_auth makes Caddy turn on strict_sni_host, which answers 421 whenever the TLS SNI differs from the
+	# Host header. Clients send no SNI for IP-literal URLs (RFC 6066), and devices and browsers are pointed at
+	# https://<LAN IP>:8443, so every such request would be refused. Turning it off is safe here: there is one
+	# catch-all site (:8443) with a single TLS connection policy (verify_if_given) used for every SNI, device
+	# identity comes only from the verified client certificate ({http.request.tls.client.fingerprint}), and the
+	# web routes strip X-Loopi-Client-Fingerprint, so no per-host client-auth policy exists that a mismatched
+	# SNI/Host pair could bypass. If a second site with a different client_auth policy is ever added, turn
+	# strict SNI back on (remove this block) so a request cannot pick a looser policy through its Host header.
+	servers {
+		strict_sni_host insecure_off
+	}
 }
 
 :8443 {
