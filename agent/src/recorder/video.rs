@@ -56,9 +56,12 @@ impl VideoOptions {
 }
 
 /// `--inline` repeats SPS/PPS so every segment decodes on its own; `--intra` keeps I-frames
-/// frequent enough that `--segment` can cut close to the requested length.
+/// frequent enough that `--segment` can cut close to the requested length. `--verbose 0` keeps
+/// rpicam-vid's routine stderr output out of the device's small volatile journal (rpicam-apps
+/// still prints errors at that level).
 pub fn rpicam_args(opts: &VideoOptions, run_dir: &Path) -> Vec<String> {
-    let mut args: Vec<String> = ["-t", "0", "-n", "--codec", "h264", "--inline"].iter().map(|s| s.to_string()).collect();
+    let mut args: Vec<String> =
+        ["-t", "0", "-n", "--codec", "h264", "--inline", "--verbose", "0"].iter().map(|s| s.to_string()).collect();
     args.extend([
         "--intra".to_string(),
         (opts.fps * INTRA_SECONDS).to_string(),
@@ -475,7 +478,7 @@ mod tests {
     fn args_request_segmented_inline_h264() {
         let args = rpicam_args(&opts(Path::new("/tmp"), "rpicam-vid".into()), Path::new("/data/run"));
         let joined = args.join(" ");
-        assert!(joined.starts_with("-t 0 -n --codec h264 --inline"));
+        assert!(joined.starts_with("-t 0 -n --codec h264 --inline --verbose 0"));
         assert!(joined.contains("--intra 10 --framerate 2 --width 640 --height 480 --bitrate 500000"));
         assert!(joined.contains("--segment 60000"));
         assert_eq!(args.last().unwrap(), "/data/run/v_%06d.h264");
