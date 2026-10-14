@@ -93,6 +93,38 @@ fn recover_part(path: &Path, queue: &Queue, segment: chrono::Duration) -> io::Re
     Ok(true)
 }
 
+/// Finished segments waiting for finalisation; bounds memory if the SD card stalls.
+const FINISH_BACKLOG: usize = 2;
+
+type PartWriter = OggOpusWriter<BufWriter<File>>;
+
+struct FinishJob {
+    part: PathBuf,
+    writer: PartWriter,
+    started: DateTime<Utc>,
+    ended: DateTime<Utc>,
+    segment: chrono::Duration,
+}
+
+/// Write the EOS page, fsync and queue. On failure the `.part` stays for `recover_incoming`.
+fn finish_segment(job: FinishJob, queue: &Queue) -> io::Result<()> {
+    let mut out = job.writer.finish().map_err(io::Error::other)?;
+    out.flush()?;
+    out.get_ref().sync_all()?;
+    drop(out);
+    // Same ordering and 3600 s contract clamp as video segments.
+    let started = segment_start(job.started, job.ended, job.segment);
+    queue.enqueue_file(&job.part, ItemKind::Audio, started, job.ended, None)?;
+    Ok(())
+}
+
+fn report_finish_error(status: Option<&StatusTx>, error: &io::Error) {
+    tracing::error!(%error, "cannot finalise audio segment; keeping .part for recovery");
+    if let Some(status) = status {
+        status.send_modify(|s| s.last_error = Some(format!("audio segment: {error}")));
+    }
+}
+
 /// Record consecutive segments until the gate closes, shutdown, or a read error (returned
 /// after the current partial segment has been queued).
 fn record_segments(
@@ -103,44 +135,79 @@ fn record_segments(
     gate: &watch::Receiver<bool>,
     shutdown: &watch::Receiver<bool>,
 ) -> io::Result<()> {
+    record_segments_with(source, opts, queue, clock, gate, shutdown, None, &|| {})
+}
+
+/// Capture never waits for storage: a segment's writer is handed to a finisher thread the
+/// moment its last frame is read, and the next segment starts at that same instant.
+#[allow(clippy::too_many_arguments)]
+fn record_segments_with(
+    source: &mut dyn AudioSource,
+    opts: &AudioOptions,
+    queue: &Queue,
+    clock: &dyn Clock,
+    gate: &watch::Receiver<bool>,
+    shutdown: &watch::Receiver<bool>,
+    status: Option<&StatusTx>,
+    finish_hook: &(dyn Fn() + Sync),
+) -> io::Result<()> {
     fs::create_dir_all(&opts.incoming_dir)?;
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<FinishJob>(FINISH_BACKLOG);
+        scope.spawn(move || {
+            for job in rx {
+                finish_hook();
+                if let Err(error) = finish_segment(job, queue) {
+                    report_finish_error(status, &error);
+                }
+            }
+        });
+        // `tx` is dropped when capture returns, so the scope joins after the backlog is queued.
+        capture_loop(source, opts, clock, gate, shutdown, tx)
+    })
+}
+
+fn capture_loop(
+    source: &mut dyn AudioSource,
+    opts: &AudioOptions,
+    clock: &dyn Clock,
+    gate: &watch::Receiver<bool>,
+    shutdown: &watch::Receiver<bool>,
+    finisher: std::sync::mpsc::SyncSender<FinishJob>,
+) -> io::Result<()> {
     let segment = to_chrono(opts.segment);
     let mut frame = [0i16; FRAME_SAMPLES];
+    let mut started = clock.now();
     loop {
-        let started = clock.now();
         let boundary = next_boundary(started, opts.segment);
         let part = opts.incoming_dir.join(format!("{}{PART_SUFFIX}", ulid::Ulid::new()));
         let serial = (ulid::Ulid::new().random() & 0xffff_ffff) as u32;
         let mut writer = OggOpusWriter::new(BufWriter::new(File::create(&part)?), serial).map_err(io::Error::other)?;
-        let (stop, read_result) = loop {
+        let (stop, read_result, ended) = loop {
             if should_stop(gate, shutdown) {
-                break (true, Ok(()));
+                break (true, Ok(()), clock.now());
             }
             if let Err(e) = source.read_frame(&mut frame) {
-                break (true, Err(e));
+                break (true, Err(e), clock.now());
             }
             writer.write_frame(&frame).map_err(io::Error::other)?;
-            if clock.now() >= boundary {
-                break (false, Ok(()));
+            let now = clock.now();
+            if now >= boundary {
+                break (false, Ok(()), now);
             }
         };
-        let frames = writer.frames();
-        let mut out = writer.finish().map_err(io::Error::other)?;
-        out.flush()?;
-        out.get_ref().sync_all()?;
-        drop(out);
-        if frames > 0 {
-            // Same ordering and 3600 s contract clamp as video segments.
-            let ended = clock.now();
-            let started = segment_start(started, ended, segment);
-            queue.enqueue_file(&part, ItemKind::Audio, started, ended, None)?;
+        if writer.frames() > 0 {
+            let job = FinishJob { part, writer, started, ended, segment };
+            finisher.send(job).map_err(|_| io::Error::other("audio finisher stopped"))?;
         } else {
+            drop(writer);
             fs::remove_file(&part)?;
         }
         read_result?;
         if stop {
             return Ok(());
         }
+        started = ended;
     }
 }
 
@@ -193,7 +260,7 @@ pub fn run_audio_blocking(
         let result = match factory() {
             Ok(mut source) => {
                 status.send_modify(|s| s.mic_missing = false);
-                record_segments(source.as_mut(), &opts, &queue, clock.as_ref(), &gate, &shutdown)
+                record_segments_with(source.as_mut(), &opts, &queue, clock.as_ref(), &gate, &shutdown, Some(&status), &|| {})
             }
             Err(e) => Err(e),
         };
@@ -231,6 +298,15 @@ pub mod alsa_source {
                 let hw = HwParams::any(&pcm).map_err(to_io)?;
                 hw.set_channels(1).map_err(to_io)?;
                 hw.set_rate(SAMPLE_RATE, ValueOr::Nearest).map_err(to_io)?;
+                // An explicit hw: device may only offer other rates; encoding that as 16 kHz
+                // would play back at the wrong speed.
+                let rate = hw.get_rate().map_err(to_io)?;
+                let channels = hw.get_channels().map_err(to_io)?;
+                if rate != SAMPLE_RATE || channels != 1 {
+                    return Err(io::Error::other(format!(
+                        "{device} offers {rate} Hz / {channels} ch, need {SAMPLE_RATE} Hz mono"
+                    )));
+                }
                 hw.set_format(Format::s16()).map_err(to_io)?;
                 hw.set_access(Access::RWInterleaved).map_err(to_io)?;
                 pcm.hw_params(&hw).map_err(to_io)?;
@@ -383,6 +459,22 @@ mod tests {
         items
     }
 
+    /// Records when the wrapped source stops delivering frames.
+    struct TimedSource<'a> {
+        inner: &'a mut ToneSource,
+        ended: &'a std::sync::Mutex<Option<std::time::Instant>>,
+    }
+
+    impl AudioSource for TimedSource<'_> {
+        fn read_frame(&mut self, frame: &mut [i16; FRAME_SAMPLES]) -> io::Result<()> {
+            let result = self.inner.read_frame(frame);
+            if result.is_err() {
+                self.ended.lock().unwrap().get_or_insert_with(std::time::Instant::now);
+            }
+            result
+        }
+    }
+
     /// Moves the clock by `jump` on the first read, then fails.
     struct JumpSource {
         clock: Arc<ManualClock>,
@@ -500,5 +592,38 @@ mod tests {
             worker.join().unwrap();
             assert!(!status.borrow().recording_audio);
         }
+    }
+
+    #[test]
+    fn slow_finisher_does_not_delay_capture_and_times_chain() {
+        use std::sync::atomic::AtomicU64;
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let t0 = Utc.with_ymd_and_hms(2026, 10, 14, 1, 0, 0).unwrap();
+        let clock = Arc::new(ManualClock::new(t0));
+        let mut source = ToneSource::stepping(clock.clone(), 120);
+        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10) };
+        let (_g, gate) = watch::channel(true);
+        let (_s, stop) = watch::channel(false);
+        let finished = AtomicU64::new(0);
+        let capture_ended = std::sync::Mutex::new(None);
+        let started = std::time::Instant::now();
+        let mut source = TimedSource { inner: &mut source, ended: &capture_ended };
+        // Each finalisation takes 300 ms; inline, two of them would delay capture past 600 ms.
+        let result = record_segments_with(&mut source, &opts, &queue, clock.as_ref(), &gate, &stop, None, &|| {
+            std::thread::sleep(Duration::from_millis(300));
+            finished.fetch_add(1, Ordering::SeqCst);
+        });
+        let capture_took = capture_ended.lock().unwrap().unwrap().duration_since(started);
+        assert!(capture_took < Duration::from_millis(250), "capture waited for the finisher: {capture_took:?}");
+        assert!(result.is_err());
+        let mut items = drain(&queue);
+        items.sort_by_key(|m| m.started_at);
+        assert_eq!(items.len(), 3, "backlog is drained before returning");
+        assert_eq!(finished.load(Ordering::SeqCst), 3);
+        for pair in items.windows(2) {
+            assert_eq!(pair[1].started_at, pair[0].ended_at, "next start == previous end");
+        }
+        assert_eq!(items[0].started_at, t0);
     }
 }

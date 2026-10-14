@@ -139,26 +139,97 @@ mod tests {
         assert!(last.last_in_stream());
         assert_eq!(last.absgp_page(), 50 * GRANULE_PER_FRAME);
 
-        // Structure: BOS on the head only, EOS on the last packet only, granules never go back.
-        assert!(head.first_in_stream());
-        assert!(!tags.first_in_stream());
-        assert_eq!(head.stream_serial(), 7);
-        assert_eq!(&head.data[8..10], &[1, 1], "version 1, mono");
-        assert!(packets[..packets.len() - 1].iter().all(|p| !p.last_in_stream()));
-        let granules: Vec<u64> = packets.iter().map(|p| p.absgp_page()).collect();
-        assert!(granules.windows(2).all(|w| w[0] <= w[1]));
-        assert!(granules.iter().all(|g| g % GRANULE_PER_FRAME == 0 && *g > 0));
+    }
+
+    struct Page {
+        flags: u8,
+        granule: u64,
+        serial: u32,
+        sequence: u32,
+        packets: Vec<Vec<u8>>,
+    }
+
+    /// Walk the raw page structure (RFC 3533): header, segment table, lacing into packets.
+    fn parse_pages(bytes: &[u8]) -> Vec<Page> {
+        let mut pages = Vec::new();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            assert_eq!(&bytes[pos..pos + 4], b"OggS", "capture pattern at page start");
+            assert_eq!(bytes[pos + 4], 0, "stream structure version");
+            let flags = bytes[pos + 5];
+            let granule = u64::from_le_bytes(bytes[pos + 6..pos + 14].try_into().unwrap());
+            let serial = u32::from_le_bytes(bytes[pos + 14..pos + 18].try_into().unwrap());
+            let sequence = u32::from_le_bytes(bytes[pos + 18..pos + 22].try_into().unwrap());
+            let count = bytes[pos + 26] as usize;
+            let table = &bytes[pos + 27..pos + 27 + count];
+            let mut at = pos + 27 + count;
+            let mut packets = Vec::new();
+            let mut current = Vec::new();
+            for &lace in table {
+                current.extend_from_slice(&bytes[at..at + lace as usize]);
+                at += lace as usize;
+                if lace < 255 {
+                    packets.push(std::mem::take(&mut current));
+                }
+            }
+            assert!(current.is_empty(), "no packet continues across pages in these tests");
+            pages.push(Page { flags, granule, serial, sequence, packets });
+            pos = at;
+        }
+        pages
     }
 
     #[test]
-    fn stream_starts_with_capture_pattern_and_two_header_pages() {
-        let mut writer = OggOpusWriter::new(Vec::new(), 3).unwrap();
-        writer.write_frame(&tone(0)).unwrap();
+    fn page_structure_follows_rfc_7845() {
+        const BOS: u8 = 0x02;
+        const EOS: u8 = 0x04;
+        let mut writer = OggOpusWriter::new(Vec::new(), 0xA1B2_C3D4).unwrap();
+        for i in 0..50 {
+            writer.write_frame(&tone(i)).unwrap();
+        }
         let bytes = writer.finish().unwrap();
-        assert_eq!(&bytes[..4], b"OggS");
-        let pages = bytes.windows(4).filter(|w| *w == b"OggS").count();
-        assert!(pages >= 3, "OpusHead page, OpusTags page and at least one audio page");
-        assert!(bytes.windows(8).any(|w| w == b"OpusTags"));
+        let pages = parse_pages(&bytes);
+        assert!(pages.len() >= 3);
+
+        let head = &pages[0];
+        assert_eq!(head.flags, BOS, "OpusHead page is BOS only");
+        assert_eq!(head.granule, 0);
+        assert_eq!(head.packets.len(), 1, "OpusHead alone on its page");
+        let h = &head.packets[0];
+        assert_eq!(h.len(), 19);
+        assert_eq!(&h[..8], b"OpusHead");
+        assert_eq!(h[8], 1, "version");
+        assert_eq!(h[9], 1, "channels");
+        assert_eq!(u16::from_le_bytes([h[10], h[11]]), 312, "pre-skip");
+        assert_eq!(u32::from_le_bytes(h[12..16].try_into().unwrap()), 16_000, "input rate");
+        assert_eq!(i16::from_le_bytes([h[16], h[17]]), 0, "output gain");
+        assert_eq!(h[18], 0, "channel mapping family");
+
+        let tags = &pages[1];
+        assert_eq!(tags.flags, 0);
+        assert_eq!(tags.granule, 0);
+        assert_eq!(tags.packets.len(), 1, "OpusTags alone on its page");
+        let t = &tags.packets[0];
+        assert_eq!(&t[..8], b"OpusTags");
+        let vendor_len = u32::from_le_bytes(t[8..12].try_into().unwrap()) as usize;
+        assert_eq!(&t[12..12 + vendor_len], b"loopi-agent");
+        assert_eq!(u32::from_le_bytes(t[12 + vendor_len..16 + vendor_len].try_into().unwrap()), 0);
+
+        let mut completed = 0u64;
+        for (i, page) in pages.iter().enumerate() {
+            assert_eq!(page.serial, 0xA1B2_C3D4, "one constant serial");
+            assert_eq!(page.sequence as usize, i, "page sequence numbers are consecutive");
+            if i < 2 {
+                continue;
+            }
+            completed += page.packets.len() as u64;
+            assert_eq!(page.granule, completed * GRANULE_PER_FRAME, "granule = 960 x packets completed at page end");
+            let is_last = i == pages.len() - 1;
+            assert_eq!(page.flags & EOS != 0, is_last, "EOS only on the last page");
+            assert_eq!(page.flags & BOS, 0);
+        }
+        assert_eq!(completed, 50);
+        assert_eq!(pages.last().unwrap().granule, 50 * GRANULE_PER_FRAME);
     }
 
     #[test]
