@@ -127,6 +127,7 @@ fn report_finish_error(status: Option<&StatusTx>, error: &io::Error) {
 
 /// Record consecutive segments until the gate closes, shutdown, or a read error (returned
 /// after the current partial segment has been queued).
+#[cfg(test)]
 fn record_segments(
     source: &mut dyn AudioSource,
     opts: &AudioOptions,
