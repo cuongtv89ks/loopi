@@ -6,6 +6,8 @@ Before=loopi-wifi.service loopi-agent.service
 
 [Service]
 Type=oneshot
+# Bounds the /boot write window below: a hung import is killed and /boot goes read-only again (ExecStopPost).
+TimeoutStartSec=60
 # /boot is mounted read-only (fstab): a power cut while a FAT is writable can corrupt it. This is the one place that
 # writes /boot at run time (provisioning scrubs the secrets from loopi.toml), so it is writable only while this runs.
 # The ro remount runs on success (ExecStartPost) and after every failure (ExecStopPost, also when the rw remount or

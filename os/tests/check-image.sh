@@ -431,4 +431,53 @@ wlan0_dhcp_identity_is_the_mac() {
 }
 check "wlan0 asks DHCP with its MAC as client identifier (same IP across power cuts)" wlan0_dhcp_identity_is_the_mac
 
+# --- Final fix G: cheap gaps. The agent unit's lifecycle settings (notify + watchdog, restart, /data, provisioning
+# first), the usb0 DHCP server not handing out a DNS server, /data checked at boot (fsck pass 2), and the tools the
+# units and loopi-usbmode call by path or name.
+agent_unit_lifecycle() {
+  local keys; keys="$(unit_keys etc/systemd/system/loopi-agent.service)" || return 1
+  grep -Fx '[Service] Type=notify' <<<"$keys" && grep -Fx '[Service] Restart=always' <<<"$keys" \
+    && grep -Fx '[Unit] RequiresMountsFor=/data' <<<"$keys" \
+    && grep -Ex '\[Unit\] After=(.* )?loopi-provision\.service( .*)?' <<<"$keys"
+}
+check "agent unit: Type=notify, Restart=always, RequiresMountsFor=/data, after loopi-provision" agent_unit_lifecycle
+usb0_emits_no_dns() {
+  local keys; keys="$(unit_keys etc/systemd/network/30-usb0.network)" || return 1
+  grep -Fx '[DHCPServer] EmitDNS=no' <<<"$keys"
+}
+check "usb0 DHCP server hands out no DNS server (the computer keeps its own)" usb0_emits_no_dns
+fstab_data_is_checked() {
+  rootfs_cat etc/fstab | awk '$1 !~ /^#/ && $2 == "/data" { found = 1; ok = ($1 == "/dev/mmcblk0p4" && $6 == 2) }
+                             END { exit !(found && ok) }'
+}
+check "fstab checks /data at boot (fsck pass 2)" fstab_data_is_checked
+check "mount and mountpoint are in the image (loopi-provision, loopi-usbmode)" bash -c \
+  "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && grep -qx 'squashfs-root/usr/bin/mount' /tmp/rootfs.list && grep -qx 'squashfs-root/usr/bin/mountpoint' /tmp/rootfs.list"
+provision_window_is_bounded() {
+  local keys; keys="$(unit_keys etc/systemd/system/loopi-provision.service)" || return 1
+  grep -Fx '[Service] TimeoutStartSec=60' <<<"$keys"
+}
+check "loopi-provision gives up after 60 s (it holds the /boot write window)" provision_window_is_bounded
+# loopi-usbmode without LOOPI_BOOT_CONFIG while /boot is not mounted (nofail leaves an unrepairable FAT unmounted): every
+# mode fails with a pointer to the fsck log and touches nothing; a config that cannot be read is an error, never "host".
+# `mountpoint` is stubbed to say no for every path and `mount` only logs, so the build host's /boot is never touched.
+usbmode_fails_closed() {
+  local tmp rc=0 out mode; tmp="$(mktemp -d)" || return 1
+  mkdir "$tmp/bin"
+  rootfs_cat usr/bin/loopi-usbmode > "$tmp/loopi-usbmode" && chmod +x "$tmp/loopi-usbmode" || { rm -rf "$tmp"; return 1; }
+  printf '#!/bin/sh\nexit 1\n' > "$tmp/bin/mountpoint"
+  printf '#!/bin/sh\necho "$*" >> "%s/mount.log"\n' "$tmp" > "$tmp/bin/mount"
+  chmod +x "$tmp/bin/mountpoint" "$tmp/bin/mount"
+  for mode in "" host gadget; do
+    out="$(env -u LOOPI_BOOT_CONFIG PATH="$tmp/bin:$PATH" "$tmp/loopi-usbmode" ${mode:+"$mode"} 2>"$tmp/err")" && rc=1
+    [ -z "$out" ] && grep -qF '/boot is not mounted' "$tmp/err" \
+      && grep -qF 'journalctl -u systemd-fsck@dev-mmcblk0p1' "$tmp/err" || rc=1
+  done
+  [ ! -e "$tmp/mount.log" ] || rc=1
+  out="$(env PATH="$tmp/bin:$PATH" LOOPI_BOOT_CONFIG="$tmp/missing/config.txt" "$tmp/loopi-usbmode" 2>"$tmp/err")" && rc=1
+  [ -z "$out" ] && grep -qF "cannot read $tmp/missing/config.txt" "$tmp/err" || rc=1
+  rm -rf "$tmp"; return $rc
+}
+check "loopi-usbmode fails closed: /boot not mounted -> error in every mode; unreadable config -> error, not \"host\"" usbmode_fails_closed
+
 exit $fail

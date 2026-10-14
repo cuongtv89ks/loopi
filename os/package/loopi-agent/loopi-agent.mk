@@ -12,6 +12,9 @@ LOOPI_AGENT_DEPENDENCIES = host-rustc host-pkgconf alsa-lib opus
 
 # Same environment as Buildroot's cargo-package infrastructure (cross linker, target triple,
 # pkg-config sysroot). Crates are fetched from crates.io; Cargo.lock pins every version.
+# PKG_CARGO_ENV also overrides the crate's [profile.release] through CARGO_PROFILE_RELEASE_*: opt-level 2
+# (BR2_OPTIMIZE_2), no LTO (BR2_ENABLE_LTO unset), 16 codegen units, no debug info. Deliberate (ruling C38):
+# speed on the ARM1176 over binary size; the crate's own opt-level "s" + LTO only applies to host builds.
 define LOOPI_AGENT_BUILD_CMDS
 	cd $(@D) && $(TARGET_MAKE_ENV) $(TARGET_CONFIGURE_OPTS) $(PKG_CARGO_ENV) \
 		PKG_CONFIG_ALLOW_CROSS=1 \

@@ -11,8 +11,18 @@ LINE='dtoverlay=dwc2,dr_mode=peripheral'
 BOOT_DIR="$(dirname "$CONFIG")"
 window=""   # the mount point that is currently open for writing
 
+# A config that cannot be read is an error, never "host".
 configured_mode() {
-	if grep -qx "$LINE" "$CONFIG"; then echo gadget; else echo host; fi
+	found=0
+	grep -qsx "$LINE" "$CONFIG" || found=$?
+	case "$found" in
+		0) echo gadget ;;
+		1) echo host ;;
+		*)
+			echo "cannot read $CONFIG" >&2
+			return 1
+			;;
+	esac
 }
 
 # Only a real mount point is remounted: with LOOPI_BOOT_CONFIG in a plain directory (the image checks run this script
@@ -36,6 +46,13 @@ close_window() {
 
 trap close_window EXIT
 trap 'exit 1' HUP INT TERM
+
+# The boot partition is nofail: a FAT that fsck could not repair stays unmounted, and /boot is then the read-only root's
+# empty mount point. Neither read nor edit that (LOOPI_BOOT_CONFIG is for the image checks on the build host).
+if [ -z "${LOOPI_BOOT_CONFIG:-}" ] && ! mountpoint -q /boot; then
+	echo "/boot is not mounted — see journalctl -u systemd-fsck@dev-mmcblk0p1" >&2
+	exit 1
+fi
 
 case "${1:-}" in
 	"")
