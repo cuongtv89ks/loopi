@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{normalize_fingerprint, Config};
 use crate::fsutil::write_atomic;
+use crate::tls::{mtls_config, TlsError};
 use crate::transport::{pair, TransportError};
 use crate::wire::{HwInfo, PairRequest};
 
@@ -18,7 +19,7 @@ pub const KEY_FILE: &str = "device.key";
 pub const CERT_FILE: &str = "device.crt";
 pub const CA_FILE: &str = "ca.crt";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Identity {
     pub device_id: String,
     pub key_pem: String,
@@ -26,8 +27,16 @@ pub struct Identity {
     pub ca_cert_pem: String,
 }
 
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Identity").field("device_id", &self.device_id).field("key_pem", &"<redacted>").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PairError {
+    #[error("brain returned an unusable identity: {0}")]
+    BadIdentity(#[from] TlsError),
     #[error("device is not paired and brain.pair_token is not configured")]
     NoToken,
     #[error("CA fingerprint mismatch: expected {expected}, got {actual}")]
@@ -107,13 +116,25 @@ pub async fn ensure_paired(
     hw: HwInfo,
     client: &reqwest::Client,
 ) -> Result<Identity, PairError> {
+    ensure_paired_with(config, keys_dir, hw, client, generate_key_and_csr).await
+}
+
+async fn ensure_paired_with(
+    config: &Config,
+    keys_dir: &Path,
+    hw: HwInfo,
+    client: &reqwest::Client,
+    keygen: impl FnOnce() -> Result<(String, String), rcgen::Error>,
+) -> Result<Identity, PairError> {
     if let Some(identity) = load_identity(keys_dir)? {
         return Ok(identity);
     }
     let token = config.brain.pair_token.clone().ok_or(PairError::NoToken)?;
-    let (key_pem, csr_pem) = generate_key_and_csr()?;
+    let (key_pem, csr_pem) = keygen()?;
     let response = pair(client, &config.brain.url, &PairRequest { token, csr_pem, hw_info: hw }).await?;
     verify_ca(&response.ca_cert_pem, &response.ca_fingerprint, config.brain.ca_fingerprint.as_deref())?;
+    // The cert must match our key and chain to the CA; otherwise saving it would wedge the device.
+    mtls_config(&response.ca_cert_pem, &response.cert_pem, &key_pem)?;
     let identity = Identity {
         device_id: response.device_id,
         key_pem,
@@ -151,13 +172,21 @@ mod tests {
         HwInfo { model: "test".into(), serial: "1".into(), agent_version: "0.1.0".into() }
     }
 
-    async fn brain(ca_pem: &str, ca_fp: &str, expected_calls: u64) -> MockServer {
+    /// Keygen returning the test PKI's client key, so the mock brain's cert matches the key.
+    fn keygen_for(key_pem: String) -> impl FnOnce() -> Result<(String, String), rcgen::Error> {
+        move || {
+            let key = KeyPair::from_pem(&key_pem)?;
+            let csr = CertificateParams::new(Vec::<String>::new())?.serialize_request(&key)?;
+            Ok((key_pem, csr.pem()?))
+        }
+    }
+
+    async fn brain(ca_pem: &str, cert_pem: &str, ca_fp: &str, expected_calls: u64) -> MockServer {
         let server = MockServer::start().await;
-        let (_, cert, _) = test_pki();
         Mock::given(method("POST"))
             .and(path("/v1/pair"))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-                "device_id": DEVICE, "cert_pem": cert, "ca_cert_pem": ca_pem, "ca_fingerprint": ca_fp
+                "device_id": DEVICE, "cert_pem": cert_pem, "ca_cert_pem": ca_pem, "ca_fingerprint": ca_fp
             })))
             .expect(expected_calls)
             .mount(&server)
@@ -183,13 +212,15 @@ mod tests {
 
     #[tokio::test]
     async fn pairing_persists_identity_and_is_not_repeated() {
-        let (ca, _, _) = test_pki();
+        let (ca, cert, key) = test_pki();
         let fp = sha256_of_first_cert(&ca).unwrap();
-        let server = brain(&ca, &fp, 1).await;
+        let server = brain(&ca, &cert, &fp, 1).await;
         let keys = tempfile::tempdir().unwrap();
         let cfg = config(&server.uri(), Some("ABCD-EFGH"), Some(&fp.to_uppercase()));
 
-        let identity = ensure_paired(&cfg, keys.path(), hw(), &reqwest::Client::new()).await.unwrap();
+        let identity =
+            ensure_paired_with(&cfg, keys.path(), hw(), &reqwest::Client::new(), keygen_for(key)).await.unwrap();
+        assert!(!format!("{identity:?}").contains("PRIVATE KEY"));
         assert_eq!(identity.device_id, DEVICE);
         assert_eq!(load_identity(keys.path()).unwrap(), Some(identity.clone()));
         let mode = std::fs::metadata(keys.path().join(KEY_FILE)).unwrap().permissions().mode();
@@ -202,25 +233,43 @@ mod tests {
 
     #[tokio::test]
     async fn configured_fingerprint_mismatch_aborts_without_saving() {
-        let (ca, _, _) = test_pki();
+        let (ca, cert, key) = test_pki();
         let fp = sha256_of_first_cert(&ca).unwrap();
-        let server = brain(&ca, &fp, 1).await;
+        let server = brain(&ca, &cert, &fp, 1).await;
         let keys = tempfile::tempdir().unwrap();
         let wrong = "cd".repeat(32);
         let cfg = config(&server.uri(), Some("ABCD-EFGH"), Some(&wrong));
-        let err = ensure_paired(&cfg, keys.path(), hw(), &reqwest::Client::new()).await.unwrap_err();
+        let err = ensure_paired_with(&cfg, keys.path(), hw(), &reqwest::Client::new(), keygen_for(key))
+            .await
+            .unwrap_err();
         assert!(matches!(err, PairError::CaMismatch { .. }), "{err}");
         assert_eq!(load_identity(keys.path()).unwrap(), None);
     }
 
     #[tokio::test]
     async fn response_fingerprint_must_match_its_ca() {
-        let (ca, _, _) = test_pki();
-        let server = brain(&ca, &"ef".repeat(32), 1).await;
+        let (ca, cert, key) = test_pki();
+        let server = brain(&ca, &cert, &"ef".repeat(32), 1).await;
         let keys = tempfile::tempdir().unwrap();
         let cfg = config(&server.uri(), Some("ABCD-EFGH"), None);
-        let err = ensure_paired(&cfg, keys.path(), hw(), &reqwest::Client::new()).await.unwrap_err();
+        let err = ensure_paired_with(&cfg, keys.path(), hw(), &reqwest::Client::new(), keygen_for(key))
+            .await
+            .unwrap_err();
         assert!(matches!(err, PairError::CaMismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn cert_not_matching_generated_key_is_not_saved() {
+        let (ca, cert, _) = test_pki();
+        let fp = sha256_of_first_cert(&ca).unwrap();
+        let server = brain(&ca, &cert, &fp, 1).await;
+        let keys = tempfile::tempdir().unwrap();
+        let cfg = config(&server.uri(), Some("ABCD-EFGH"), Some(&fp));
+        // Real keygen: a fresh key that the mock's cert was not issued for.
+        let err = ensure_paired(&cfg, keys.path(), hw(), &reqwest::Client::new()).await.unwrap_err();
+        assert!(matches!(err, PairError::BadIdentity(_)), "{err}");
+        assert_eq!(load_identity(keys.path()).unwrap(), None);
+        assert!(!keys.path().join(KEY_FILE).exists());
     }
 
     #[tokio::test]

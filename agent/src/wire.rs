@@ -10,11 +10,17 @@ pub struct HwInfo {
     pub agent_version: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct PairRequest {
     pub token: String,
     pub csr_pem: String,
     pub hw_info: HwInfo,
+}
+
+impl std::fmt::Debug for PairRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairRequest").field("token", &"<redacted>").field("hw_info", &self.hw_info).finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,6 +117,16 @@ pub(crate) mod tests {
             hw_info: HwInfo { model: "Raspberry Pi Zero W".into(), serial: "1".into(), agent_version: AGENT_VERSION.into() },
         };
         assert_matches("PairRequest", &serde_json::to_value(request).unwrap());
+    }
+
+    #[test]
+    fn pair_request_debug_redacts_token() {
+        let request = PairRequest {
+            token: "SECRET-TOKEN".into(),
+            csr_pem: "csr".into(),
+            hw_info: HwInfo { model: "m".into(), serial: "1".into(), agent_version: AGENT_VERSION.into() },
+        };
+        assert!(!format!("{request:?}").contains("SECRET-TOKEN"));
     }
 
     #[test]

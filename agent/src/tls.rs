@@ -154,15 +154,19 @@ pub(crate) mod tests {
 
     /// (ca_pem, client_cert_pem, client_key_pem) signed by a throwaway CA.
     pub(crate) fn test_pki() -> (String, String, String) {
+        test_pki_with(|_| {})
+    }
+
+    /// Like `test_pki`, letting the caller adjust the leaf certificate parameters.
+    pub(crate) fn test_pki_with(adjust: impl FnOnce(&mut CertificateParams)) -> (String, String, String) {
         let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
         let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         let ca = ca_params.self_signed(&ca_key).unwrap();
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
-        let cert = CertificateParams::new(vec!["loopi-device".to_string()])
-            .unwrap()
-            .signed_by(&key, &ca, &ca_key)
-            .unwrap();
+        let mut leaf_params = CertificateParams::new(vec!["loopi-device".to_string()]).unwrap();
+        adjust(&mut leaf_params);
+        let cert = leaf_params.signed_by(&key, &ca, &ca_key).unwrap();
         (ca.pem(), cert.pem(), key.serialize_pem())
     }
 
@@ -267,6 +271,39 @@ pub(crate) mod tests {
     async fn missing_ca_in_chain_is_rejected_when_pinned() {
         let (ca, leaf, key) = test_pki();
         let (port, server) = tls_server(&leaf, &key);
+        let status = post(pairing_config(Some(&fingerprint(&ca))).unwrap(), port).await;
+        assert!(status.is_err(), "{status:?}");
+        assert!(!server.join().unwrap());
+    }
+
+    #[tokio::test]
+    async fn client_auth_only_leaf_cannot_impersonate_the_brain() {
+        let (ca, leaf, key) = test_pki_with(|p| {
+            p.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        });
+        let (port, server) = tls_server(&format!("{leaf}{ca}"), &key);
+        let status = post(pairing_config(Some(&fingerprint(&ca))).unwrap(), port).await;
+        assert!(status.is_err(), "{status:?}");
+        assert!(!server.join().unwrap());
+    }
+
+    #[tokio::test]
+    async fn server_auth_leaf_is_accepted_when_eku_present() {
+        let (ca, leaf, key) = test_pki_with(|p| {
+            p.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        });
+        let (port, server) = tls_server(&format!("{leaf}{ca}"), &key);
+        assert_eq!(post(pairing_config(Some(&fingerprint(&ca))).unwrap(), port).await, Ok(201));
+        assert!(server.join().unwrap());
+    }
+
+    #[tokio::test]
+    async fn expired_leaf_is_rejected() {
+        let (ca, leaf, key) = test_pki_with(|p| {
+            p.not_before = rcgen::date_time_ymd(2020, 1, 1);
+            p.not_after = rcgen::date_time_ymd(2021, 1, 1);
+        });
+        let (port, server) = tls_server(&format!("{leaf}{ca}"), &key);
         let status = post(pairing_config(Some(&fingerprint(&ca))).unwrap(), port).await;
         assert!(status.is_err(), "{status:?}");
         assert!(!server.join().unwrap());
