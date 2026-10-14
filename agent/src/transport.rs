@@ -81,18 +81,19 @@ pub fn build_client(tls: rustls::ClientConfig) -> Result<Client, TransportError>
     base_builder().use_preconfigured_tls(tls).https_only(true).build().map_err(network)
 }
 
+/// Only the contract's item-specific rejections (409, 413, 422) lead to quarantine. Every other
+/// status is retried with backoff, because quarantining drops data from the brain's view: 400,
+/// 404 and 405 mean a proxy or URL problem that would hit every item, 408/425/429 and 5xx are
+/// transient, and 3xx (redirects are not followed) is a misconfiguration.
 pub fn map_put_status(status: u16) -> Result<PutOutcome, TransportError> {
     match status {
         201 => Ok(PutOutcome::Created),
         200 => Ok(PutOutcome::Duplicate),
         409 => Ok(PutOutcome::Conflict),
+        413 | 422 => Ok(PutOutcome::Rejected(status)),
         401 | 403 => Ok(PutOutcome::Unauthorized),
-        // Transient client-side statuses: retry with backoff, never quarantine (that drops data).
-        408 | 425 | 429 => Err(TransportError::Status(status)),
         426 => Ok(PutOutcome::UpgradeRequired),
         507 => Ok(PutOutcome::BrainFull),
-        400..=499 => Ok(PutOutcome::Rejected(status)),
-        // 3xx (redirects are not followed) and 5xx are retryable.
         _ => Err(TransportError::Status(status)),
     }
 }
@@ -226,8 +227,8 @@ mod tests {
     }
 
     #[test]
-    fn transient_4xx_statuses_are_retryable() {
-        for code in [408u16, 425, 429] {
+    fn non_item_specific_4xx_statuses_are_retryable() {
+        for code in [400u16, 404, 405, 408, 410, 415, 425, 429, 431] {
             assert!(matches!(map_put_status(code), Err(TransportError::Status(c)) if c == code));
         }
     }
