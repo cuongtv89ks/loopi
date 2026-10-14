@@ -64,6 +64,10 @@ check "p4 is Linux" part_type 4 83
 check "kernel image present" test -s "$IMAGES/zImage"
 check "systemd is the init" rootfs_has /usr/lib/systemd/systemd
 check "cmdline mounts squashfs read-only" grep -q "root=/dev/mmcblk0p2 rootfstype=squashfs ro rootwait" "$IMAGES/rpi-firmware/cmdline.txt"
+# fsck.repair=yes (ruling I-3, owner decision): systemd-fsck answers "yes" to every question at boot instead of only
+# preening, so /data and /boot damaged by a power cut get repaired, even when that deletes already-damaged files.
+cmdline_is_one_line_with() { local c="$IMAGES/rpi-firmware/cmdline.txt"; [ "$(grep -c '' "$c")" = 1 ] && grep -E "$1" "$c"; }
+check "cmdline is one line and repairs filesystems at boot (fsck.repair=yes)" cmdline_is_one_line_with '(^| )fsck\.repair=yes( |$)'
 check "boot partition has config.txt" boot_has config.txt
 check "boot partition has loopi.toml.example" boot_has loopi.toml.example
 check "dev image boots in USB gadget mode" grep -qx 'dtoverlay=dwc2,dr_mode=peripheral' "$IMAGES/rpi-firmware/config.txt"
