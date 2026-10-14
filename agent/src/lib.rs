@@ -17,3 +17,5 @@ pub mod transport;
 pub mod wire;
 pub mod pairing;
 pub mod uploader;
+pub mod heartbeat;
+pub mod sysinfo;

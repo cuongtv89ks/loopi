@@ -1,0 +1,430 @@
+//! Heartbeat: report status every 15 s, receive commands, ack them on the next heartbeat.
+//!
+//! The brain answers a contract violation with 422 and records nothing, so every request built
+//! here must satisfy the Heartbeat schema: bounded ack list, bounded `last_error`, finite
+//! `disk_used_pct` within 0..=100, finite optional readings.
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tokio::sync::{mpsc, watch};
+
+use crate::control::{parse_remote_command, Command, ControlState};
+use crate::queue::Queue;
+use crate::status::{AgentStatus, StatusTx};
+use crate::sysinfo::SysProbe;
+use crate::transport::{Transport, TransportError};
+use crate::wire::{HeartbeatRequest, RemoteCommand, AGENT_VERSION};
+
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+/// Contract `last_error.maxLength`, counted in Unicode scalar values.
+const MAX_ERROR_LEN: usize = 500;
+/// Contract `acked_command_ids.maxItems`.
+pub const MAX_ACKED_PER_HEARTBEAT: usize = 100;
+
+/// Disk usage clamped into the contract range; an unreadable (NaN) value reports 0.
+fn sanitize_disk_pct(pct: f32) -> f32 {
+    if pct.is_nan() {
+        0.0
+    } else {
+        pct.clamp(0.0, 100.0)
+    }
+}
+
+pub fn build_request(
+    status: &AgentStatus,
+    control: &ControlState,
+    queue_depth: u64,
+    uptime_s: u64,
+    probe: &dyn SysProbe,
+    mut acked: Vec<String>,
+) -> HeartbeatRequest {
+    acked.truncate(MAX_ACKED_PER_HEARTBEAT);
+    HeartbeatRequest {
+        agent_version: AGENT_VERSION.into(),
+        uptime_s,
+        soc_temp_c: probe.soc_temp_c().filter(|t| t.is_finite()),
+        disk_used_pct: sanitize_disk_pct(status.disk_used_pct),
+        queue_depth,
+        wifi_rssi_dbm: probe.wifi_rssi_dbm(),
+        clock_synced: status.clock_synced,
+        paused: control.paused,
+        audio_enabled: control.audio_enabled,
+        recording_video: status.recording_video,
+        recording_audio: status.recording_audio,
+        mic_missing: status.mic_missing,
+        camera_failures: status.camera_failures,
+        last_error: status.last_error.as_ref().map(|e| e.chars().take(MAX_ERROR_LEN).collect()),
+        dropped_items: status.dropped_since_heartbeat,
+        acked_command_ids: acked,
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Translated {
+    pub commands: Vec<Command>,
+    pub acked: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// Every received command is acked — invalid ones too, so the brain stops re-sending them;
+/// the reasons are reported through `last_error`.
+pub fn translate(remote: Vec<RemoteCommand>) -> Translated {
+    let mut out = Translated::default();
+    for command in remote {
+        match parse_remote_command(&command.kind, &command.payload) {
+            Ok(parsed) => out.commands.push(parsed),
+            Err(e) => out.errors.push(format!("command {}: {e}", command.id)),
+        }
+        out.acked.push(command.id);
+    }
+    out
+}
+
+pub struct HeartbeatDeps {
+    pub transport: Arc<dyn Transport>,
+    pub queue: Arc<Queue>,
+    pub status: StatusTx,
+    pub control: watch::Receiver<ControlState>,
+    pub commands: mpsc::Sender<Command>,
+    pub probe: Arc<dyn SysProbe>,
+    pub started: Instant,
+    pub interval: Duration,
+    /// Last queue depth that could be read; reported when the queue becomes unreadable.
+    pub last_queue_depth: AtomicU64,
+}
+
+impl HeartbeatDeps {
+    pub fn new(
+        transport: Arc<dyn Transport>,
+        queue: Arc<Queue>,
+        status: StatusTx,
+        control: watch::Receiver<ControlState>,
+        commands: mpsc::Sender<Command>,
+        probe: Arc<dyn SysProbe>,
+        interval: Duration,
+    ) -> Self {
+        Self {
+            transport,
+            queue,
+            status,
+            control,
+            commands,
+            probe,
+            started: Instant::now(),
+            interval,
+            last_queue_depth: AtomicU64::new(0),
+        }
+    }
+
+    /// Queue depth plus, when the queue cannot be read, a message for `last_error`.
+    fn queue_depth(&self) -> (u64, Option<String>) {
+        match self.queue.len() {
+            Ok(n) => {
+                self.last_queue_depth.store(n as u64, Ordering::Relaxed);
+                (n as u64, None)
+            }
+            Err(e) => (self.last_queue_depth.load(Ordering::Relaxed), Some(format!("queue unreadable: {e}"))),
+        }
+    }
+}
+
+/// One heartbeat. On failure the acks and the dropped-item count are kept for the next attempt;
+/// at most `MAX_ACKED_PER_HEARTBEAT` acks go out at a time, the rest wait for the next one.
+pub async fn heartbeat_once(deps: &HeartbeatDeps, acked: &mut Vec<String>) -> Result<(), TransportError> {
+    let (depth, queue_error) = deps.queue_depth();
+    let request = {
+        let mut status = deps.status.borrow().clone();
+        if let Some(message) = queue_error {
+            status.last_error = Some(match status.last_error.take() {
+                Some(existing) => format!("{message}; {existing}"),
+                None => message,
+            });
+        }
+        let control = *deps.control.borrow();
+        build_request(&status, &control, depth, deps.started.elapsed().as_secs(), deps.probe.as_ref(), acked.clone())
+    };
+    let remote = deps.transport.heartbeat(&request).await?;
+    acked.drain(..request.acked_command_ids.len());
+    let reported = request.dropped_items;
+    deps.status.send_modify(|s| s.dropped_since_heartbeat = s.dropped_since_heartbeat.saturating_sub(reported));
+    let translated = translate(remote);
+    acked.extend(translated.acked);
+    if !translated.errors.is_empty() {
+        let error = translated.errors.join("; ");
+        tracing::warn!(%error, "invalid command from brain");
+        deps.status.send_modify(|s| s.last_error = Some(error));
+    }
+    for command in translated.commands {
+        if deps.commands.send(command).await.is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+pub async fn run_heartbeat(deps: HeartbeatDeps, mut shutdown: watch::Receiver<bool>) {
+    let mut acked = Vec::new();
+    let mut ticker = tokio::time::interval(deps.interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            // A dropped sender means nobody can ever stop us: treat it as shutdown, never spin.
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+                continue;
+            }
+        }
+        let result = tokio::select! {
+            result = heartbeat_once(&deps, &mut acked) => result,
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+                continue;
+            }
+        };
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "heartbeat failed");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::item::ItemKind;
+    use crate::sysinfo::NoProbe;
+    use std::sync::atomic::AtomicU64;
+    use crate::status::status_channel;
+    use crate::testing::FakeTransport;
+    use crate::transport::TransportError;
+    use crate::wire::contract::assert_matches;
+    use serde_json::json;
+
+    const CMD: &str = "01JA2B3C4D5E6F7G8H9J0KMNPQ";
+
+    struct FixedProbe;
+    impl SysProbe for FixedProbe {
+        fn soc_temp_c(&self) -> Option<f32> {
+            Some(47.5)
+        }
+        fn wifi_rssi_dbm(&self) -> Option<i32> {
+            Some(-60)
+        }
+    }
+
+    fn remote(kind: &str, payload: serde_json::Value) -> RemoteCommand {
+        RemoteCommand { id: CMD.into(), kind: kind.into(), payload }
+    }
+
+    #[test]
+    fn request_maps_status_and_matches_contract() {
+        let status = AgentStatus {
+            paired: true,
+            clock_synced: true,
+            recording_video: true,
+            camera_failures: 2,
+            disk_used_pct: 33.0,
+            last_error: Some("x".repeat(900)),
+            dropped_since_heartbeat: 4,
+            ..AgentStatus::default()
+        };
+        let control = ControlState { paused: false, audio_enabled: true };
+        let request = build_request(&status, &control, 7, 99, &FixedProbe, vec![CMD.into()]);
+        assert_eq!((request.queue_depth, request.uptime_s, request.dropped_items), (7, 99, 4));
+        assert_eq!((request.soc_temp_c, request.wifi_rssi_dbm), (Some(47.5), Some(-60)));
+        assert_eq!(request.last_error.as_ref().unwrap().chars().count(), 500);
+        assert_matches("Heartbeat", &serde_json::to_value(&request).unwrap());
+    }
+
+    #[test]
+    fn invalid_commands_are_acked_and_reported() {
+        let t = translate(vec![remote("pause", json!({})), remote("reboot", json!({}))]);
+        assert_eq!(t.commands, vec![Command::Pause]);
+        assert_eq!(t.acked.len(), 2);
+        assert_eq!(t.errors.len(), 1);
+    }
+
+    fn deps(transport: Arc<FakeTransport>, status: StatusTx) -> (HeartbeatDeps, mpsc::Receiver<Command>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        queue.enqueue_bytes(b"x", ItemKind::Audio, chrono::Utc::now(), chrono::Utc::now()).unwrap();
+        let (_ctl_tx, ctl_rx) = watch::channel(ControlState::initial(true));
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let deps = HeartbeatDeps {
+            transport,
+            queue: Arc::new(queue),
+            status,
+            control: ctl_rx,
+            commands: cmd_tx,
+            probe: Arc::new(FixedProbe),
+            started: Instant::now(),
+            interval: HEARTBEAT_INTERVAL,
+            last_queue_depth: AtomicU64::new(0),
+        };
+        (deps, cmd_rx, tmp)
+    }
+
+    #[tokio::test]
+    async fn commands_are_forwarded_and_acked_on_the_next_heartbeat() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push_heartbeat(Ok(vec![remote("pause", json!({}))]));
+        let status = status_channel(AgentStatus::default());
+        let (deps, mut commands, _tmp) = deps(transport.clone(), status);
+        let mut acked = Vec::new();
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        assert_eq!(commands.recv().await, Some(Command::Pause));
+        assert_eq!(acked, vec![CMD.to_string()]);
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        let sent = transport.heartbeats.lock().unwrap();
+        assert_eq!(sent[1].acked_command_ids, vec![CMD.to_string()]);
+        assert_eq!(sent[1].queue_depth, 1);
+        assert!(acked.is_empty(), "acks are cleared once delivered");
+    }
+
+    #[tokio::test]
+    async fn dropped_count_survives_failed_heartbeat() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push_heartbeat(Err(TransportError::Network("down".into())));
+        let status = status_channel(AgentStatus { dropped_since_heartbeat: 3, ..AgentStatus::default() });
+        let (deps, _commands, _tmp) = deps(transport.clone(), status.clone());
+        let mut acked = vec![CMD.to_string()];
+        assert!(heartbeat_once(&deps, &mut acked).await.is_err());
+        assert_eq!(status.borrow().dropped_since_heartbeat, 3);
+        assert_eq!(acked, vec![CMD.to_string()], "acks are kept for the retry");
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        assert_eq!(status.borrow().dropped_since_heartbeat, 0);
+        assert_eq!(transport.heartbeats.lock().unwrap()[1].dropped_items, 3);
+    }
+
+    fn ids(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("01JA2B3C4D5E6F7G8H9J{i:06}")).collect()
+    }
+
+    #[tokio::test]
+    async fn at_most_100_acks_per_heartbeat_and_the_rest_follow() {
+        let transport = Arc::new(FakeTransport::default());
+        let (deps, _commands, _tmp) = deps(transport.clone(), status_channel(AgentStatus::default()));
+        let mut acked = ids(150);
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        assert_eq!(acked.len(), 50);
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        assert!(acked.is_empty());
+        let sent = transport.heartbeats.lock().unwrap();
+        assert_eq!(sent[0].acked_command_ids, ids(150)[..100].to_vec());
+        assert_eq!(sent[1].acked_command_ids, ids(150)[100..].to_vec());
+        for request in sent.iter() {
+            assert_matches("Heartbeat", &serde_json::to_value(request).unwrap());
+        }
+    }
+
+    #[test]
+    fn build_request_caps_acks_at_100() {
+        let request = build_request(&AgentStatus::default(), &ControlState::initial(true), 0, 0, &NoProbe, ids(150));
+        assert_eq!(request.acked_command_ids.len(), 100);
+        assert_matches("Heartbeat", &serde_json::to_value(&request).unwrap());
+    }
+
+    #[test]
+    fn disk_percentage_is_always_finite_and_in_range() {
+        for (input, expected) in
+            [(f32::NAN, 0.0), (150.0, 100.0), (-5.0, 0.0), (f32::INFINITY, 100.0), (f32::NEG_INFINITY, 0.0)]
+        {
+            let status = AgentStatus { disk_used_pct: input, ..AgentStatus::default() };
+            let request = build_request(&status, &ControlState::initial(true), 0, 0, &NoProbe, vec![]);
+            assert_eq!(request.disk_used_pct, expected, "input {input}");
+            let value = serde_json::to_value(&request).unwrap();
+            assert!(value["disk_used_pct"].is_number());
+            assert_matches("Heartbeat", &value);
+        }
+    }
+
+    #[test]
+    fn all_optionals_null_matches_contract_with_strict_types() {
+        let request = build_request(&AgentStatus::default(), &ControlState::initial(false), 0, 0, &NoProbe, vec![]);
+        let value = serde_json::to_value(&request).unwrap();
+        assert!(value["soc_temp_c"].is_null() && value["wifi_rssi_dbm"].is_null() && value["last_error"].is_null());
+        assert!(value["uptime_s"].is_u64() && value["queue_depth"].is_u64() && value["paused"].is_boolean());
+        assert_matches("Heartbeat", &value);
+    }
+
+    #[test]
+    fn non_finite_temperature_is_dropped() {
+        struct NanProbe;
+        impl SysProbe for NanProbe {
+            fn soc_temp_c(&self) -> Option<f32> {
+                Some(f32::NAN)
+            }
+            fn wifi_rssi_dbm(&self) -> Option<i32> {
+                None
+            }
+        }
+        let request = build_request(&AgentStatus::default(), &ControlState::initial(true), 0, 0, &NanProbe, vec![]);
+        assert_eq!(request.soc_temp_c, None);
+        assert_matches("Heartbeat", &serde_json::to_value(&request).unwrap());
+    }
+
+    #[test]
+    fn all_invalid_commands_are_collected() {
+        let t = translate(vec![remote("reboot", json!({})), remote("pause", json!({"x": 1}))]);
+        assert_eq!(t.errors.len(), 2);
+        assert!(t.commands.is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_invalid_command_error_reaches_last_error() {
+        let transport = Arc::new(FakeTransport::default());
+        transport.push_heartbeat(Ok(vec![remote("reboot", json!({})), remote("wipe", json!({}))]));
+        let status = status_channel(AgentStatus::default());
+        let (deps, _commands, _tmp) = deps(transport, status.clone());
+        let mut acked = Vec::new();
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        let error = status.borrow().last_error.clone().unwrap();
+        assert!(error.contains("reboot") && error.contains("wipe"), "{error}");
+        assert_eq!(acked.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn unreadable_queue_is_reported_with_best_known_depth() {
+        let transport = Arc::new(FakeTransport::default());
+        let (deps, _commands, tmp) = deps(transport.clone(), status_channel(AgentStatus::default()));
+        let mut acked = Vec::new();
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        std::fs::remove_dir_all(tmp.path().join("q").join("items")).unwrap();
+        heartbeat_once(&deps, &mut acked).await.unwrap();
+        let sent = transport.heartbeats.lock().unwrap();
+        assert_eq!(sent[0].queue_depth, 1);
+        assert!(sent[0].last_error.is_none());
+        assert_eq!(sent[1].queue_depth, 1, "best-known depth, not a silent zero");
+        assert!(sent[1].last_error.as_deref().unwrap().starts_with("queue unreadable:"));
+        assert_matches("Heartbeat", &serde_json::to_value(&sent[1]).unwrap());
+    }
+
+    // Real time on a multi-thread runtime: if the fix regresses and the loop spins, the timeout
+    // still fires on the other worker, so the test fails instead of hanging.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_shutdown_sender_stops_the_heartbeat_loop() {
+        let transport = Arc::new(FakeTransport::default());
+        let (deps, _commands, _tmp) = deps(transport, status_channel(AgentStatus::default()));
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let task = tokio::spawn(run_heartbeat(deps, stop_rx));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(stop_tx);
+        tokio::time::timeout(Duration::from_secs(2), task).await.expect("loop must exit").unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_signal_stops_the_heartbeat_loop() {
+        let transport = Arc::new(FakeTransport::default());
+        let (deps, _commands, _tmp) = deps(transport, status_channel(AgentStatus::default()));
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let task = tokio::spawn(run_heartbeat(deps, stop_rx));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stop_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task).await.expect("loop must exit").unwrap();
+    }
+}
