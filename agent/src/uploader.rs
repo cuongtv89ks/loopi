@@ -107,7 +107,12 @@ pub async fn run_uploader(
         }
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
-            _ = shutdown.changed() => {}
+            changed = shutdown.changed() => {
+                // A dropped sender can never signal again: treat it as shutdown instead of spinning.
+                if changed.is_err() {
+                    return;
+                }
+            }
         }
     }
 }
@@ -144,13 +149,20 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_and_conflicting_items_are_quarantined() {
-        let (_t, queue) = queue_with(2);
+        let (tmp, queue) = queue_with(2);
         let transport = FakeTransport::default();
         transport.push_put(Ok(PutOutcome::Conflict));
         transport.push_put(Ok(PutOutcome::Rejected(422)));
+        let ids: Vec<String> = queue.items_of_kind(ItemKind::Audio).unwrap().iter().map(|i| i.meta.id.clone()).collect();
         assert!(matches!(upload_once(&queue, &transport).await.unwrap(), UploadStep::Quarantined(_)));
         assert!(matches!(upload_once(&queue, &transport).await.unwrap(), UploadStep::Quarantined(_)));
         assert!(queue.is_empty().unwrap());
+        let quarantine = tmp.path().join("q").join("quarantine");
+        for (id, expected) in ids.iter().zip(["409", "422"]) {
+            assert!(quarantine.join(format!("{id}.{}", ItemKind::Audio.extension())).exists(), "payload kept");
+            let reason = std::fs::read_to_string(quarantine.join(format!("{id}.reason"))).unwrap();
+            assert!(reason.contains(expected), "reason {reason:?} should mention {expected}");
+        }
     }
 
     #[tokio::test]
@@ -160,20 +172,29 @@ mod tests {
         transport.push_put(Ok(PutOutcome::BrainFull));
         transport.push_put(Ok(PutOutcome::Unauthorized));
         transport.push_put(Err(TransportError::Network("unreachable".into())));
-        for _ in 0..3 {
-            assert!(matches!(upload_once(&queue, &transport).await.unwrap(), UploadStep::Blocked(_)));
-        }
+        let steps = [
+            upload_once(&queue, &transport).await.unwrap(),
+            upload_once(&queue, &transport).await.unwrap(),
+            upload_once(&queue, &transport).await.unwrap(),
+        ];
+        assert_eq!(steps[0], UploadStep::Blocked("brain storage is full".into()));
+        assert!(matches!(steps[1], UploadStep::Blocked(_)));
+        assert!(matches!(&steps[2], UploadStep::Blocked(m) if m.contains("unreachable")));
         assert_eq!(queue.len().unwrap(), 1);
     }
 
     #[tokio::test]
     async fn missing_payload_is_quarantined_not_retried_forever() {
-        let (_t, queue) = queue_with(1);
+        let (tmp, queue) = queue_with(1);
         let item = queue.oldest().unwrap().unwrap();
         std::fs::remove_file(&item.data_path).unwrap();
         let transport = FakeTransport::default();
         assert!(matches!(upload_once(&queue, &transport).await.unwrap(), UploadStep::Quarantined(_)));
         assert!(queue.is_empty().unwrap());
+        let quarantine = tmp.path().join("q").join("quarantine");
+        let reason = std::fs::read_to_string(quarantine.join(format!("{}.reason", item.meta.id))).unwrap();
+        assert!(reason.contains("payload file missing"));
+        assert!(quarantine.join(format!("{}.meta", item.meta.id)).exists(), "sidecar kept");
     }
 
     #[test]
@@ -208,5 +229,22 @@ mod tests {
         stop_tx.send(true).unwrap();
         task.await.unwrap();
     }
-}
 
+    #[tokio::test(start_paused = true)]
+    async fn dropped_shutdown_sender_stops_the_loop_without_hammering() {
+        let (_t, queue) = queue_with(2);
+        let queue = Arc::new(queue);
+        let transport = Arc::new(FakeTransport::default());
+        for _ in 0..50 {
+            transport.push_put(Err(TransportError::Network("down".into())));
+        }
+        let status = status_channel(AgentStatus::default());
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let task = tokio::spawn(run_uploader(queue.clone(), transport.clone(), status, stop_rx, Duration::from_millis(10)));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(stop_tx);
+        tokio::time::timeout(Duration::from_secs(1), task).await.expect("loop must exit").unwrap();
+        assert!(transport.puts.lock().unwrap().len() <= 2, "no burst of retries");
+        assert_eq!(queue.len().unwrap(), 2);
+    }
+}
