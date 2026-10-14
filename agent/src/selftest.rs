@@ -37,6 +37,10 @@ pub fn format_report(checks: &[Check]) -> String {
     out
 }
 
+pub fn failed_count(checks: &[Check]) -> usize {
+    checks.iter().filter(|c| !c.ok).count()
+}
+
 /// First sensor line of `rpicam-vid --list-cameras`, e.g. "0 : ov5647 [2592x1944 ...] (...)".
 pub fn parse_camera_list(output: &str) -> Option<String> {
     if !output.contains("Available cameras") {
@@ -185,6 +189,12 @@ mod tests {
         assert!(by_name("disk").detail.ends_with("% used"));
         std::fs::write(dir.path().join("synced"), "").unwrap();
         assert!(run_selftest(&path).await.iter().any(|c| c.name == "clock" && c.ok));
+    }
+
+    #[test]
+    fn failed_count_counts_only_failures() {
+        assert_eq!(failed_count(&[Check::pass("a", ""), Check::fail("b", ""), Check::fail("c", "")]), 2);
+        assert_eq!(failed_count(&[]), 0);
     }
 
     #[test]

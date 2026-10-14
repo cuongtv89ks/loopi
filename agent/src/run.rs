@@ -16,6 +16,7 @@ use crate::disk::{self, DiskUsage};
 use crate::heartbeat::{run_heartbeat, HeartbeatDeps, HEARTBEAT_INTERVAL};
 use crate::item::ItemKind;
 use crate::led::{led_pattern, level_at, LedDriver, LedPattern};
+use crate::liveness::Liveness;
 use crate::queue::Queue;
 use crate::recorder::audio::{self, AudioOptions, AudioSourceFactory};
 use crate::recorder::video::{self, VideoOptions};
@@ -88,6 +89,8 @@ pub struct Deps {
     pub presses: mpsc::Receiver<Press>,
     pub probe: Arc<dyn SysProbe>,
     pub timings: Timings,
+    /// Beaten on every main-loop iteration; the systemd watchdog pings only while it is fresh.
+    pub liveness: Liveness,
 }
 
 /// Where the LED loop is in its life: normal patterns, forced on while recorders wind down, done.
@@ -222,7 +225,7 @@ async fn led_loop(
 }
 
 pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-    let Deps { config, clock, disk, transport, audio_factory, led, mut presses, probe, timings } = deps;
+    let Deps { config, clock, disk, transport, audio_factory, led, mut presses, probe, timings, liveness } = deps;
     let paths = Paths::new(&config.paths.data_dir);
     let segment = Duration::from_secs(config.capture.segment_seconds.into());
 
@@ -290,6 +293,7 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
     let mut tick = tokio::time::interval(timings.tick);
     let mut disk_tick = tokio::time::interval(timings.disk_check);
     loop {
+        liveness.beat();
         if *shutdown.borrow() {
             break;
         }

@@ -12,12 +12,14 @@ use loopi_agent::led::{blink_while, LedDriver, NoopLed};
 use loopi_agent::pairing::{ensure_paired, retry_delay, Identity};
 use loopi_agent::recorder::audio::AudioSourceFactory;
 use loopi_agent::run::{run, Deps, Timings};
-use loopi_agent::selftest::{format_report, run_selftest};
+use loopi_agent::liveness::Liveness;
+use loopi_agent::selftest::{failed_count, format_report, run_selftest};
 use loopi_agent::sysinfo::{hw_info, LinuxProbe};
 use loopi_agent::transport::{build_client, HttpTransport, Transport};
 use loopi_agent::tls;
 use tokio::sync::{mpsc, watch};
 
+const PAIR_BEAT: std::time::Duration = std::time::Duration::from_secs(5);
 const DATA_CONFIG: &str = "/data/config/loopi.toml";
 #[cfg(target_os = "linux")]
 const WATCHDOG_PING: std::time::Duration = std::time::Duration::from_secs(10);
@@ -31,9 +33,13 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         None | Some("run") => runtime().and_then(|rt| rt.block_on(agent_main())),
         Some("provision") => provision(&args[1..]),
-        Some("selftest") => runtime().map(|rt| {
+        Some("selftest") => runtime().and_then(|rt| {
             let checks = rt.block_on(run_selftest(Path::new(DATA_CONFIG)));
             print!("{}", format_report(&checks));
+            match failed_count(&checks) {
+                0 => Ok(()),
+                n => Err(anyhow::anyhow!("selftest: {n} check(s) failed")),
+            }
         }),
         Some(other) => Err(anyhow::anyhow!("unknown command {other:?}; use run | provision | selftest")),
     };
@@ -106,31 +112,64 @@ fn audio_factory(_config: &Config) -> AudioSourceFactory {
     Box::new(|| Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "audio unsupported on this OS")))
 }
 
+/// Tell systemd what the agent is doing (`systemctl status`); Linux only.
 #[cfg(target_os = "linux")]
-fn spawn_watchdog() {
+fn set_status(text: &str) {
+    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Status(text)]);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_status(_text: &str) {}
+
+/// READY=1 is sent right away, before pairing, on purpose: pairing can wait indefinitely for a
+/// token and a late READY would hit TimeoutStartSec under Type=notify and loop the unit through
+/// restarts. Nothing depends on loopi-agent. WATCHDOG=1 is sent only while `liveness` is fresh,
+/// so a wedged main loop (which would also stop applying pause/gates) gets the unit restarted.
+#[cfg(target_os = "linux")]
+fn spawn_watchdog(liveness: Liveness) {
+    use loopi_agent::liveness::{is_fresh, MAX_STALE};
     use sd_notify::NotifyState;
 
-    let notify = |state| {
-        let _ = sd_notify::notify(false, &[state]);
-    };
-    notify(NotifyState::Ready);
+    let _ = sd_notify::notify(false, &[NotifyState::Ready]);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(WATCHDOG_PING);
+        let mut stale_logged = false;
         loop {
             ticker.tick().await;
-            notify(NotifyState::Watchdog);
+            if is_fresh(liveness.age(), MAX_STALE) {
+                stale_logged = false;
+                let _ = sd_notify::notify(false, &[NotifyState::Watchdog]);
+            } else if !stale_logged {
+                stale_logged = true;
+                tracing::error!(age_s = liveness.age().as_secs(), "main loop made no progress; withholding watchdog ping");
+            }
         }
     });
 }
 
 #[cfg(not(target_os = "linux"))]
-fn spawn_watchdog() {}
+fn spawn_watchdog(_liveness: Liveness) {}
 
 /// Retry pairing until it succeeds. The LED blinks meanwhile (caller) and no recorder runs.
-async fn pair_until_done(config: &Config, keys: &Path, mut shutdown: watch::Receiver<bool>) -> Result<Identity> {
+async fn pair_until_done(
+    config: &Config,
+    keys: &Path,
+    mut shutdown: watch::Receiver<bool>,
+    liveness: &Liveness,
+) -> Result<Identity> {
     let client = build_client(tls::pairing_config(config.brain.ca_fingerprint.as_deref())?)?;
+    let mut beat = tokio::time::interval(PAIR_BEAT);
     loop {
-        let delay = match ensure_paired(config, keys, hw_info(), &client).await {
+        // Beat while the request is in flight too: it can take longer than the watchdog window.
+        let attempt = ensure_paired(config, keys, hw_info(), &client);
+        tokio::pin!(attempt);
+        let result = loop {
+            tokio::select! {
+                result = &mut attempt => break result,
+                _ = beat.tick() => liveness.beat(),
+            }
+        };
+        let delay = match result {
             Ok(identity) => return Ok(identity),
             Err(e) => {
                 let delay = retry_delay(&e);
@@ -138,9 +177,14 @@ async fn pair_until_done(config: &Config, keys: &Path, mut shutdown: watch::Rece
                 delay
             }
         };
-        tokio::select! {
-            _ = tokio::time::sleep(delay) => {}
-            _ = shutdown.changed() => bail!("shutdown before pairing completed"),
+        let sleep = tokio::time::sleep(delay);
+        tokio::pin!(sleep);
+        loop {
+            tokio::select! {
+                _ = &mut sleep => break,
+                _ = beat.tick() => liveness.beat(),
+                _ = shutdown.changed() => bail!("shutdown before pairing completed"),
+            }
         }
     }
 }
@@ -167,12 +211,16 @@ async fn agent_main() -> Result<()> {
     }
     let config = Config::load(config_path).with_context(|| format!("loading {DATA_CONFIG}"))?;
     let shutdown = shutdown_signal()?;
-    spawn_watchdog();
+    let liveness = Liveness::new();
+    liveness.beat();
+    spawn_watchdog(liveness.clone());
+    set_status("pairing with brain...");
 
     let mut led = open_led(&config);
     let keys = config.paths.data_dir.join("keys");
-    let identity = blink_while(led.as_mut(), pair_until_done(&config, &keys, shutdown.clone())).await?;
+    let identity = blink_while(led.as_mut(), pair_until_done(&config, &keys, shutdown.clone(), &liveness)).await?;
     tracing::info!(device_id = %identity.device_id, "paired");
+    set_status("recording");
 
     let tls = tls::mtls_config(&identity.ca_cert_pem, &identity.cert_pem, &identity.key_pem)?;
     let transport: Arc<dyn Transport> = Arc::new(HttpTransport::new(build_client(tls)?, &config.brain.url));
@@ -185,6 +233,7 @@ async fn agent_main() -> Result<()> {
         presses: open_button(&config),
         probe: Arc::new(LinuxProbe),
         timings: Timings::default(),
+        liveness,
         config,
     };
     run(deps, shutdown).await

@@ -22,3 +22,4 @@ pub mod sysinfo;
 pub mod recorder;
 pub mod run;
 pub mod selftest;
+pub mod liveness;

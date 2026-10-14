@@ -178,6 +178,7 @@ async fn records_uploads_and_obeys_a_remote_pause() {
     let led_states = led.states.clone();
     let factory: AudioSourceFactory = Box::new(|| Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>));
     let (_press_tx, presses) = mpsc::channel(1);
+    let liveness = loopi_agent::liveness::Liveness::new();
     let deps = Deps {
         config,
         clock: Arc::new(SyncedClock),
@@ -197,6 +198,7 @@ async fn records_uploads_and_obeys_a_remote_pause() {
             audio_retry: Duration::from_millis(100),
             audio_segment: Some(AUDIO_SEGMENT),
         },
+        liveness: liveness.clone(),
     };
     let (stop_tx, stop_rx) = watch::channel(false);
     let agent = tokio::spawn(run(deps, stop_rx));
@@ -204,6 +206,8 @@ async fn records_uploads_and_obeys_a_remote_pause() {
     tokio::time::sleep(Duration::from_millis(1300)).await;
     let before_pause = brain.received_requests().await.unwrap();
     assert!(uploads(&before_pause, "video") >= 2, "video segments are uploaded while recording");
+    assert!(liveness.beats() >= 10, "the main loop beats the liveness marker every tick");
+    assert!(liveness.age() < Duration::from_secs(1));
     let states = led_states.lock().unwrap().clone();
     assert!(states.contains(&true), "the LED was on while recording");
     assert_eq!(states.last(), Some(&true), "the LED is solid while recording");
