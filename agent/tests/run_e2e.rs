@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::DateTime;
-use loopi_agent::config::{BrainConfig, CaptureConfig, Config, GpioConfig, PathsConfig, ScheduleConfig};
+use loopi_agent::config::{BrainConfig, CaptureConfig, Config, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
 use loopi_agent::recorder::audio::{AudioSource, AudioSourceFactory};
 use loopi_agent::run::{run, Deps, Timings};
 use loopi_agent::sysinfo::NoProbe;
@@ -171,6 +171,7 @@ async fn records_uploads_and_obeys_a_remote_pause() {
         brain: BrainConfig { url: brain.uri(), pair_token: None, ca_fingerprint: None },
         capture: CaptureConfig { camera_cmd: camera.clone(), ..CaptureConfig::default() },
         schedule: ScheduleConfig::default(),
+        led: LedConfig::default(),
         gpio: GpioConfig::default(),
         paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
     };

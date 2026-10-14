@@ -90,13 +90,13 @@ fn with_privacy_led(led: &mut dyn LedDriver, capture: impl FnOnce() -> Check) ->
 
 #[cfg(target_os = "linux")]
 fn mic_check(config: &Config) -> Check {
-    let mut led = match crate::led::GpioLed::open(&config.gpio.chip, config.gpio.led) {
+    let mut led = match crate::led::open(&config.led, &config.gpio) {
         Ok(led) => led,
         Err(e) => {
             return Check::fail("microphone", format!("privacy LED unavailable ({e}): microphone not tested"));
         }
     };
-    with_privacy_led(&mut led, || capture_one_second(&config.capture.audio_device))
+    with_privacy_led(led.as_mut(), || capture_one_second(&config.capture.audio_device))
 }
 
 #[cfg(target_os = "linux")]
@@ -239,6 +239,29 @@ mod tests {
         }
         let check = with_privacy_led(&mut DeadLed, || panic!("must not capture"));
         assert!(!check.ok);
+        assert!(check.detail.contains("privacy LED unavailable"), "{}", check.detail);
+    }
+
+    /// The microphone check lights the configured LED (the ACT LED by default) around the capture.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn microphone_check_uses_the_configured_led() {
+        let dir = tempfile::tempdir().unwrap();
+        let led_dir = dir.path().join("ACT");
+        crate::testing::fake_sysfs_led(&led_dir, "1\n").unwrap();
+        let config = |led: &Path| {
+            Config::parse(&format!(
+                "[brain]\nurl = \"https://x\"\n[led]\npath = {led:?}\n[capture]\naudio_device = \"loopi-test-no-such-pcm\"\n"
+            ))
+            .unwrap()
+        };
+        let check = mic_check(&config(&led_dir));
+        assert!(!check.ok, "there is no such microphone");
+        assert!(!check.detail.contains("privacy LED unavailable"), "{}", check.detail);
+        assert_eq!(std::fs::read_to_string(led_dir.join("trigger")).unwrap(), "none");
+        assert_eq!(std::fs::read_to_string(led_dir.join("brightness")).unwrap(), "0", "off after the check");
+
+        let check = mic_check(&config(&dir.path().join("missing")));
         assert!(check.detail.contains("privacy LED unavailable"), "{}", check.detail);
     }
 

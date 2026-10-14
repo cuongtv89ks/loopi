@@ -55,6 +55,8 @@ pub struct Config {
     #[serde(default)]
     pub schedule: ScheduleConfig,
     #[serde(default)]
+    pub led: LedConfig,
+    #[serde(default)]
     pub gpio: GpioConfig,
     #[serde(default)]
     pub paths: PathsConfig,
@@ -126,6 +128,35 @@ impl Default for ScheduleConfig {
     }
 }
 
+/// The privacy LED when nothing else is configured: the Pi Zero W's green ACT LED (spec D18).
+pub const DEFAULT_LED_PATH: &str = "/sys/class/leds/ACT";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LedSource {
+    /// A Linux LED class device: the directory `led.path`.
+    #[default]
+    Sysfs,
+    /// An external LED on line `gpio.led` of `gpio.chip`.
+    Gpio,
+}
+
+/// `[led]`: which LED is the privacy LED. The default needs no config (the ACT LED).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LedConfig {
+    pub source: LedSource,
+    /// LED class directory, used when `source = "sysfs"`.
+    pub path: PathBuf,
+}
+
+impl Default for LedConfig {
+    fn default() -> Self {
+        Self { source: LedSource::Sysfs, path: DEFAULT_LED_PATH.into() }
+    }
+}
+
+/// `[gpio]`: the button line and, with `led.source = "gpio"`, the LED line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GpioConfig {
@@ -181,6 +212,12 @@ impl Config {
             if normalize_fingerprint(fp).is_none() {
                 return invalid("brain.ca_fingerprint must be a SHA-256 hex fingerprint".into());
             }
+        }
+        if self.led.source == LedSource::Sysfs && !self.led.path.is_absolute() {
+            return invalid(format!(
+                "led.path must be an absolute LED class directory such as {DEFAULT_LED_PATH} (got {:?})",
+                self.led.path
+            ));
         }
         let c = &self.capture;
         if !(1..=30).contains(&c.video_fps) {
@@ -344,6 +381,25 @@ mod tests {
     }
 
     #[test]
+    fn the_privacy_led_defaults_to_the_act_led() {
+        let c = Config::parse(MINIMAL).unwrap();
+        assert_eq!(c.led, LedConfig { source: LedSource::Sysfs, path: PathBuf::from("/sys/class/leds/ACT") });
+        assert_eq!((c.gpio.chip.as_str(), c.gpio.led, c.gpio.button), ("/dev/gpiochip0", 17, 27));
+    }
+
+    #[test]
+    fn the_led_source_is_selectable_and_survives_the_import_round_trip() {
+        let gpio = Config::parse(&format!("{MINIMAL}[led]\nsource = \"gpio\"\n[gpio]\nled = 22\n")).unwrap();
+        assert_eq!((gpio.led.source, gpio.gpio.chip.as_str(), gpio.gpio.led), (LedSource::Gpio, "/dev/gpiochip0", 22));
+        let other = Config::parse(&format!("{MINIMAL}[led]\npath = \"/sys/class/leds/led0\"\n")).unwrap();
+        assert_eq!(other.led, LedConfig { source: LedSource::Sysfs, path: "/sys/class/leds/led0".into() });
+        // `import_boot_config` writes the data copy with toml::to_string.
+        for config in [gpio, other, Config::parse(MINIMAL).unwrap()] {
+            assert_eq!(Config::parse(&toml::to_string(&config).unwrap()).unwrap(), config);
+        }
+    }
+
+    #[test]
     fn default_config_fits_brain_item_limit() {
         let c = CaptureConfig::default();
         assert!(max_segment_bytes(&c) <= MAX_NOMINAL_SEGMENT_BYTES);
@@ -433,6 +489,10 @@ mod tests {
             format!("[wifi]\nssid = \"x\"\npsk = \"has\\\"quote-inside\"\n{MINIMAL}"),
             format!("[wifi]\nssid = \"x\"\npsk = \"longenough\"\ncountry = \"korea\"\n{MINIMAL}"),
             "[brain]\nurl = \"https://x\"\nca_fingerprint = \"zz\"\n".to_string(),
+            format!("{MINIMAL}[led]\nsource = \"pwm\"\n"),
+            format!("{MINIMAL}[led]\npath = \"leds/ACT\"\n"),
+            format!("{MINIMAL}[led]\npath = \"\"\n"),
+            format!("{MINIMAL}[led]\ncolour = \"red\"\n"),
         ];
         for case in cases {
             assert!(Config::parse(&case).is_err(), "should reject:\n{case}");

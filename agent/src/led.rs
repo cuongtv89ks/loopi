@@ -1,10 +1,12 @@
 //! Privacy LED. Solid whenever anything is being recorded — errors never hide recording.
 use std::future::Future;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::time::Instant;
 
+use crate::config::{Config, GpioConfig, LedConfig, LedSource};
 use crate::control::ControlState;
 use crate::status::{AgentStatus, LedHealth, StatusTx};
 
@@ -14,6 +16,10 @@ pub const LED_FAILURE_LIMIT: u32 = 20;
 /// `status.last_error` (prefix) while recording is disabled because the LED does not work.
 pub const LED_UNAVAILABLE_ERROR: &str = "privacy LED unavailable: recording disabled";
 pub(crate) const LED_WRITE_ERROR_PREFIX: &str = "privacy LED write failed: ";
+/// `LedWriter` writes an unchanged level again after this many skipped frames (about once a second at
+/// the agent's 50 ms frame): a sysfs LED is shared, so another writer (`selftest`, `led-off`, a shell)
+/// can switch it behind the agent's back.
+pub const LED_REASSERT_FRAMES: u32 = 20;
 const SLOW_PERIOD_MS: u64 = 1000;
 const FAST_PERIOD_MS: u64 = 200;
 const BLINK_FRAME: Duration = Duration::from_millis(50);
@@ -58,7 +64,7 @@ pub trait LedDriver: Send {
     fn set(&mut self, on: bool) -> io::Result<()>;
 }
 
-/// Dev hosts only (they have no LED). It does not exist in Linux builds, so a missing GPIO LED on
+/// Dev hosts only (they have no LED). It does not exist in Linux builds, so a missing privacy LED on
 /// the device can never be papered over with a driver that pretends to work.
 #[cfg(not(target_os = "linux"))]
 pub struct NoopLed;
@@ -93,19 +99,24 @@ pub struct LedWriter {
     /// Level of the last *successful* write, so a failed one is retried on the next frame.
     last: Option<bool>,
     failures: u32,
+    /// Writes skipped since the last one, because the level was already confirmed.
+    skipped: u32,
 }
 
 impl LedWriter {
     pub fn new(driver: Box<dyn LedDriver>) -> Self {
-        Self { driver, last: None, failures: 0 }
+        Self { driver, last: None, failures: 0, skipped: 0 }
     }
 
-    /// Write `on` unless it is already the confirmed level. `status` is `None` only for the
-    /// final write after shutdown, when nobody reads it any more.
+    /// Write `on` unless it is already the confirmed level; a confirmed level is written again every
+    /// `LED_REASSERT_FRAMES` calls. `status` is `None` only for the final write after shutdown, when
+    /// nobody reads it any more.
     pub fn set(&mut self, on: bool, status: Option<&StatusTx>) {
-        if self.last == Some(on) {
+        if self.last == Some(on) && self.skipped < LED_REASSERT_FRAMES {
+            self.skipped += 1;
             return;
         }
+        self.skipped = 0;
         match self.driver.set(on) {
             Ok(()) => {
                 self.last = Some(on);
@@ -175,6 +186,7 @@ pub async fn blink_while<F: Future>(led: &mut dyn LedDriver, fut: F) -> F::Outpu
     }
 }
 
+/// An external LED on a GPIO line (`[led] source = "gpio"`), held exclusively while open.
 #[cfg(target_os = "linux")]
 pub struct GpioLed {
     request: gpiocdev::Request,
@@ -202,11 +214,256 @@ impl LedDriver for GpioLed {
     }
 }
 
+/// A Linux LED class device such as `/sys/class/leds/ACT`, the Pi Zero W's green LED (spec D18).
+/// Opening it detaches the kernel trigger (`trigger` = `none`) and switches it off; on is
+/// `max_brightness`. Nothing holds it exclusively, hence `LED_REASSERT_FRAMES`.
+pub struct SysfsLed {
+    dir: PathBuf,
+    on: String,
+}
+
+impl SysfsLed {
+    pub fn open(dir: &Path) -> io::Result<Self> {
+        let max = std::fs::read_to_string(dir.join("max_brightness"))
+            .map_err(|e| led_error(dir, "cannot read max_brightness", e))?;
+        let on = match max.trim().parse::<u32>() {
+            Ok(max) if max > 0 => max.to_string(),
+            _ => {
+                let reason = format!("{:?} is not a positive number", max.trim());
+                let e = io::Error::new(io::ErrorKind::InvalidData, reason);
+                return Err(led_error(dir, "unusable max_brightness", e));
+            }
+        };
+        write_attribute(&dir.join("trigger"), "none").map_err(|e| led_error(dir, "cannot write trigger", e))?;
+        let mut led = Self { dir: dir.to_path_buf(), on };
+        led.set(false)?;
+        Ok(led)
+    }
+}
+
+impl LedDriver for SysfsLed {
+    fn set(&mut self, on: bool) -> io::Result<()> {
+        let value = if on { self.on.as_str() } else { "0" };
+        write_attribute(&self.dir.join("brightness"), value)
+            .map_err(|e| led_error(&self.dir, "cannot write brightness", e))
+    }
+}
+
+/// Never creates the file: a missing attribute is an error, also in a test directory.
+fn write_attribute(path: &Path, value: &str) -> io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new().write(true).truncate(true).open(path)?.write_all(value.as_bytes())
+}
+
+fn led_error(dir: &Path, what: &str, e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("LED {}: {what}: {e}", dir.display()))
+}
+
+/// Open the privacy LED `led` names (`gpio` holds the line of an external LED).
+pub fn open(led: &LedConfig, gpio: &GpioConfig) -> io::Result<Box<dyn LedDriver>> {
+    match led.source {
+        LedSource::Sysfs => Ok(Box::new(SysfsLed::open(&led.path)?)),
+        LedSource::Gpio => open_gpio(gpio),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_gpio(gpio: &GpioConfig) -> io::Result<Box<dyn LedDriver>> {
+    match GpioLed::open(&gpio.chip, gpio.led) {
+        Ok(led) => Ok(Box::new(led)),
+        Err(e) => Err(io::Error::other(format!("GPIO LED {} line {}: {e}", gpio.chip, gpio.led))),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_gpio(gpio: &GpioConfig) -> io::Result<Box<dyn LedDriver>> {
+    let message = format!("GPIO LED {} line {}: GPIO needs Linux", gpio.chip, gpio.led);
+    Err(io::Error::new(io::ErrorKind::Unsupported, message))
+}
+
+/// `loopi-agent led-off`, which systemd runs after every exit of the agent (`ExecStopPost=`): switch
+/// off the LED the config at `config_path` names. Without a loadable config (not provisioned yet, or
+/// invalid) it switches off the default LED. Needs no pairing, network or async runtime.
+pub fn switch_off(config_path: &Path) -> io::Result<()> {
+    let (led, gpio) = match Config::load(config_path) {
+        Ok(config) => (config.led, config.gpio),
+        Err(e) => {
+            tracing::warn!(error = %e, "led-off: no usable config; switching off the default LED");
+            (LedConfig::default(), GpioConfig::default())
+        }
+    };
+    open(&led, &gpio)?.set(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{LedSource, DEFAULT_LED_PATH};
     use crate::control::Command;
-    use crate::testing::RecordingLed;
+    use crate::status::status_channel;
+    use crate::testing::{fake_sysfs_led, RecordingLed};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn fake_led(max_brightness: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fake_sysfs_led(dir.path(), max_brightness).unwrap();
+        dir
+    }
+
+    fn attr(dir: &Path, name: &str) -> String {
+        fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    fn set_mode(path: &Path, mode: u32) {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Root writes read-only files, so permission cases only run as a normal user.
+    fn is_root() -> bool {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    fn sysfs(dir: &Path) -> LedConfig {
+        LedConfig { source: LedSource::Sysfs, path: dir.to_path_buf() }
+    }
+
+    #[test]
+    fn sysfs_led_takes_the_led_from_its_trigger_and_starts_dark() {
+        let dir = fake_led("1\n");
+        let _led = SysfsLed::open(dir.path()).unwrap();
+        assert_eq!(attr(dir.path(), "trigger"), "none", "no kernel trigger drives it any more");
+        assert_eq!(attr(dir.path(), "brightness"), "0");
+    }
+
+    #[test]
+    fn sysfs_led_switches_between_off_and_max_brightness() {
+        for (max, on) in [("1\n", "1"), ("255\n", "255")] {
+            let dir = fake_led(max);
+            let mut led = SysfsLed::open(dir.path()).unwrap();
+            led.set(true).unwrap();
+            assert_eq!(attr(dir.path(), "brightness"), on);
+            led.set(false).unwrap();
+            assert_eq!(attr(dir.path(), "brightness"), "0");
+        }
+    }
+
+    #[test]
+    fn sysfs_led_that_cannot_be_taken_over_does_not_open() {
+        let parent = tempfile::tempdir().unwrap();
+        let err = SysfsLed::open(&parent.path().join("ACT")).err().expect("no such LED");
+        assert!(err.to_string().contains(&parent.path().join("ACT").display().to_string()), "{err}");
+        for max in ["0\n", "bright\n", ""] {
+            assert!(SysfsLed::open(fake_led(max).path()).is_err(), "max_brightness {max:?}");
+        }
+        for name in ["trigger", "brightness", "max_brightness"] {
+            let dir = fake_led("1\n");
+            fs::remove_file(dir.path().join(name)).unwrap();
+            assert!(SysfsLed::open(dir.path()).is_err(), "without {name}");
+            assert!(!dir.path().join(name).exists(), "{name} is never created");
+        }
+        if !is_root() {
+            for name in ["trigger", "brightness"] {
+                let dir = fake_led("1\n");
+                set_mode(&dir.path().join(name), 0o444);
+                let err = SysfsLed::open(dir.path()).err().expect("unwritable");
+                assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+                assert!(err.to_string().contains(name), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn unwritable_sysfs_led_closes_the_gates_and_recovers() {
+        if is_root() {
+            return;
+        }
+        let dir = fake_led("1\n");
+        let led = SysfsLed::open(dir.path()).unwrap();
+        let brightness = dir.path().join("brightness");
+        set_mode(&brightness, 0o444);
+        let mut writer = LedWriter::new(Box::new(led));
+        let status = status_channel(AgentStatus::default());
+        for _ in 0..LED_FAILURE_LIMIT {
+            writer.set(true, Some(&status));
+        }
+        assert_eq!(status.borrow().led, LedHealth::Failed);
+        let error = status.borrow().last_error.clone().unwrap();
+        assert!(error.starts_with(LED_UNAVAILABLE_ERROR) && error.contains("brightness"), "{error}");
+
+        set_mode(&brightness, 0o644);
+        writer.set(true, Some(&status));
+        assert_eq!(status.borrow().led, LedHealth::Working);
+        assert_eq!(attr(dir.path(), "brightness"), "1");
+    }
+
+    #[test]
+    fn writer_reasserts_a_level_someone_else_changed() {
+        let dir = fake_led("1\n");
+        let mut writer = LedWriter::new(Box::new(SysfsLed::open(dir.path()).unwrap()));
+        writer.set(true, None);
+        fs::write(dir.path().join("brightness"), "0").unwrap(); // e.g. `loopi-agent selftest` while recording
+        for _ in 0..LED_REASSERT_FRAMES {
+            writer.set(true, None);
+        }
+        assert_eq!(attr(dir.path(), "brightness"), "0", "unchanged levels are not rewritten every frame");
+        writer.set(true, None);
+        assert_eq!(attr(dir.path(), "brightness"), "1", "solid again within a second");
+    }
+
+    #[test]
+    fn writer_skips_unchanged_levels_between_reasserts() {
+        let led = RecordingLed::default();
+        let states = led.states.clone();
+        let mut writer = LedWriter::new(Box::new(led));
+        // The first call writes, then every (LED_REASSERT_FRAMES + 1)th.
+        for _ in 0..1 + 2 * (LED_REASSERT_FRAMES + 1) {
+            writer.set(true, None);
+        }
+        assert_eq!(*states.lock().unwrap(), vec![true; 3]);
+        writer.set(false, None);
+        assert_eq!(states.lock().unwrap().last(), Some(&false), "a change is written at once");
+    }
+
+    #[test]
+    fn open_drives_the_configured_led() {
+        let dir = fake_led("1\n");
+        let mut led = open(&sysfs(dir.path()), &GpioConfig::default()).unwrap();
+        assert_eq!(attr(dir.path(), "trigger"), "none");
+        led.set(true).unwrap();
+        assert_eq!(attr(dir.path(), "brightness"), "1");
+
+        let missing = tempfile::tempdir().unwrap();
+        assert!(open(&sysfs(&missing.path().join("ACT")), &GpioConfig::default()).is_err());
+        let gpio = GpioConfig { chip: "/nonexistent/gpiochip9".into(), ..GpioConfig::default() };
+        let err = open(&LedConfig { source: LedSource::Gpio, ..sysfs(dir.path()) }, &gpio).err().expect("no chip");
+        assert!(err.to_string().contains("/nonexistent/gpiochip9"), "{err}");
+    }
+
+    #[test]
+    fn switch_off_darkens_the_configured_led() {
+        let dir = fake_led("1\n");
+        let config = dir.path().join("loopi.toml");
+        fs::write(&config, format!("[brain]\nurl = \"https://x\"\n[led]\npath = {:?}\n", dir.path())).unwrap();
+        fs::write(dir.path().join("brightness"), "1").unwrap(); // left lit by a killed agent
+        switch_off(&config).unwrap();
+        assert_eq!(attr(dir.path(), "brightness"), "0");
+        assert_eq!(attr(dir.path(), "trigger"), "none");
+    }
+
+    #[test]
+    fn switch_off_without_a_usable_config_targets_the_default_led() {
+        let dir = tempfile::tempdir().unwrap();
+        let invalid = dir.path().join("invalid.toml");
+        fs::write(&invalid, "[brain]\nurl = \"http://not-https\"\n").unwrap();
+        for config in [dir.path().join("missing.toml"), invalid] {
+            match switch_off(&config) {
+                Err(e) => assert!(e.to_string().contains(DEFAULT_LED_PATH), "{e}"),
+                Ok(()) => assert!(Path::new(DEFAULT_LED_PATH).exists(), "only a host with an ACT LED succeeds"),
+            }
+        }
+    }
 
     fn ok_status() -> AgentStatus {
         AgentStatus { paired: true, clock_synced: true, led: LedHealth::Working, ..AgentStatus::default() }

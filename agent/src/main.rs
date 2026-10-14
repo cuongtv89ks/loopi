@@ -1,4 +1,4 @@
-//! `loopi-agent run | provision | selftest` — wires real hardware into the library.
+//! `loopi-agent run | provision | selftest | led-off` — wires real hardware into the library.
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -41,7 +41,9 @@ fn main() -> ExitCode {
                 n => Err(anyhow::anyhow!("selftest: {n} check(s) failed")),
             }
         }),
-        Some(other) => Err(anyhow::anyhow!("unknown command {other:?}; use run | provision | selftest")),
+        // systemd's ExecStopPost= after every agent exit: no runtime, pairing or network.
+        Some("led-off") => loopi_agent::led::switch_off(Path::new(DATA_CONFIG)).context("switching the privacy LED off"),
+        Some(other) => Err(anyhow::anyhow!("unknown command {other:?}; use run | provision | selftest | led-off")),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -72,13 +74,14 @@ fn provision(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `None` when the privacy LED cannot be opened: the agent then never records (see `run`).
+/// `None` when the privacy LED (`[led]`, the ACT LED by default) cannot be opened: the agent then
+/// never records (see `run`).
 #[cfg(target_os = "linux")]
 fn open_led(config: &Config) -> Option<Box<dyn LedDriver>> {
-    match loopi_agent::led::GpioLed::open(&config.gpio.chip, config.gpio.led) {
-        Ok(led) => Some(Box::new(led)),
+    match loopi_agent::led::open(&config.led, &config.gpio) {
+        Ok(led) => Some(led),
         Err(e) => {
-            tracing::error!(error = %e, chip = %config.gpio.chip, line = config.gpio.led, "privacy LED unavailable: recording disabled");
+            tracing::error!(error = %e, "privacy LED unavailable: recording disabled");
             None
         }
     }

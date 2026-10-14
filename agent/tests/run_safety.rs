@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use loopi_agent::config::{BrainConfig, CaptureConfig, Config, GpioConfig, PathsConfig, ScheduleConfig};
+use loopi_agent::config::{BrainConfig, CaptureConfig, Config, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
 use loopi_agent::led::{LedDriver, LED_UNAVAILABLE_ERROR};
 use loopi_agent::recorder::audio::{AudioSource, AudioSourceFactory};
 use loopi_agent::recorder::ogg_opus::FRAME_SAMPLES;
@@ -130,6 +130,7 @@ impl Harness {
             brain: BrainConfig { url: "https://brain.invalid:8443".into(), pair_token: None, ca_fingerprint: None },
             capture: CaptureConfig { camera_cmd: self.camera.clone(), ..CaptureConfig::default() },
             schedule: ScheduleConfig::default(),
+            led: LedConfig::default(),
             gpio: GpioConfig::default(),
             paths: PathsConfig { data_dir: self.data_dir.clone(), sync_flag: self.data_dir.join("unused") },
         };

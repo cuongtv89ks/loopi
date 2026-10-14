@@ -104,6 +104,15 @@ impl LedDriver for RecordingLed {
     }
 }
 
+/// Lay out `dir` like a Linux LED class device (`/sys/class/leds/ACT` on the Pi): a trigger list with
+/// `[actpwr]` selected, the LED lit by it, and `max_brightness`.
+pub fn fake_sysfs_led(dir: &std::path::Path, max_brightness: &str) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    fs::write(dir.join("trigger"), "none rc-feedback timer oneshot heartbeat default-on [actpwr] mmc0\n")?;
+    fs::write(dir.join("brightness"), "255\n")?;
+    fs::write(dir.join("max_brightness"), max_brightness)
+}
+
 use std::collections::VecDeque;
 use std::path::Path;
 

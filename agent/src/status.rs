@@ -11,7 +11,7 @@ pub enum LedHealth {
     Unconfirmed,
     /// The most recent write succeeded (or fewer than `led::LED_FAILURE_LIMIT` failed since).
     Working,
-    /// The GPIO line could not be opened, or `led::LED_FAILURE_LIMIT` writes in a row failed.
+    /// The LED could not be opened, or `led::LED_FAILURE_LIMIT` writes in a row failed.
     Failed,
 }
 
