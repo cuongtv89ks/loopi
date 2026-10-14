@@ -227,4 +227,14 @@ check "dropbear waits for /data and creates /data/dev/dropbear itself (drop-in)"
 # /bin -> usr/bin and mkdir is a busybox applet link there; the drop-in's ExecStartPre needs it
 check "mkdir for the dropbear drop-in is in the image" rootfs_has /usr/bin/mkdir
 
+# --- Task 5: camera and USB microphone
+check "rpicam-vid present" rootfs_has /usr/bin/rpicam-vid
+check "libcamera Raspberry Pi IPA present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'ipa_rpi_vc4'"
+check "USB audio driver present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'snd-usb-audio.ko'"
+check "camera auto-detect enabled" grep -qx 'camera_auto_detect=1' "$IMAGES/rpi-firmware/config.txt"
+check "onboard audio disabled" grep -qx 'dtparam=audio=off' "$IMAGES/rpi-firmware/config.txt"
+check "KMS overlay shipped" boot_has overlays/vc4-kms-v3d.dtbo
+check "OV5647 overlay shipped" boot_has overlays/ov5647.dtbo
+check "arecord present (dev)" rootfs_has /usr/bin/arecord
+
 exit $fail
