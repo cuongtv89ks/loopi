@@ -57,7 +57,8 @@ check "loopi-usbmode switches host <-> gadget" usbmode_roundtrip
 
 # --- Task 2: read-only root, data partition, watchdog
 check "fstab mounts / read-only squashfs" rootfs_file_contains etc/fstab '^/dev/root +/ +squashfs +ro'
-check "fstab mounts /data from p4 (ext4)" rootfs_file_contains etc/fstab '^/dev/mmcblk0p4 +/data +ext4'
+# nofail: if p4 fails fsck/mount, boot must still reach multi-user.target (USB gadget console), not emergency.target
+check "fstab mounts /data from p4 (ext4, nofail)" rootfs_file_contains etc/fstab '^/dev/mmcblk0p4 +/data +ext4 +([^ ,]+,)*nofail(,[^ ,]+)* '
 check "fstab mounts /var as tmpfs" rootfs_file_contains etc/fstab '^tmpfs +/var +tmpfs'
 check "journald is volatile" rootfs_file_contains etc/systemd/journald.conf.d/10-loopi.conf '^Storage=volatile'
 check "hardware watchdog enabled" rootfs_file_contains etc/systemd/system.conf.d/10-watchdog.conf '^RuntimeWatchdogSec=15s'
@@ -66,6 +67,16 @@ check "data partition grows on first boot" rootfs_has /etc/systemd/system/multi-
 check "grow tools present" rootfs_has /usr/bin/resize2fs
 check "partition tools present (sfdisk, partx)" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && grep -qx 'squashfs-root/usr/bin/sfdisk' /tmp/rootfs.list && grep -qx 'squashfs-root/usr/bin/partx' /tmp/rootfs.list"
 check "/boot and /data mount points exist (read-only root cannot mkdir them)" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && grep -qx 'squashfs-root/boot' /tmp/rootfs.list && grep -qx 'squashfs-root/data' /tmp/rootfs.list"
+ext4_field() { dumpe2fs -h "$IMAGES/data.ext4" 2>/dev/null | sed -n "s/^$1: *//p"; }
+data_block_size_is_4k() { [ "$(ext4_field 'Block size')" = 4096 ]; }
+# bytes per inode of the base image (resize2fs keeps inodes-per-group when growing); mke2fs' default for a
+# 64 MiB image is 4096, which would put ~6% of a 32 GiB card into inode tables
+data_inode_ratio_is_high() {
+  local blocks bs inodes; blocks="$(ext4_field 'Block count')"; bs="$(ext4_field 'Block size')"; inodes="$(ext4_field 'Inode count')"
+  [ -n "$blocks" ] && [ -n "$bs" ] && [ -n "$inodes" ] && [ $((blocks * bs / inodes)) -ge 32768 ]
+}
+check "data image uses 4 KiB blocks" data_block_size_is_4k
+check "data image has a low inode density (>= 32 KiB per inode)" data_inode_ratio_is_high
 check "data image is labelled 'data'" bash -c "dumpe2fs -h '$IMAGES/data.ext4' 2>/dev/null | grep -q 'volume name: *data'"
 
 exit $fail
