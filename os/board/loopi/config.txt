@@ -1,0 +1,17 @@
+# Loopi — Raspberry Pi Zero W (kit CSI camera + USB microphone on the OTG port)
+start_file=start.elf
+fixup_file=fixup.dat
+kernel=zImage
+disable_overscan=1
+# Camera: auto-detect the kit sensor (OV5647 / IMX219 / IMX708)
+camera_auto_detect=1
+dtoverlay=vc4-kms-v3d
+max_framebuffers=1
+disable_fw_kms_setup=1
+# Onboard analog audio is unused; the microphone is a USB device on the OTG port
+dtparam=audio=off
+# Fallback serial console on GPIO14/15 (optional; bring-up uses the USB console)
+enable_uart=1
+# USB port: gadget = console + network over the cable to your computer (dev bring-up).
+# For the USB microphone run `loopi-usbmode host` and reboot (or put "# " in front of the next line).
+dtoverlay=dwc2,dr_mode=peripheral

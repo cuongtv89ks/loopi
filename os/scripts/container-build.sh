@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Runs inside the builder container; re-executes itself as the unprivileged "builder" user.
+set -euo pipefail
+if [ "$(id -u)" = 0 ]; then
+  chown builder:builder /br /out
+  exec runuser -u builder -- "$0" "$@"
+fi
+BR=/br/buildroot
+OUT=/br/output
+SRC=/br/src
+
+# Copy the repo without host build artefacts (Buildroot rsyncs agent/ for the local package).
+rsync -a --delete --exclude target --exclude .venv --exclude out --exclude .git /src/ "$SRC/"
+[ -d "$BR" ] || git clone --depth 1 --branch "$BUILDROOT_REF" https://gitlab.com/buildroot.org/buildroot.git "$BR"
+
+configure() {
+  make -C "$BR" O="$OUT" BR2_EXTERNAL="$SRC/os" raspberrypi0w_defconfig
+  "$BR/support/kconfig/merge_config.sh" -m -O "$OUT" "$OUT/.config" \
+    "$SRC/os/configs/loopi.fragment" "$SRC/os/configs/dev.fragment"
+  make -C "$BR" O="$OUT" olddefconfig
+  "$SRC/os/scripts/verify-config.sh" "$OUT/.config" "$SRC/os/configs/loopi.fragment" "$SRC/os/configs/dev.fragment"
+}
+
+case "$TARGET" in
+  image)
+    configure
+    make -C "$BR" O="$OUT"
+    cp "$OUT/images/sdcard.img" /out/loopi-dev.img
+    "$SRC/os/tests/check-image.sh" "$OUT/images"
+    ;;
+  agent)
+    make -C "$BR" O="$OUT" loopi-agent-rebuild
+    cp "$OUT/target/usr/bin/loopi-agent" /out/loopi-agent
+    ;;
+  shell)
+    exec bash
+    ;;
+  *)
+    echo "unknown target: $TARGET (use image | agent | shell)" >&2
+    exit 2
+    ;;
+esac

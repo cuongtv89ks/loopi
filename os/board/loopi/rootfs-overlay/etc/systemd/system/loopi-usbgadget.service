@@ -1,0 +1,11 @@
+[Unit]
+Description=USB gadget console and network on the OTG port (dev bring-up)
+After=systemd-udev-trigger.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/loopi/usb-gadget.sh
+
+[Install]
+WantedBy=multi-user.target

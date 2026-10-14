@@ -1,0 +1,31 @@
+#!/bin/sh
+# Choose what the OTG (`USB`) port does from the next boot on (dev image).
+#   gadget  console + network over the cable to your computer (bring-up, no microphone)
+#   host    USB host for the microphone (default dwc_otg driver)
+# Without an argument, print the mode configured for the next boot.
+set -eu
+CONFIG="${LOOPI_BOOT_CONFIG:-/boot/config.txt}"
+LINE='dtoverlay=dwc2,dr_mode=peripheral'
+
+configured_mode() {
+	if grep -qx "$LINE" "$CONFIG"; then echo gadget; else echo host; fi
+}
+
+case "${1:-}" in
+	"")
+		configured_mode
+		exit 0
+		;;
+	gadget) sed -i "s|^# *$LINE\$|$LINE|" "$CONFIG" ;;
+	host) sed -i "s|^$LINE\$|# $LINE|" "$CONFIG" ;;
+	*)
+		echo "usage: loopi-usbmode [gadget|host]" >&2
+		exit 2
+		;;
+esac
+sync
+if [ "$(configured_mode)" != "$1" ]; then
+	echo "could not switch: no '$LINE' line in $CONFIG" >&2
+	exit 1
+fi
+echo "next boot: $1 (run 'reboot' to apply)"

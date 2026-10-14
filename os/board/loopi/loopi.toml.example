@@ -1,0 +1,19 @@
+# Copy to loopi.toml on this partition and fill in. On first boot the device moves the
+# secrets (psk, pair_token) to its data partition and removes them from this file.
+[wifi]
+ssid = "YourWiFi"
+psk = "your-wifi-password"
+country = "KR"
+
+[brain]
+url = "https://192.168.1.10:8443"
+pair_token = "XXXX-XXXX"          # brain web: Devices → "Tạo token ghép cặp"
+# ca_fingerprint = "…"            # recommended: copy from the same page
+
+[capture]
+video_fps = 2
+audio_enabled = true
+
+[schedule]
+timezone = "Asia/Seoul"
+quiet_hours = []                  # e.g. ["00:00-07:00"]
