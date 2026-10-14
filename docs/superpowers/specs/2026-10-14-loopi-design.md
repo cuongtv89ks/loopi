@@ -2,7 +2,7 @@
 
 - **Ngày:** 2026-10-14
 - **Trạng thái:** Draft, chờ review
-- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17)
+- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18)
 - **Phạm vi tài liệu:** kiến trúc tổng thể và thiết kế cho cả 3 dự án con (`os/`, `agent/`, `brain/`). Mỗi phase sẽ có implementation plan riêng.
 
 ---
@@ -75,6 +75,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D15 | Vlog MVP | Kiểu timelapse, vì video gốc chỉ có 2fps |
 | D16 | Phần cứng thu | Camera CSI đi kèm kit (nối bằng cáp CSI của Zero). Mic là USB mic cắm qua cổng OTG, nên khi ghi âm cổng OTG chạy chế độ host |
 | D17 | Truy cập khi bring-up | Image dev bật sẵn USB gadget trên cổng OTG: một cáp micro-USB tới máy tính vừa cấp điện vừa cho console (ACM) và mạng (ECM, `ssh root@10.55.0.1`). Trước khi cắm mic, chuyển cổng sang host bằng `loopi-usbmode host` rồi reboot. Mỗi lần boot chỉ một chế độ. Không cần cáp serial; lỗi trước tầng ứng dụng thì xem qua HDMI (`console=tty1`) |
+| D18 | Đèn báo ghi hình | Đèn báo ghi hình là LED ACT (xanh lá) có sẵn trên Pi Zero W, agent điều khiển qua `/sys/class/leds/ACT`, nên không phải gắn LED ngoài. Sau khi boot, firmware và kernel không dùng LED này nữa; agent thoát thì systemd tắt nó. LED đỏ gắn GPIO17 vẫn cấu hình được. Ý nghĩa các kiểu sáng (mục 7.2) và bất biến riêng tư giữ nguyên |
 
 ---
 
@@ -117,7 +118,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | Nguồn | Sạc 5V micro-USB ≥2A, cắm vào cổng PWR | Đã có. Nuôi luôn USB mic qua cổng OTG |
 | Camera | Camera CSI **đi kèm kit**, nối bằng cáp CSI của Zero | Đã có. Thường là OV5647 (5MP) hoặc Camera Module v2 (IMX219). Image dùng `camera_auto_detect`, không gắn chặt vào sensor nào; thay module CSI khác về sau không phải sửa code |
 | Mic | **USB mic** (USB Audio Class) | Cắm vào cổng micro-USB **OTG** (cổng `USB`, không phải cổng `PWR`). Mic đầu USB-A thì thêm adapter OTG micro-B → USB-A. Không phải hàn, không cần overlay |
-| Điều khiển | 1 nút bấm (GPIO) + 1 LED đỏ (GPIO) | |
+| Điều khiển | 1 nút bấm (GPIO) + LED ACT có sẵn trên board làm đèn báo ghi hình (D18) | Không phải gắn LED ngoài. LED đỏ gắn GPIO17 vẫn cấu hình được |
 | Lưu trữ | microSD 32–64GB loại High Endurance | Ghi liên tục |
 | Vỏ | Case Pi Zero có lỗ camera + chân đế hoặc ngàm tripod 1/4" | Chỉnh được góc |
 | Bluetooth | Có sẵn trên board (CYW43438) | Dùng chung chip với WiFi |
@@ -157,7 +158,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 - Image dev có thêm dòng `dtoverlay=dwc2,dr_mode=peripheral` (USB gadget, D17); `loopi-usbmode host|gadget` comment/bỏ comment dòng này. Image prod không có dòng này
 - `dtparam=audio=off`, không cần framebuffer hay HDMI
 - Tinh chỉnh CMA cho 512MB RAM
-- Tắt LED ACT. LED trạng thái là LED ngoài do agent điều khiển
+- LED ACT là LED trạng thái (D18): `dtparam=act_led_trigger=none` để firmware và kernel không điều khiển nó sau khi boot. Chỉ agent điều khiển LED này (qua `/sys/class/leds/ACT`), và unit của agent tắt nó sau mọi lần agent thoát, kể cả khi bị SIGKILL
 
 ### 6.5 Hai biến thể image
 
