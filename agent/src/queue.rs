@@ -22,6 +22,8 @@ use crate::item::{ItemKind, ItemMeta};
 const META_EXT: &str = "meta";
 const TMP_EXT: &str = "tmp";
 const FILE_MODE: u32 = 0o640;
+/// Why recovery left a file it would otherwise have deleted.
+const INCOMPLETE_LISTING: &str = "the directory listing was incomplete, so it may not be an orphan";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueuedItem {
@@ -225,21 +227,37 @@ impl Queue {
     /// Crash recovery. Deleted and counted: temp files, true orphans (payload with no sidecar file)
     /// and sidecars without a payload. Payloads whose sidecar is unreadable, mismatched or disagrees
     /// on size are quarantined, never deleted, so audio and markers survive a corrupt sidecar.
+    /// If the listing stops at an entry error, whatever follows was never seen, so nothing that
+    /// merely looks like an orphan is deleted (see `recover_entries`).
     fn recover(&self) -> RecoveryReport {
+        match fs::read_dir(&self.items) {
+            Ok(entries) => self.recover_entries(entries.map(|entry| entry.map(|e| e.path()))),
+            Err(e) => {
+                let mut report = RecoveryReport::default();
+                report.problem(&self.items, "cannot list queue items", &e);
+                report
+            }
+        }
+    }
+
+    /// `recover` over an already opened directory listing (a seam for tests).
+    ///
+    /// std's `ReadDir` ends at the first entry error, so after one the payloads and sidecars not
+    /// yet listed are unknown: a payload may only look orphaned because its sidecar comes later,
+    /// and a sidecar may look payload-less because its payload does. When `listing_complete` is
+    /// false no orphan payload and no sidecar without payload is deleted; each is reported as left
+    /// in place and the next start decides again. Temp files and quarantining a bad sidecar whose
+    /// payload was listed do not depend on what was missed and carry on.
+    fn recover_entries(&self, entries: impl IntoIterator<Item = io::Result<PathBuf>>) -> RecoveryReport {
         let mut report = RecoveryReport::default();
+        let mut listing_complete = true;
         let mut sidecars: Vec<(String, PathBuf)> = Vec::new();
         let mut payloads: Vec<(String, PathBuf)> = Vec::new();
-        let entries = match fs::read_dir(&self.items) {
-            Ok(entries) => entries,
-            Err(e) => {
-                report.problem(&self.items, "cannot list queue items", &e);
-                return report;
-            }
-        };
         for entry in entries {
             let path = match entry {
-                Ok(entry) => entry.path(),
+                Ok(path) => path,
                 Err(e) => {
+                    listing_complete = false;
                     report.problem(&self.items, "cannot read a queue entry", &e);
                     continue;
                 }
@@ -276,6 +294,9 @@ impl Queue {
                         report.problem(sidecar, "cannot quarantine", &e);
                     }
                 }
+                (SidecarCheck::Bad(_) | SidecarCheck::NoPayload, None) if !listing_complete => {
+                    report.problem(sidecar, "sidecar without payload left in place", &INCOMPLETE_LISTING);
+                }
                 (SidecarCheck::Bad(_) | SidecarCheck::NoPayload, None) => {
                     tracing::warn!(path = %sidecar.display(), "dropping sidecar without payload");
                     self.delete(sidecar, "cannot delete sidecar without payload", &mut report);
@@ -283,9 +304,14 @@ impl Queue {
             }
         }
         for (stem, path) in payloads {
-            if !claimed.contains(&stem) {
+            if claimed.contains(&stem) {
+                continue;
+            }
+            if listing_complete {
                 tracing::warn!(path = %path.display(), "dropping orphan payload without sidecar");
                 self.delete(&path, "cannot delete orphan payload", &mut report);
+            } else {
+                report.problem(&path, "orphan payload left in place", &INCOMPLETE_LISTING);
             }
         }
         report
@@ -481,6 +507,87 @@ mod tests {
         let moved = root.join("quarantine").join(format!("{}.opus", m.id));
         let left = root.join("items").join(format!("{}.opus", m.id));
         assert!(moved.exists() || left.exists(), "audio is never deleted");
+    }
+
+    /// std's `ReadDir` ends the listing at the first entry error, so what follows the error was
+    /// never seen. The fake listing yields `listed`, then that error (and nothing after it).
+    fn truncated_listing(listed: Vec<PathBuf>) -> Vec<io::Result<PathBuf>> {
+        let mut entries: Vec<io::Result<PathBuf>> = listed.into_iter().map(Ok).collect();
+        entries.push(Err(io::Error::other("EIO while listing")));
+        entries
+    }
+
+    #[test]
+    fn incomplete_listing_keeps_a_payload_whose_sidecar_was_not_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let item = queue.enqueue_bytes(b"audio-bytes", ItemKind::Audio, ts(0), ts(1)).unwrap();
+        let payload = queue.items_dir().join(format!("{}.opus", item.id));
+        let sidecar = queue.items_dir().join(format!("{}.meta", item.id));
+
+        // The payload was listed before the error; its sidecar comes later in the directory.
+        let report = queue.recover_entries(truncated_listing(vec![payload.clone()]));
+
+        assert!(payload.exists(), "a payload that merely looks like an orphan must never be deleted");
+        assert!(sidecar.exists());
+        assert_eq!(report.dropped, 0);
+        assert_eq!(report.problems.len(), 2, "the listing error and the payload left in place: {:?}", report.problems);
+        assert!(report.problems.iter().any(|p| p.contains(&item.id) && p.contains("left in place")), "{:?}", report.problems);
+        assert!(report.summary().is_some(), "reaches last_error");
+        // The next start, with a complete listing, finds the sidecar and the item is intact.
+        let (queue, report) = Queue::open(&tmp.path().join("q")).unwrap();
+        assert_eq!(report, RecoveryReport::default());
+        assert_eq!(queue.oldest().unwrap().unwrap().meta, item);
+    }
+
+    #[test]
+    fn incomplete_listing_keeps_sidecars_that_look_payloadless() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let items = queue.items_dir().to_path_buf();
+        // Its payload exists but is not listed, and its size disagrees: it would be quarantined with it.
+        let sized = queue.enqueue_bytes(b"audio-bytes", ItemKind::Audio, ts(0), ts(1)).unwrap();
+        fs::write(items.join(format!("{}.opus", sized.id)), b"trunc").unwrap();
+        // Really no payload on disk.
+        let gone = queue.enqueue_bytes(b"{}", ItemKind::Marker, ts(2), ts(2)).unwrap();
+        fs::remove_file(items.join(format!("{}.json", gone.id))).unwrap();
+        // Unreadable sidecar, payload not listed.
+        let bad = "01JA2B3C4D5E6F7G8H9J0KMNPS";
+        fs::write(items.join(format!("{bad}.meta")), b"{not json").unwrap();
+        fs::write(items.join(format!("{bad}.opus")), b"x").unwrap();
+
+        let sidecars = [format!("{}.meta", sized.id), format!("{}.meta", gone.id), format!("{bad}.meta")];
+        let report = queue.recover_entries(truncated_listing(sidecars.iter().map(|n| items.join(n)).collect()));
+
+        for name in &sidecars {
+            assert!(items.join(name).exists(), "{name} must be left in place");
+        }
+        assert!(items.join(format!("{}.opus", sized.id)).exists() && items.join(format!("{bad}.opus")).exists());
+        assert_eq!(report.dropped, 0);
+        let left_in_place = report.problems.iter().filter(|p| p.contains("left in place")).count();
+        assert_eq!(left_in_place, 3, "every sidecar is reported: {:?}", report.problems);
+        assert_eq!(report.problems.len(), 4, "plus the listing error: {:?}", report.problems);
+    }
+
+    #[test]
+    fn incomplete_listing_still_cleans_temp_files_and_quarantines_listed_pairs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("q");
+        let (queue, _) = Queue::open(&root).unwrap();
+        let items = queue.items_dir().to_path_buf();
+        fs::write(items.join(".x.meta.tmp"), b"partial").unwrap();
+        let bad = "01JA2B3C4D5E6F7G8H9J0KMNPS";
+        fs::write(items.join(format!("{bad}.meta")), b"{not json").unwrap();
+        fs::write(items.join(format!("{bad}.opus")), b"x").unwrap();
+
+        let listed = vec![items.join(".x.meta.tmp"), items.join(format!("{bad}.meta")), items.join(format!("{bad}.opus"))];
+        let report = queue.recover_entries(truncated_listing(listed));
+
+        assert_eq!(report.dropped, 1, "the temp file");
+        assert!(!items.join(".x.meta.tmp").exists());
+        assert!(root.join("quarantine").join(format!("{bad}.opus")).exists(), "listed pair is quarantined as usual");
+        assert!(root.join("quarantine").join(format!("{bad}.reason")).exists());
+        assert_eq!(report.problems.len(), 1, "only the listing error: {:?}", report.problems);
     }
 
     #[test]
