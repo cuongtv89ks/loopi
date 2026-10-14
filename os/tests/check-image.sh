@@ -17,6 +17,12 @@ boot_has() { mdir -i "$IMAGES/boot.vfat" "::$1"; }
 part_count() { [ "$(sfdisk -d "$IMAGES/sdcard.img" | grep -c '^/')" = "$1" ]; }
 # sfdisk pads one-digit types (" c"), so compare without whitespace
 part_type() { [ "$(sfdisk --part-type "$IMAGES/sdcard.img" "$1" | tr -d '[:space:]')" = "$2" ]; }
+part_aligned() {  # every partition starts on a multiple of $1 sectors (4 MiB = 8192)
+  local starts; starts="$(sfdisk -d "$IMAGES/sdcard.img" | sed -n 's/.*start= *\([0-9]*\),.*/\1/p')"
+  [ "$(echo "$starts" | wc -l)" = 4 ] || return 1
+  local s; for s in $starts; do [ "$((s % $1))" = 0 ] || return 1; done
+}
+boot_is_fat32() { file -s "$IMAGES/boot.vfat" | grep -E 'FAT \(32 bit\)'; }
 usbmode_roundtrip() {  # run the shipped loopi-usbmode against a copy of the shipped config.txt
   local tmp; tmp="$(mktemp -d)"
   rootfs_cat usr/bin/loopi-usbmode > "$tmp/loopi-usbmode" && chmod +x "$tmp/loopi-usbmode"
@@ -34,6 +40,8 @@ usbmode_roundtrip() {  # run the shipped loopi-usbmode against a copy of the shi
 check "sdcard.img exists" test -s "$IMAGES/sdcard.img"
 check "four partitions: boot, rootfs-A, rootfs-B, data" part_count 4
 check "p1 is FAT32 (LBA)" part_type 1 c
+check "boot filesystem really is FAT32, not FAT16" boot_is_fat32
+check "partitions start on 4 MiB boundaries" part_aligned 8192
 check "p2 is Linux" part_type 2 83
 check "p4 is Linux" part_type 4 83
 check "kernel image present" test -s "$IMAGES/zImage"
