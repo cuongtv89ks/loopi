@@ -8,7 +8,9 @@ country = "KR"
 [brain]
 url = "https://192.168.1.10:8443"
 pair_token = "XXXX-XXXX"          # brain web: Devices → "Tạo token ghép cặp"
-# ca_fingerprint = "…"            # recommended: copy from the same page
+# Copy the brain's CA fingerprint from the same page. Without it the device trusts the first server it reaches when it
+# pairs: anyone on the network could pose as your brain. Delete the line only if you accept that.
+ca_fingerprint = "paste \"Fingerprint CA của brain\" from the same page"
 
 [capture]
 video_fps = 2
