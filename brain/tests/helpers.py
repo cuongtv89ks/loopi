@@ -281,3 +281,45 @@ def make_ctx(pool, settings, *, ollama=None, transcriber=None):
 
     ollama = ollama or FakeOllama()
     return PipelineContext(pool, settings, build_router(DEFAULT_CONFIG, settings, ollama.client()), transcriber)
+
+
+async def run_jobs(ctx) -> None:
+    """Run every due job with a real Procrastinate worker, then return (periodic tasks off).
+
+    Needs the job app open on ``ctx.pool`` (the ``jobs_open`` fixture).
+    """
+    from procrastinate.periodic import PeriodicRegistry
+
+    from loopi_brain.pipeline import context
+    from loopi_brain.pipeline.jobs import job_app
+
+    registry = job_app.periodic_registry
+    job_app.periodic_registry = PeriodicRegistry()
+    context.set_context(ctx)
+    try:
+        await job_app.run_worker_async(wait=False, concurrency=1, install_signal_handlers=False, listen_notify=False)
+    finally:
+        context.set_context(None)
+        job_app.periodic_registry = registry
+
+
+def write_jpeg(path, size=(1280, 720), color=(90, 120, 150)):
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, color).save(path, format="JPEG")
+    return path
+
+
+async def insert_keyframe(pool, settings, item_id: str, device_id: str, ts: dt.datetime, *, size=(1280, 720)) -> str:
+    """Insert an uncaptioned keyframe row with a real JPEG on disk; return its id."""
+    kf_id = new_ulid()
+    rel = f"keyframes/{device_id}/{ts:%Y/%m/%d}/{kf_id}.jpg"
+    write_jpeg(settings.media_root / rel, size)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO keyframe (id, item_id, device_id, ts, frame_index, path, dhash, luma)"
+            " VALUES (%s, %s, %s, %s, (SELECT count(*) FROM keyframe WHERE item_id = %s), %s, 0, 100)",
+            (kf_id, item_id, device_id, ts, item_id, rel),
+        )
+    return kf_id
