@@ -166,3 +166,27 @@ Final: deferred per the final reviewer's triage table (final-review.md): every o
   committed copy is docs/superpowers/ledgers/p2a-progress.md — cost if wrong: none.
 Verification at 9dba2f4: brain 312 passed, 1 skipped, 98 %; agent/, os/, docs/protocol/ untouched since 7021705; live stack `deploy` never recreated (checked after Tasks 10 and the fix wave).
 Tasks 1–10: complete. Task 11: waiting for the owner's yes after the P1 hardware soak.
+
+## 2026-10-15 20:05 — audio level finding (owner: "check audio ko thấy có tiếng gì")
+- Live device mic: C-Media 8086:0808 mini USB mic. Mixer at power-on: Mic Capture Volume 0/16 (range 0–23.8 dB), AGC on;
+  the image never sets mixer levels. Recordings all day/night: RMS ≈ −55 dBFS, peaks ≈ −30 dBFS (noise floor level).
+- Tests (temporary, RAM-only mixer changes on the device): volume 16 + AGC on → +2–3 dB only; volume 16 + AGC off →
+  −70 dBFS (worse). Restored AGC on, volume left at 16 (reverts on reboot).
+- Silero VAD finds faint speech in a few segments; Whisper tiny finds nothing in a raw segment but Vietnamese after
+  +34 dB loudness normalisation → P2a ASR must normalise level before VAD/Whisper (open item, owner to decide the fix).
+
+## P2a Task 10a/10b — audio level (executed from docs/superpowers/plans/2026-10-15-audio-level.md, ledger there)
+Owner decision 2026-10-15: device gain (+20 dB, Part A on feat/audio-gain) combined with brain normalisation (Part B here).
+Task 10a (audio level Task 3): complete (commits 2a5c2c3..96b90c1, review clean) — audio_level.level_gain, ASR normalises before VAD/Whisper, LOOPI_ASR_MAX_GAIN_DB (worker env default 30).
+Task 10b (audio level Task 4): complete (commits 96b90c1..2e68443, review clean) — GET /audio/{id}.opus cached normalised copy under view/, raw fallback; media.run_ffmpeg shared with frames.
+- Ruling: brain gain never lifts the noise floor (10th pct of 20 ms frame RMS) above −40 dBFS — cost if wrong: quiet speech in a loud room gets less gain.
+- Ruling: playback uses the fixed 30 dB rule, not LOOPI_ASR_MAX_GAIN_DB; delete view/**/*.opus to rebuild copies — cost if wrong: tuning ASR does not change playback.
+- Ruling: one ffmpeg helper (media.run_ffmpeg) for remux, playback and frames (frames wraps it, MediaError → FrameError) — cost if wrong: a regression caught by test_media/test_frames/test_video.
+- Ruling: P2b retention, when it deletes raw audio after transcription, must delete view/…/<id>.opus too — cost if wrong: orphaned copies use disk.
+- Ruling: Task 11 adds a playback check (one old + one new recording through /audio; count "plays at its raw level" warnings) and uses SMOKE_ANALYSIS_TIMEOUT=600 — cost if wrong: a broken filter chain on the api image's ffmpeg shows only as log lines.
+- Ruling: M5 (-compression_level 5) deferred; 60 s segments first-play in 0.6 s — cost if wrong: ~6.6 s first play of a 600 s segment.
+Real-data check by the final reviewer (76 segments): old recordings +≈30 dB; day speech ≈ −19 dBFS, night hiss ≈ −43 dBFS on playback; VAD 0 s on night noise before/after, day 328 s vs 275 s.
+Audio-level Part B final review + fix wave (606faa2, fdf72ce: bitexact copies, no-store fallback, traceback for unexpected errors, real cleanup tests, README 30 dB note): re-review all addressed; brain 340 passed + 1 skipped, 98 %.
+Task 11: owner 2026-10-15 22:0x — "okie tạm thời dùng bản smoke7 trước để chạy phase 2z. mai tôi sẽ sử dụng smoke8" = go-ahead for Task 11 now with the device on smoke7 (24 h soak passed; P1 hardware tests move to smoke8 tomorrow).
+Task 11 Step 1: live checkout clean on feat/phase1 @ 7021705, already an ancestor of feat/phase2 (no merge needed).
+Task 11 Step 2: pg_dump → ~/loopi-backups/p1-2026-10-15-2215.dump (291 KB); deploy/.env copied to the worktree (600, git-ignored, not printed).
