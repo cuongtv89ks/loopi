@@ -1,0 +1,16 @@
+# Which provider and model serve each pipeline task (spec §9.3). Mounted read-only into api and worker
+# at /etc/loopi/providers.yaml (LOOPI_PROVIDERS_FILE). No secrets here: API keys come only from the env.
+# Every task runs locally by default; raw images and audio never leave the brain unless the matching
+# privacy flag is true, and a processing backlog never escalates to the cloud.
+privacy:
+  allow_cloud_images: false
+  allow_cloud_audio: false
+tasks:
+  caption:         { provider: ollama, model: "minicpm-v4.6:1b" }
+  asr:             { provider: local,  model: faster-whisper/large-v3-turbo-int8 }
+  embed:           { provider: ollama, model: "qwen3-embedding:0.6b" }
+  chapter_summary: { provider: ollama, model: "qwen3:4b" }
+  recap:           { provider: ollama, model: "qwen3:8b" }
+  chat:            { provider: ollama, model: "qwen3:8b" }
+  # Cloud fallbacks need the Anthropic provider (P2b) and ANTHROPIC_API_KEY, e.g.:
+  # recap: { provider: ollama, model: "qwen3:8b", fallback: { provider: anthropic, model: claude-haiku-5-5 } }
