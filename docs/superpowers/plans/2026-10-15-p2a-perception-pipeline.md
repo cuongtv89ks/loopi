@@ -33,11 +33,11 @@
 - Spec `docs/superpowers/specs/2026-10-14-loopi-design.md` is binding (§4 principles, §9, §12, §13, §14 P2).
 - Local-first: raw images and audio never leave the brain unless the matching privacy flag is `true`; cloud gets text only; default is local for every task; a backlog never escalates to cloud (§9.3, D3).
 - Models (§9.3): caption `ollama` `minicpm-v4.6:1b`; asr `local` `faster-whisper/large-v3-turbo-int8` (CPU, int8); embed `ollama` `qwen3-embedding:0.6b` (1024 dims); chapter_summary `ollama` `qwen3:4b`; recap/chat `ollama` `qwen3:8b`.
-- Every derived row stores the model version (§12 "Đổi model"): `model_version = "<provider>:<model>"`.
-- A job is retried 3 times, then dead-lettered and shown in the UI with a reprocess button (§12).
+- Every derived row stores the model version (§12 "Đổi model"): `model_version = "<provider>:<model>"` (stored as `keyframe.caption_model`, `moment.model_version` + `moment.embed_model`, `transcript_segment.model_version`; marker moments use `loopi:marker-v1`).
+- A job is retried 3 times, then dead-lettered and shown in the UI with a reprocess button (§12) (except: a model-server outage ends a caption or embedding job without spending a retry, Tasks 5–6; the embedding run and the periodic tasks have no button because the dispatcher or the scheduler starts a new one, Tasks 3 and 9).
 - Model server or cloud errors never affect ingest (§12): `PUT /v1/items` behaves exactly as in P1.
 - Device contract unchanged: `docs/protocol/v1.openapi.yaml` is not modified by P2a.
-- P2a deletes no media (raw audio deletion is P2b retention).
+- P2a deletes no recorded media (raw audio deletion is P2b retention); the only files it removes are its own JPEGs after a failed transaction (Task 4) and the smoke device's own rows and files (Task 10).
 - Python ≥ 3.13, uv-locked; Postgres 17 + pgvector + pg_trgm (`pgvector/pgvector:pg17` in tests, `pgvector/pgvector:0.8.1-pg17` in compose); Procrastinate `==3.10.0`; Ollama image `ollama/ollama:0.35.1`.
 - UI text Vietnamese; web POSTs need `HX-Request: true`.
 - TDD, coverage ≥ 80 % for `loopi_brain`, conventional commits, never commit secrets, never prune/delete Docker resources you did not create (testcontainers' own containers are fine).
@@ -85,7 +85,7 @@ brain/
 │   │   ├── moments.py                     # Task 5: index_marker, embed_pending
 │   │   ├── caption.py                     # Task 6: Caption, caption_keyframe
 │   │   ├── asr.py                         # Task 7: VAD regions, filters, WhisperTranscriber, transcribe_audio
-│   │   ├── worker.py                      # Task 8: run_worker, worker_alive, pull_models
+│   │   ├── worker.py                      # Task 8: run_worker, pull_models
 │   │   └── status.py                      # Task 9: /pipeline numbers, model health, retry
 │   └── web/
 │       ├── routes.py                      # Task 9: enriched timeline, /pipeline, retry
@@ -1013,11 +1013,13 @@ CLOUD_PROVIDERS = frozenset({"anthropic"})
 
 
 class ProviderError(Exception):
-    """The provider answered, but with an error (HTTP >= 400, unusable body, wrong dimensions)."""
+    """The provider failed a request it should serve: HTTP errors other than 404, read/write timeouts,
+    dropped connections, unusable bodies, wrong dimensions. Retried normally, then dead-lettered."""
 
 
 class ProviderUnavailable(ProviderError):
-    """The provider could not be reached (connection refused, DNS failure, timeout)."""
+    """The provider cannot serve the task right now: connection refused, DNS failure, connect timeout,
+    or HTTP 404 (model not pulled). A configuration/availability problem, not an item problem."""
 
 
 class PrivacyBlocked(Exception):
@@ -1415,6 +1417,9 @@ def build_router(config: ProvidersConfig, settings: Settings, client: httpx.Asyn
 
 Run: `cd brain && uv run pytest tests/test_providers.py -v`
 Expected: PASS (27 tests).
+
+Run: `cd brain && uv run pytest -q`
+Expected: the whole suite passes.
 
 - [ ] **Step 8: Commit**
 
@@ -1922,7 +1927,7 @@ async def test_api_lifespan_opens_the_job_app_on_its_pool(pool, pki_settings):
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd brain && uv run pytest tests/test_dispatch.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'loopi_brain.pipeline'` (every P1 test that uses `client` fails the same way until Step 5, because `client` now needs `jobs_open`).
+Expected: FAIL — `ModuleNotFoundError: No module named 'loopi_brain.pipeline'` (every P1 test that uses `client` fails the same way until Step 3 creates `pipeline/jobs.py`, because `client` now needs `jobs_open`).
 
 - [ ] **Step 3: Write the job app**
 
@@ -2378,6 +2383,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-15; they amend the steps above):**
+- **R-F2 (dead-letter pile-up):** the queueing lock `embed` covers only `todo` jobs, so a persistent embedding error would add a new failed `embed_moments` row every few minutes and push real failures off the status page. In `dispatch.py` add `async def prune_failed_embed_runs(pool) -> int` that deletes every failed `embed_moments` job except the newest one (`DELETE FROM procrastinate_jobs WHERE task_name = %s AND status = 'failed' AND id < (SELECT max(id) FROM procrastinate_jobs WHERE task_name = %s AND status = 'failed')`, task name from `jobs.EMBED_MOMENTS`; events cascade) and returns the number deleted; `dispatch_pending` calls it right before `defer_embed`. Add a test to `tests/test_dispatch.py`: two failed embed runs + one healthy tick with a moment waiting → exactly one failed `embed_moments` row is left (the newest) and one new `todo` run exists. Update the test count you expect accordingly.
+- **R-F4 (shared moment helper):** add `async def insert_moment(pool, device_id: str, *, kind: str = "marker", ts: dt.datetime | None = None, text: str = "x", lang: str | None = None) -> str` to `tests/helpers.py` (inserts `id, device_id, ts_start, ts_end, kind, text, lang, model_version='test'`; `ts` defaults to now; both timestamps = `ts`; returns the id) and use it in `test_dispatch.py` instead of `_moment_waiting`. Tasks 5 and 9 import it instead of defining their own. (`_insert_keyframe` stays test-local: it writes no JPEG and takes a caption, unlike Task 6's `helpers.insert_keyframe`.)
 
 ---
 
@@ -3170,6 +3179,9 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-15; they amend the steps above):**
+- **R-F6 (one copy of the item-state SQL):** add to `pipeline/state.py` `async def lock_pending_item(conn, item_id: str) -> bool` (`SELECT 1 FROM item WHERE id = %s AND analysis_state = 'pending' FOR UPDATE`; true when a row came back) and `async def mark_item_done(conn, item_id: str) -> None` (`UPDATE item SET analysis_state = 'done', analyzed_at = now(), analysis_error = NULL WHERE id = %s`), and use them in `video.py` instead of the inline statements, inside the transaction that already holds the row. `finish_item` stays as it is (it opens its own connection, sets 'done' or 'skipped' and guards on `analysis_state = 'pending'`). Tasks 5 and 7 use the two new helpers too. Behavior and test counts do not change.
+
 ---
 
 ### Task 5: Marker moments and text embeddings
@@ -3416,6 +3428,9 @@ TASK_MODULES = [
 Run: `cd brain && uv run pytest tests/test_moments.py -v`
 Expected: PASS (10 tests).
 
+Run: `cd brain && uv run pytest -q`
+Expected: the whole suite passes.
+
 - [ ] **Step 5: Commit**
 
 ```bash
@@ -3427,6 +3442,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-15; they amend the steps above):**
+- **R-F4:** `tests/test_moments.py` uses `helpers.insert_moment` (added in Task 3) instead of defining `_moment`; keep the same arguments at the call sites (`text=`, `ts=T0 + dt.timedelta(minutes=minute)`).
+- **R-F6:** `moments.py` marks the marker item done with `state.mark_item_done(conn, item_id)` (added in Task 4) instead of the inline UPDATE.
 
 ---
 
@@ -4575,6 +4594,9 @@ TASK_MODULES = [
 Run: `cd brain && uv run pytest tests/test_asr.py -v`
 Expected: PASS (28 tests, 1 skipped: the real-model test). The silence tests run the real Silero VAD bundled with faster-whisper (no download).
 
+Run: `cd brain && uv run pytest -q`
+Expected: the whole suite passes.
+
 Optional, downloads ≈ 1.6 GB once: `cd brain && LOOPI_TEST_WHISPER=1 LOOPI_MODEL_DIR=$HOME/.cache/loopi-models uv run pytest tests/test_asr.py -k real_whisper -v` → PASS.
 
 - [ ] **Step 5: Commit**
@@ -4589,6 +4611,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-15; they amend the steps above):**
+- **R-F6:** `asr.py` uses `state.lock_pending_item(conn, item_id)` and `state.mark_item_done(conn, item_id)` (added in Task 4) instead of the inline SELECT … FOR UPDATE and UPDATE.
 
 ---
 
@@ -5193,7 +5218,8 @@ async def test_retry_button_requeues_a_dead_lettered_job_once(web, pool, dev):
     assert job["status"] == "todo"
     assert (await web.post(f"/pipeline/jobs/{job_id}/retry", headers=HX)).status_code == 409
     assert (await web.post("/pipeline/jobs/999999/retry", headers=HX)).status_code == 409
-    assert "409: \"Job không còn ở trạng thái lỗi" in (await web.get("/pipeline")).text  # explained in Vietnamese
+    # the page carries the Vietnamese explanation the retry button shows for a 409
+    assert "409: \"Job không còn ở trạng thái lỗi" in (await web.get("/pipeline")).text
 
 
 async def test_retry_all_requeues_every_dead_letter_but_the_embedding_run(web, pool, dev):
@@ -5840,6 +5866,11 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-15; they amend the steps above):**
+- **R-F2:** add `jobs.DISPATCH_PENDING`, `jobs.RETRY_STALLED` and `jobs.REMOVE_OLD_JOBS` to `NOT_RETRIED` (the scheduler starts a new tick by itself, so a failed tick gets no "Xử lý lại" button), give them Vietnamese labels in `TASK_LABELS`, and write `TASK_LABELS`/`NOT_RETRIED` keys with the `jobs.*` constants rather than string literals. Add one assertion to the status-page test: a failed `dispatch_pending` job is listed without a retry button.
+- **R-F3 (dead-lettered captions):** a keyframe whose caption job is `failed` is not waiting any more. In `pipeline_status`, count "Khung hình chờ mô tả" with the same `LEFT JOIN procrastinate_jobs j ON j.id = k.caption_job_id AND j.status = 'failed' … AND j.id IS NULL` pattern `PENDING_ITEMS` uses; in `_day_by_hour`, select `j.status IS NOT DISTINCT FROM 'failed' AS caption_failed` and show "Lỗi mô tả" instead of "Đang chờ mô tả…" for such a keyframe. Add a test: a keyframe with a failed caption job is not counted as waiting and the timeline shows "Lỗi mô tả".
+- **R-F4:** `tests/test_web_pipeline.py` uses `helpers.insert_moment` (added in Task 3) instead of defining `_moment`.
+
 ---
 
 ### Task 10: Compose `worker` and `models` services, smoke test, README
@@ -5854,7 +5885,7 @@ EOF
 
 **Do not run `docker compose …` or `deploy/smoke.sh` in this task** (Global Constraints: project `deploy` is the live stack); verify with `bash -n` and `tests/test_deploy.py` only.
 
-Rulings in this task: the Brain `Dockerfile` does not change (the new wheels come from `uv.lock`; ffmpeg is already installed). The smoke test makes its test video with the api image's ffmpeg (the host may have none) and waits `SMOKE_ANALYSIS_TIMEOUT` seconds (default 90) for its analysis. As soon as the smoke device exists, an `EXIT` trap guarantees that on **every** exit — passed or failed — it deletes that device's moments and items (keyframes and transcripts cascade), removes its `raw/`, `view/` and `keyframes/` directories under the media root (inside the api container, only for an id that is a valid ULID), then revokes the device; jobs still queued for those rows finish as no-ops (Tasks 4, 6, 7). The worker's healthcheck runs every 30 s; `stop_grace_period: 2m` lets running jobs finish on a stop. The worker sets `OMP_NUM_THREADS=1` and `OPENBLAS_NUM_THREADS=1`: CTranslate2 takes its thread count from `cpu_threads` (it overrides `OMP_NUM_THREADS`), and on this host a turbo-sized check with the tiny model ran faster with the limits (0.37 s vs 0.52 s, half the CPU) because nothing else oversubscribes the cores; re-check on the owner's PC in Task 11. Models are pulled before the full stack starts so the backlog is captioned as soon as it is analysed; without them captions and embeddings only wait.
+Rulings in this task: the Brain `Dockerfile` does not change (the new wheels come from `uv.lock`; ffmpeg is already installed). The smoke test makes its test video with the api image's ffmpeg (the host may have none) and waits `SMOKE_ANALYSIS_TIMEOUT` seconds (default 90) for its analysis. As soon as the smoke device's id is known, an `EXIT` trap guarantees that on **every** exit — passed or failed — it deletes that device's moments and items (keyframes and transcripts cascade), removes its `raw/`, `view/` and `keyframes/` directories under the media root (inside the api container, only for an id that is a valid ULID), then revokes the device; jobs still queued for those rows finish as no-ops (Tasks 4, 6, 7). The worker's healthcheck runs every 30 s; `stop_grace_period: 2m` lets running jobs finish on a stop. The worker sets `OMP_NUM_THREADS=1` and `OPENBLAS_NUM_THREADS=1`: CTranslate2 takes its thread count from `cpu_threads` (it overrides `OMP_NUM_THREADS`), and on this host a turbo-sized check with the tiny model ran faster with the limits (0.37 s vs 0.52 s, half the CPU) because nothing else oversubscribes the cores; re-check on the owner's PC in Task 11. Models are pulled before the full stack starts so the backlog is captioned as soon as it is analysed; without them captions and embeddings only wait.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -5936,7 +5967,7 @@ def test_smoke_script_removes_what_it_created_on_every_exit():
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd brain && uv run pytest tests/test_deploy.py -v`
-Expected: FAIL — `KeyError: 'worker'`.
+Expected: FAIL — `KeyError: 'worker'` in the new service tests (`test_every_image_is_pinned` and `test_smoke_script_is_valid_bash` already pass on the P1 files).
 
 - [ ] **Step 3: Add the services**
 
@@ -6226,7 +6257,7 @@ echo "Removed the smoke data and revoked smoke device $REMOVED"
 echo "OK: smoke test passed (device fingerprint $FP)"
 ```
 
-Run: `bash -n deploy/smoke.sh`
+Run (from the repo root): `bash -n deploy/smoke.sh`
 Expected: no output.
 
 - [ ] **Step 5: Update the README**
@@ -6267,7 +6298,8 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 ## Pipeline (P2a)
 
 - The "Xử lý" page (`/pipeline`) shows the backlog, the recording → caption/transcript latency of the last 24 h,
-  whether Ollama is reachable and has every model, and the jobs that failed 4 times, each with a "Xử lý lại" button.
+  whether Ollama is reachable and has every model, and the jobs that failed 4 times, each with a "Xử lý lại" button
+  (the embedding run has none: it restarts by itself every minute).
 - Upgrading from P1: the migration marks every existing recording as pending, so the worker analyses the
   recordings made before the upgrade too; on a CPU-only PC that backlog drains over hours.
 - Model server down: captions and embeddings wait and resume by themselves; uploads are never affected.
@@ -6295,6 +6327,9 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-15; they amend the steps above):**
+- **R-F15:** between the pairing call and the device-id lookup the `EXIT` trap cannot clean up yet; in the lookup's failure branch (and wherever the script exits before `DEVICE_ID` is set but after `FP` is known), revoke the smoke device by fingerprint (`UPDATE device SET revoked = TRUE WHERE cert_fingerprint = '$FP'`), so a failed smoke run never leaves an active smoke device. `bash -n` still passes; `test_deploy.py` counts do not change.
+
 ---
 
 ### Task 11: Real-data run and measurements (controller-executed)
@@ -6304,7 +6339,7 @@ This task replaces the live P1 stack with P2a on the owner's PC and processes th
 **Files:**
 - Create: `docs/measurements/2026-10-p2a-pipeline.md`
 - Modify (only if tuning is needed): `brain/src/loopi_brain/config.py` keyframe defaults and `brain/tests/test_config.py`
-- Modify: `docs/HANDOFF.md` (§1 status row for P2a, where the live stack runs from), `docs/superpowers/ledgers/p2a-progress.md`
+- Modify: `docs/HANDOFF.md` (§1 status row for P2a, where the live stack runs from); create or update `docs/superpowers/ledgers/p2a-progress.md` (the controller commits a first copy after the Tasks 1–10 final review)
 - Possibly: a merge commit of `feat/phase1` into `feat/phase2` (Step 1)
 
 **Interfaces:**
@@ -6469,10 +6504,10 @@ SELECT (start_ts AT TIME ZONE 'Asia/Seoul')::timestamp(0) AS at, lang, left(text
 
 - [ ] **Step 7: Tune the keyframe budget if needed**
 
-If keyframes per full day of recording are far outside 100–300, change the defaults in `brain/src/loopi_brain/config.py` (`keyframe_hash_threshold` up/down first, then `keyframe_min_gap_s`), update the matching assertion in `brain/tests/test_config.py`, run `cd brain && uv run pytest -q`, redeploy with `docker compose -p deploy up -d --build worker`, and re-measure a day. Commit:
+If keyframes per full day of recording are far outside 100–300, change the defaults in `brain/src/loopi_brain/config.py` (`keyframe_hash_threshold` up/down first, then `keyframe_min_gap_s`) and the same values in `frames.KeyframeParams` (`brain/src/loopi_brain/pipeline/frames.py`), update the matching assertions in `brain/tests/test_config.py`, run `cd brain && uv run pytest -q`, redeploy with `docker compose -p deploy up -d --build worker`, and re-measure a day. Commit:
 
 ```bash
-git add brain/src/loopi_brain/config.py brain/tests/test_config.py
+git add brain/src/loopi_brain/config.py brain/src/loopi_brain/pipeline/frames.py brain/tests/test_config.py
 git commit -F - <<'EOF'
 fix(brain): tune keyframe defaults from a day of real recordings
 
