@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Xử lý</h1>
+<div class="card">
+  <h2>Hàng đợi</h2>
+  <ul>
+    <li>Video chờ phân tích: {{ pending.video }}</li>
+    <li>Âm thanh chờ nhận dạng: {{ pending.audio }}</li>
+    <li>Đánh dấu chờ ghi nhận: {{ pending.marker }}</li>
+    <li>Khung hình chờ mô tả: {{ keyframes_waiting }}</li>
+    <li>Khoảnh khắc chờ embedding: {{ moments_waiting }}</li>
+  </ul>
+  <p>Worker: {% if worker_alive %}<span class="online">đang chạy</span>{% else %}<span class="err">không thấy tín hiệu</span>{% endif %}</p>
+</div>
+<div class="card">
+  <h2>Độ trễ 24 giờ qua</h2>
+  <ul>
+  {% for name, label in [("video", "Ghi hình → mô tả"), ("audio", "Ghi âm → transcript")] %}
+    {% set l = latency[name] %}
+    <li>{{ label }}: {% if l.n %}trung bình {{ l.avg|duration }} · p95 {{ l.p95|duration }} ({{ l.n }} mẫu){% else %}chưa có dữ liệu{% endif %}</li>
+  {% endfor %}
+  </ul>
+</div>
+<div class="card">
+  <h2>Máy chủ model</h2>
+  {% if health.error %}<p class="err">Cấu hình provider lỗi: {{ health.error }}</p>
+  {% elif not health.reachable %}<p class="err">Không kết nối được Ollama ({{ health.url }}). Việc xử lý sẽ tự tiếp tục khi máy chủ chạy lại.</p>
+  {% elif health.missing %}<p class="err">Thiếu model: {{ health.missing|join(", ") }}. Chạy <code>loopi-brain models pull</code>.</p>
+  {% else %}<p class="online">Ollama sẵn sàng, đủ model.</p>{% endif %}
+</div>
+<div class="card">
+  <h2>Job lỗi ({{ failed_total }})</h2>
+  {% if failed_total > failed|length %}<p>Hiện {{ failed|length }} job mới nhất.</p>{% endif %}
+  {% if failed %}
+  <button hx-post="/pipeline/jobs/retry-failed" hx-target="#retry-all"
+          hx-confirm="Xử lý lại tất cả job lỗi?">Xử lý lại tất cả</button>
+  <div id="retry-all"></div>
+  <table>
+    <tr><th>Job</th><th>Tác vụ</th><th>Đối tượng</th><th>Số lần chạy</th><th>Lỗi</th><th></th></tr>
+    {% for j in failed %}
+    <tr id="job-{{ j.id }}">
+      <td>{{ j.id }}</td><td>{{ j.label }}</td><td><code>{{ j.target or "—" }}</code></td><td>{{ j.attempts }}</td>
+      <td><code>{{ j.error or "—" }}</code></td>
+      <td>{% if j.retryable %}<button hx-post="/pipeline/jobs/{{ j.id }}/retry" hx-target="#retry-{{ j.id }}">Xử lý lại</button>
+          <div id="retry-{{ j.id }}"></div>{% else %}<span class="muted">tự chạy lại mỗi phút</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p>Không có job lỗi.</p>{% endif %}
+</div>
+{% endblock %}

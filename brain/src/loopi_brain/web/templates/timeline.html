@@ -6,26 +6,52 @@
   <a href="/?day={{ next_day }}">{{ next_day }} →</a>
 </nav>
 {% if not hours %}<p>Không có dữ liệu cho ngày này.</p>{% endif %}
-{% for hour, items in hours.items() %}
+{% for hour, h in hours.items() %}
 <section class="hour">
   <h2>{{ "%02d:00"|format(hour) }}</h2>
-  <ul>
-  {% for it in items %}
-    <li class="item {{ it.kind }}" id="item-{{ it.id }}">
-      <time>{{ it.local_start.strftime("%H:%M:%S") }}–{{ it.local_end.strftime("%H:%M:%S") }}</time>
-      {% if it.kind == "video" %}
-        {% if it.status == "ready" %}<video controls preload="none" src="/media/{{ it.view_path }}"></video>
-        {% elif it.status == "error" %}<span class="err">Không chuyển được video</span>
-        {% else %}<span>Đang xử lý…</span>{% endif %}
-      {% elif it.kind == "audio" %}
-        <audio controls preload="none" src="/media/{{ it.view_path }}"></audio>
-      {% else %}
-        <span>★ {{ it.meta.get("note", "Đánh dấu") }}</span>
-      {% endif %}
-      <small>{{ it.id }}</small>
-    </li>
+  {% if h.keyframes %}
+  <div class="frames">
+  {% for kf in h.keyframes %}
+    <figure id="kf-{{ kf.id }}">
+      <img src="/media/{{ kf.path }}" loading="lazy" alt="{{ kf.caption.scene if kf.caption else 'Khung hình' }}">
+      <figcaption><time>{{ kf.local_ts.strftime("%H:%M:%S") }}</time>
+        {% if kf.caption %}{{ kf.caption.scene }} — {{ kf.caption.activity }}
+        {% elif kf.caption_failed %}<span class="err">Lỗi mô tả</span>
+        {% else %}Đang chờ mô tả…{% endif %}</figcaption>
+    </figure>
   {% endfor %}
-  </ul>
+  </div>
+  {% endif %}
+  {% for m in h.speech %}
+  <p class="speech"><time>{{ m.local_ts.strftime("%H:%M:%S") }}</time> <span class="lang">{{ m.lang|upper }}</span> {{ m.text }}</p>
+  {% endfor %}
+  {% for m in h.markers %}
+  <p class="marker"><time>{{ m.local_ts.strftime("%H:%M:%S") }}</time> ★ {{ m.text }}</p>
+  {% endfor %}
+  <details>
+    <summary>{{ h.segments|length }} đoạn ghi</summary>
+    <ul>
+    {% for it in h.segments %}
+      <li class="item {{ it.kind }}" id="item-{{ it.id }}">
+        <time>{{ it.local_start.strftime("%H:%M:%S") }}–{{ it.local_end.strftime("%H:%M:%S") }}</time>
+        {% if it.kind == "video" %}
+          {% if it.status == "ready" %}<video controls preload="none" src="/media/{{ it.view_path }}"></video>
+          {% elif it.status == "error" %}<span class="err">Không chuyển được video</span>
+          {% else %}<span>Đang xử lý…</span>{% endif %}
+        {% elif it.kind == "audio" %}
+          <audio controls preload="none" src="/media/{{ it.view_path }}"></audio>
+        {% else %}
+          <span>★ {{ it.meta.get("note", "Đánh dấu") }}</span>
+        {% endif %}
+        {% if it.analysis_state == "pending" %}
+          {% if it.analysis_failed %}<span class="err">Lỗi phân tích</span>
+          {% else %}<span class="muted">Đang phân tích…</span>{% endif %}
+        {% endif %}
+        <small>{{ it.id }}</small>
+      </li>
+    {% endfor %}
+    </ul>
+  </details>
 </section>
 {% endfor %}
 {% endblock %}

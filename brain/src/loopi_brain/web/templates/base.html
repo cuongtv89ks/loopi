@@ -12,6 +12,13 @@
     .hour h2 { font-size: 1rem; border-bottom: 1px solid #8884; }
     .item { display: flex; gap: 12px; align-items: center; padding: 4px 0; list-style: none; }
     .item video { max-width: 320px; }
+    .frames { display: flex; flex-wrap: wrap; gap: 8px; }
+    .frames figure { margin: 0; width: 224px; }
+    .frames img { width: 224px; height: auto; border-radius: 4px; }
+    .frames figcaption, .muted { font-size: 0.85rem; color: #888; }
+    .lang { font-size: 0.75rem; border: 1px solid #8886; border-radius: 4px; padding: 0 4px; }
+    table { border-collapse: collapse; width: 100%; }
+    td, th { border-bottom: 1px solid #8884; padding: 4px; text-align: left; vertical-align: top; }
     .err { color: #c33; }
     .card { border: 1px solid #8886; border-radius: 8px; padding: 12px; margin: 12px 0; }
     .online { color: #2a2; } .offline { color: #999; }
@@ -19,11 +26,12 @@
   </style>
 </head>
 <body>
-  <header><nav><a href="/">Dòng thời gian</a><a href="/devices">Thiết bị</a></nav></header>
+  <header><nav><a href="/">Dòng thời gian</a><a href="/pipeline">Xử lý</a><a href="/devices">Thiết bị</a></nav></header>
   <div id="hx-error" class="err" role="alert"></div>
   <main>{% block content %}{% endblock %}</main>
   <script>
-    const HX_ERRORS = {403: "Yêu cầu không hợp lệ", 404: "Không tìm thấy thiết bị"};
+    const HX_ERRORS = {403: "Yêu cầu không hợp lệ", 404: "Không tìm thấy thiết bị",
+                       409: "Job không còn ở trạng thái lỗi, hãy tải lại trang"};
     document.body.addEventListener("htmx:responseError", (e) => {
       document.getElementById("hx-error").textContent =
         HX_ERRORS[e.detail.xhr.status] || "Có lỗi, thử lại";

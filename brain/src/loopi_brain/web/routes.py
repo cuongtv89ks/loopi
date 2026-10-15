@@ -12,8 +12,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from .. import devices, pki
+from ..pipeline import status
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+TEMPLATES.env.filters["duration"] = status.fmt_duration
 ONLINE_WINDOW = dt.timedelta(seconds=45)
 COMMAND_LABELS = {
     "pause": "Tạm dừng ghi",
@@ -43,22 +45,48 @@ def day_bounds_utc(day: dt.date, zone: ZoneInfo) -> tuple[dt.datetime, dt.dateti
     return start.astimezone(dt.UTC), end.astimezone(dt.UTC)
 
 
-async def _items_by_hour(pool, day: dt.date, zone: ZoneInfo) -> dict[int, list[dict]]:
+def _hour() -> dict[str, list]:
+    return {"keyframes": [], "speech": [], "markers": [], "segments": []}
+
+
+async def _day_by_hour(pool, day: dt.date, zone: ZoneInfo) -> dict[int, dict[str, list]]:
+    """Keyframes, speech, markers and raw segments of one local day, grouped by local hour."""
     start, end = day_bounds_utc(day, zone)
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT id, kind, started_at, ended_at, status, view_path, meta FROM item"
-            " WHERE started_at >= %s AND started_at < %s ORDER BY started_at",
+            "SELECT i.id, i.kind, i.started_at, i.ended_at, i.status, i.view_path, i.meta, i.analysis_state,"
+            " j.status IS NOT DISTINCT FROM 'failed' AS analysis_failed"
+            " FROM item i LEFT JOIN procrastinate_jobs j ON j.id = i.analysis_job_id"
+            " WHERE i.started_at >= %s AND i.started_at < %s ORDER BY i.started_at",
             (start, end),
         )
-        rows = await cur.fetchall()
-    by_hour: dict[int, list[dict]] = defaultdict(list)
-    for row in rows:
+        items = await cur.fetchall()
+        cur = await conn.execute(
+            "SELECT k.id, k.ts, k.path, k.caption, j.status IS NOT DISTINCT FROM 'failed' AS caption_failed"
+            " FROM keyframe k LEFT JOIN procrastinate_jobs j ON j.id = k.caption_job_id"
+            " WHERE k.ts >= %s AND k.ts < %s ORDER BY k.ts",
+            (start, end),
+        )
+        keyframes = await cur.fetchall()
+        cur = await conn.execute(
+            "SELECT id, kind, ts_start, lang, text FROM moment"
+            " WHERE kind IN ('speech', 'marker') AND ts_start >= %s AND ts_start < %s ORDER BY ts_start",
+            (start, end),
+        )
+        moments = await cur.fetchall()
+    hours: dict[int, dict[str, list]] = defaultdict(_hour)
+    for row in items:
         local_start = row["started_at"].astimezone(zone)
-        by_hour[local_start.hour].append(
+        hours[local_start.hour]["segments"].append(
             {**row, "local_start": local_start, "local_end": row["ended_at"].astimezone(zone)}
         )
-    return dict(sorted(by_hour.items()))
+    for row in keyframes:
+        local_ts = row["ts"].astimezone(zone)
+        hours[local_ts.hour]["keyframes"].append({**row, "local_ts": local_ts})
+    for row in moments:
+        local_ts = row["ts_start"].astimezone(zone)
+        hours[local_ts.hour]["speech" if row["kind"] == "speech" else "markers"].append({**row, "local_ts": local_ts})
+    return dict(sorted(hours.items()))
 
 
 def _ca_fingerprint(request: Request) -> str:
@@ -69,7 +97,7 @@ def _ca_fingerprint(request: Request) -> str:
 async def timeline(request: Request, day: dt.date | None = Query(default=None)):
     zone = request.app.state.settings.zone
     day = day or dt.datetime.now(zone).date()
-    hours = await _items_by_hour(request.app.state.pool, day, zone)
+    hours = await _day_by_hour(request.app.state.pool, day, zone)
     return TEMPLATES.TemplateResponse(
         request,
         "timeline.html",
@@ -134,3 +162,29 @@ async def revoke(request: Request, device_id: str):
     if not await devices.revoke_device(request.app.state.pool, device_id):
         raise HTTPException(status_code=404, detail="unknown device")
     return TEMPLATES.TemplateResponse(request, "_queued.html", {"label": None, "revoked": True})
+
+
+@router.get("/pipeline", response_class=HTMLResponse)
+async def pipeline_page(request: Request):
+    state = request.app.state
+    return TEMPLATES.TemplateResponse(
+        request,
+        "pipeline.html",
+        {
+            **await status.pipeline_status(state.pool),
+            "health": await status.model_health(state.settings, state.http),
+        },
+    )
+
+
+@router.post("/pipeline/jobs/retry-failed", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
+async def retry_all_jobs(request: Request):
+    count = await status.retry_all_failed(request.app.state.pool)
+    return TEMPLATES.TemplateResponse(request, "_retried.html", {"count": count})
+
+
+@router.post("/pipeline/jobs/{job_id}/retry", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
+async def retry_job(request: Request, job_id: int):
+    if not await status.retry_failed_job(request.app.state.pool, job_id):
+        raise HTTPException(status_code=409, detail="job is not in the failed state")
+    return TEMPLATES.TemplateResponse(request, "_retried.html", {"job_id": job_id})
