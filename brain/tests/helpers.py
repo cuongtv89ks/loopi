@@ -323,3 +323,33 @@ async def insert_keyframe(pool, settings, item_id: str, device_id: str, ts: dt.d
             (kf_id, item_id, device_id, ts, item_id, rel),
         )
     return kf_id
+
+
+def make_opus(path, source: str = "anullsrc=r=16000:cl=mono", seconds: float = 5):
+    """Encode an ffmpeg lavfi audio ``source`` (default: silence) as Ogg/Opus, like the device does."""
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg is required for audio tests")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", source, "-t", str(seconds),
+         "-c:a", "libopus", "-f", "ogg", str(path)],
+        check=True,
+    )
+    return path
+
+
+class FakeTranscriber:
+    """Stands in for Whisper: returns the scripted RegionResults in order, cycling."""
+
+    def __init__(self, *results):
+        self.results = list(results)
+        self.chunks: list[int] = []
+
+    def transcribe(self, chunk):
+        self.chunks.append(len(chunk))
+        return self.results[(len(self.chunks) - 1) % len(self.results)]

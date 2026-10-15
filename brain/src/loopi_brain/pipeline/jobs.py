@@ -15,6 +15,7 @@ TASK_MODULES = [
     "loopi_brain.pipeline.video",
     "loopi_brain.pipeline.moments",
     "loopi_brain.pipeline.caption",
+    "loopi_brain.pipeline.asr",
 ]
 
 ANALYZE_VIDEO = "analyze_video"
