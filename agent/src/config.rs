@@ -27,6 +27,10 @@ const SEGMENT_SECONDS_MIN: u32 = 10;
 const SEGMENT_SECONDS_MAX: u32 = 600;
 // The agent can never be configured past the brain's segment duration limit.
 const _: () = assert!(SEGMENT_SECONDS_MAX <= CONTRACT_MAX_SEGMENT_SECONDS);
+/// `capture.audio_gain_db`: digital microphone gain before encoding (spec D19). The USB mic records speech at
+/// about -55 dBFS RMS even with its own AGC on.
+pub const DEFAULT_AUDIO_GAIN_DB: f32 = 20.0;
+pub const MAX_AUDIO_GAIN_DB: f32 = 36.0;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -92,6 +96,7 @@ pub struct CaptureConfig {
     pub segment_seconds: u32,
     pub audio_enabled: bool,
     pub audio_device: String,
+    pub audio_gain_db: f32,
     pub camera_cmd: String,
 }
 
@@ -105,6 +110,7 @@ impl Default for CaptureConfig {
             segment_seconds: 60,
             audio_enabled: true,
             audio_device: "auto".into(),
+            audio_gain_db: DEFAULT_AUDIO_GAIN_DB,
             camera_cmd: "rpicam-vid".into(),
         }
     }
@@ -249,6 +255,10 @@ impl Config {
                  item limit, leaving room for encoder overshoot)"
             ));
         }
+        // NaN fails `contains` too.
+        if !(0.0..=MAX_AUDIO_GAIN_DB).contains(&c.audio_gain_db) {
+            return invalid(format!("capture.audio_gain_db must be 0..={MAX_AUDIO_GAIN_DB} dB (got {})", c.audio_gain_db));
+        }
         if c.audio_device.trim().is_empty() || c.camera_cmd.trim().is_empty() {
             return invalid("capture.audio_device and capture.camera_cmd must not be empty".into());
         }
@@ -378,6 +388,25 @@ mod tests {
         assert_eq!(c.schedule.timezone, "Asia/Seoul");
         assert_eq!(c.gpio.led, 17);
         assert_eq!(c.paths.data_dir, PathBuf::from("/data"));
+    }
+
+    #[test]
+    fn audio_gain_defaults_to_20_db_and_takes_whole_or_fractional_db() {
+        assert_eq!(Config::parse(MINIMAL).unwrap().capture.audio_gain_db, 20.0);
+        for (value, db) in [("0", 0.0), ("36", 36.0), ("12.5", 12.5), ("0.0", 0.0)] {
+            let c = Config::parse(&format!("{MINIMAL}[capture]\naudio_gain_db = {value}\n")).unwrap();
+            assert_eq!(c.capture.audio_gain_db, db, "audio_gain_db = {value}");
+            assert_eq!(Config::parse(&toml::to_string(&c).unwrap()).unwrap(), c, "survives the import round trip");
+        }
+    }
+
+    #[test]
+    fn audio_gain_outside_0_to_36_db_is_rejected() {
+        for value in ["-1", "-0.5", "36.5", "100", "nan", "inf", "-inf"] {
+            let err = Config::parse(&format!("{MINIMAL}[capture]\naudio_gain_db = {value}\n")).unwrap_err().to_string();
+            assert!(err.contains("capture.audio_gain_db must be 0..=36 dB"), "{value}: {err}");
+        }
+        assert!(Config::parse(&format!("{MINIMAL}[capture]\naudio_gain_db = \"20\"\n")).is_err(), "a string is not a number");
     }
 
     #[test]
