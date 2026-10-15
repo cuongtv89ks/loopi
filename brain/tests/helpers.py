@@ -1,4 +1,5 @@
 """Shared test helpers; later tasks import from here instead of redefining."""
+import contextlib
 import datetime as dt
 
 from cryptography import x509
@@ -77,3 +78,19 @@ def item_headers(
         headers["X-Loopi-Client-Fingerprint"] = fingerprint
     headers.update(extra)
     return headers
+
+
+@contextlib.contextmanager
+def fresh_database(database_url: str, name: str):
+    """Create an empty database next to the test database; yield its URL; drop it afterwards."""
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+
+    with psycopg.connect(database_url, autocommit=True) as admin:
+        admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
+        admin.execute(f'CREATE DATABASE "{name}"')
+    try:
+        yield make_conninfo(database_url, dbname=name)
+    finally:
+        with psycopg.connect(database_url, autocommit=True) as admin:
+            admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')

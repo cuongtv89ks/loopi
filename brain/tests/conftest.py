@@ -7,7 +7,10 @@ from loopi_brain.config import Settings
 from loopi_brain.db import make_pool, migrate
 
 PG_IMAGE = "pgvector/pgvector:pg17"
-APP_TABLES = "device_command, item, pair_token, device"
+APP_TABLES = (
+    "moment, transcript_segment, keyframe, device_command, item, pair_token, device,"
+    " procrastinate_events, procrastinate_periodic_defers, procrastinate_jobs, procrastinate_workers"
+)
 
 
 @pytest.fixture(scope="session")
