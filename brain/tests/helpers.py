@@ -238,6 +238,18 @@ async def fetch_one(pool, sql: str, params: tuple = ()) -> dict | None:
     return rows[0] if rows else None
 
 
+async def stall_jobs(pool, *job_ids: int, attempts: int = 0) -> None:
+    """Make ``job_ids`` look like jobs a worker was running when it died (no heartbeat for 5 minutes)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "INSERT INTO procrastinate_workers (last_heartbeat) VALUES (now() - interval '5 minutes') RETURNING id"
+        )
+        await conn.execute(
+            "UPDATE procrastinate_jobs SET status = 'doing', worker_id = %s, attempts = %s WHERE id = ANY(%s)",
+            ((await cur.fetchone())["id"], attempts, list(job_ids)),
+        )
+
+
 async def jobs_by_lock(pool) -> dict[str, list[dict]]:
     """Procrastinate jobs grouped by queueing lock."""
     grouped: dict[str, list[dict]] = {}

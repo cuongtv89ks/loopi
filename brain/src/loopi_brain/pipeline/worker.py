@@ -33,7 +33,10 @@ async def run_worker(settings: Settings, **options) -> None:
     try:
         set_context(PipelineContext(pool, settings, build_router(config, settings, http), WhisperTranscriber(settings)))
         async with open_jobs(pool) as app:
-            await recover_stalled(pool)  # jobs of a worker that died more than 30 s ago run again now
+            try:
+                await recover_stalled(pool)  # jobs of a worker that died more than 30 s ago run again now
+            except Exception:  # never keeps the worker down; the periodic retry_stalled_jobs tries again
+                log.exception("could not recover stalled jobs; starting the worker anyway")
             await app.run_worker_async(**{"concurrency": settings.worker_concurrency, **options})
     finally:
         set_context(None)

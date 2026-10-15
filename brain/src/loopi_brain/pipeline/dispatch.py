@@ -4,8 +4,8 @@ from __future__ import annotations
 import logging
 
 from procrastinate import builtin_tasks
-from procrastinate.exceptions import AlreadyEnqueued
-from procrastinate.jobs import Status
+from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation
+from procrastinate.jobs import Job, Status
 from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
@@ -181,18 +181,55 @@ async def dispatch_pending(
     return items, keyframes
 
 
+async def _drop_superseded(pool: AsyncConnectionPool, job: Job) -> int | None:
+    """Delete stalled ``job``: a job with its queueing lock was deferred while it ran and waits to do
+    the same work (the next embedding run or periodic tick, or the same row's job). A row that
+    recorded ``job`` points at that waiting job instead — or is cleared if it already started, and
+    the dispatcher adopts the row again. Returns the waiting job's id.
+    """
+    async with pool.connection() as conn, conn.transaction():
+        cur = await conn.execute(
+            "SELECT id FROM procrastinate_jobs WHERE queueing_lock = %s AND status = 'todo'", (job.queueing_lock,)
+        )
+        row = await cur.fetchone()
+        waiting = row["id"] if row else None
+        target = job.task_kwargs
+        if "item_id" in target:
+            await conn.execute(
+                "UPDATE item SET analysis_job_id = %s WHERE id = %s AND analysis_job_id = %s",
+                (waiting, target["item_id"], job.id),
+            )
+        elif "keyframe_id" in target:
+            await conn.execute(
+                "UPDATE keyframe SET caption_job_id = %s WHERE id = %s AND caption_job_id = %s",
+                (waiting, target["keyframe_id"], job.id),
+            )
+        # Events cascade; a periodic defer naming the job is unlinked by Procrastinate's trigger.
+        await conn.execute("DELETE FROM procrastinate_jobs WHERE id = %s AND status = 'doing'", (job.id,))
+    return waiting
+
+
 async def recover_stalled(pool: AsyncConnectionPool) -> tuple[int, int]:
     """Jobs left 'doing' by a dead worker go back to 'todo' (Procrastinate's recipe) — unless they
     already used their attempts: a job that keeps killing the worker (native crash, out of memory)
     ends 'failed', on the dead-letter list, with the reason stored on its row.
 
-    Returns (retried, failed).
+    A stalled job cannot go back to 'todo' while another job with its queueing lock waits there;
+    that job does the same work, so the stalled one is deleted (neither retried nor dead-lettered).
+
+    Returns (retried, failed); a deleted job counts as retried, since its work runs again.
     """
     retried = failed = 0
     for job in await job_app.job_manager.get_stalled_jobs():
         if job.attempts < jobs.RETRY.max_attempts:
-            log.warning("retrying stalled job %s (%s)", job.id, job.task_name)
-            await job_app.job_manager.retry_job(job)
+            try:
+                await job_app.job_manager.retry_job(job)
+            except UniqueViolation:
+                waiting = await _drop_superseded(pool, job)
+                log.warning("stalled job %s (%s) dropped: job %s waits to do the same work", job.id, job.task_name,
+                            waiting)
+            else:
+                log.warning("retrying stalled job %s (%s)", job.id, job.task_name)
             retried += 1
             continue
         log.error("job %s (%s) stopped the worker %d times; dead-lettered", job.id, job.task_name, job.attempts + 1)

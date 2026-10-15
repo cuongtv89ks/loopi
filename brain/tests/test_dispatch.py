@@ -16,6 +16,7 @@ from helpers import (
     jobs_by_lock,
     new_ulid,
     paired_device,
+    stall_jobs,
 )
 from loopi_brain.pipeline import dispatch, jobs
 from loopi_brain.providers.config import DEFAULT_CONFIG
@@ -283,6 +284,59 @@ async def test_stalled_jobs_are_retried_until_their_attempts_are_used_up(pool, d
     assert states[jobs_by_item[running]] == ("doing", 0)  # its worker is alive
     row = await fetch_one(pool, "SELECT analysis_error FROM item WHERE id = %s", (killer,))
     assert row["analysis_error"] == dispatch.STALLED_ERROR
+
+
+async def test_a_caption_job_that_keeps_killing_the_worker_is_dead_lettered_with_the_reason(pool, dev, jobs_open):
+    item_id = await insert_item(pool, dev["device_id"], kind="video")
+    kf = await _insert_keyframe(pool, item_id, dev["device_id"], T0)
+    job_id = await dispatch.defer_keyframe(pool, kf)
+    await stall_jobs(pool, job_id, attempts=3)
+    assert await dispatch.recover_stalled(pool) == (0, 1)
+    job = await fetch_one(pool, "SELECT status, attempts FROM procrastinate_jobs WHERE id = %s", (job_id,))
+    assert job == {"status": "failed", "attempts": 4}
+    row = await fetch_one(pool, "SELECT caption_error, caption_job_id FROM keyframe WHERE id = %s", (kf,))
+    assert row == {"caption_error": dispatch.STALLED_ERROR, "caption_job_id": job_id}
+
+
+@pytest.mark.parametrize(("task", "lock"), [(jobs.EMBED_MOMENTS, "embed"), (jobs.DISPATCH_PENDING, "dispatch")])
+async def test_a_stalled_run_next_to_a_waiting_one_is_dropped_not_dead_lettered(
+    pool, dev, jobs_open, caplog, task, lock
+):
+    async with pool.connection() as conn:
+        stalled = await jobs.enqueue(conn, task, queue="light", queueing_lock=lock)
+    marker = await insert_item(pool, dev["device_id"], kind="marker", seconds=0)
+    other = await dispatch.defer_item(pool, marker)
+    await stall_jobs(pool, stalled, other)  # the worker died while running both
+    async with pool.connection() as conn:  # deferred while the stalled run was running (the lock covers 'todo' only)
+        waiting = await jobs.enqueue(conn, task, queue="light", queueing_lock=lock)
+    assert await dispatch.recover_stalled(pool) == (2, 0)  # both pieces of work run again
+    states = {r["id"]: r["status"] for r in await fetch_all(pool, "SELECT id, status FROM procrastinate_jobs")}
+    assert states == {waiting: "todo", other: "todo"}  # the stalled run is gone, nothing is dead-lettered
+    assert f"stalled job {stalled} ({task}) dropped: job {waiting} waits to do the same work" in caplog.text
+
+
+async def test_a_dropped_stalled_job_hands_its_row_to_the_waiting_job(pool, dev, jobs_open):
+    device_id = dev["device_id"]
+    marker = await insert_item(pool, device_id, kind="marker", seconds=0)
+    video = await insert_item(pool, device_id, kind="video")
+    kf = await _insert_keyframe(pool, video, device_id, T0)
+    stalled_item, stalled_kf = await dispatch.defer_item(pool, marker), await dispatch.defer_keyframe(pool, kf)
+    await stall_jobs(pool, stalled_item, stalled_kf)
+    async with pool.connection() as conn:
+        # The caption job gave its keyframe back (model server outage) just before the worker died, and the
+        # dispatcher deferred a new one; the marker was deferred again by hand.
+        await conn.execute("UPDATE keyframe SET caption_job_id = NULL WHERE id = %s", (kf,))
+        waiting_item = await jobs.enqueue(
+            conn, jobs.INDEX_MARKER, queue="light", queueing_lock=f"item:{marker}", item_id=marker
+        )
+    waiting_kf = await dispatch.defer_keyframe(pool, kf)
+    assert await dispatch.recover_stalled(pool) == (2, 0)
+    item = await fetch_one(pool, "SELECT analysis_job_id FROM item WHERE id = %s", (marker,))
+    keyframe = await fetch_one(pool, "SELECT caption_job_id FROM keyframe WHERE id = %s", (kf,))
+    assert (item["analysis_job_id"], keyframe["caption_job_id"]) == (waiting_item, waiting_kf)
+    assert [r["id"] for r in await fetch_all(pool, "SELECT id FROM procrastinate_jobs ORDER BY id")] == [
+        waiting_item, waiting_kf,
+    ]
 
 
 async def test_enqueue_reraises_when_the_lock_holder_left_the_queue(pool, monkeypatch, jobs_open):

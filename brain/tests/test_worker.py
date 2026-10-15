@@ -20,6 +20,7 @@ from helpers import (
     make_opus,
     paired_device,
     run_jobs,
+    stall_jobs,
 )
 from loopi_brain import cli, health
 from loopi_brain.config import Settings
@@ -90,6 +91,39 @@ async def test_run_worker_builds_its_context_and_recovers_stalled_jobs(pool, pki
     assert job == {"status": "succeeded", "attempts": 2}  # one lost run, one that finished
     with pytest.raises(RuntimeError):
         context.get_context()
+
+
+@pytest.mark.parametrize(("task", "lock"), [(jobs.EMBED_MOMENTS, "embed"), (jobs.DISPATCH_PENDING, "dispatch")])
+async def test_run_worker_starts_when_a_stalled_run_waits_next_to_a_newer_one(
+    pool, pki_settings, jobs_open, monkeypatch, caplog, task, lock
+):
+    async with pool.connection() as conn:
+        stalled = await jobs.enqueue(conn, task, queue="light", queueing_lock=lock)
+    await stall_jobs(pool, stalled)  # killed mid-run (power cut, OOM) ...
+    async with pool.connection() as conn:  # ... after the next run was deferred
+        waiting = await jobs.enqueue(conn, task, queue="light", queueing_lock=lock)
+    monkeypatch.setattr(jobs.job_app, "periodic_registry", PeriodicRegistry())
+    settings = pki_settings.model_copy(update={"ollama_url": "http://127.0.0.1:9", "worker_concurrency": 1})
+    await worker.run_worker(settings, wait=False, install_signal_handlers=False, listen_notify=False)
+    jobs_left = await fetch_all(pool, "SELECT id, status FROM procrastinate_jobs")
+    assert jobs_left == [{"id": waiting, "status": "succeeded"}]  # the stalled run is gone, the waiting one ran
+    assert "could not recover stalled jobs" not in caplog.text
+
+
+async def test_run_worker_starts_even_if_recovering_stalled_jobs_fails(
+    pool, pki_settings, dev, jobs_open, monkeypatch, caplog
+):
+    async def broken(_pool):
+        raise RuntimeError("recovery bug")
+
+    await dispatch.defer_item(pool, await insert_item(pool, dev["device_id"], kind="marker", seconds=0))
+    monkeypatch.setattr(worker, "recover_stalled", broken)
+    monkeypatch.setattr(jobs.job_app, "periodic_registry", PeriodicRegistry())
+    settings = pki_settings.model_copy(update={"ollama_url": "http://127.0.0.1:9", "worker_concurrency": 1})
+    await worker.run_worker(settings, wait=False, install_signal_handlers=False, listen_notify=False)
+    assert "could not recover stalled jobs" in caplog.text and "recovery bug" in caplog.text
+    job = await fetch_one(pool, "SELECT status FROM procrastinate_jobs")
+    assert job == {"status": "succeeded"}  # the worker ran anyway
 
 
 async def test_worker_health_follows_the_heartbeat(pool, database_url, monkeypatch, capsys):
