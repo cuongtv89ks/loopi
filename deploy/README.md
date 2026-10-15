@@ -21,9 +21,13 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
    (`LOOPI_DATA_DIR` is read from `deploy/.env` if not exported; falls back to `/srv/loopi`.)
    It also checks the stack through an IP-literal URL (`https://<LAN IP>:8443`, no TLS SNI), the way devices and browsers
    connect. The IP defaults to the first `hostname -I` address, as in step 3; set `LOOPI_SMOKE_IP` if the cert holds another one.
-   It also uploads a 5 s test video and waits for the worker to extract its keyframe (90 s; behind a backlog of
-   older recordings set e.g. `SMOKE_ANALYSIS_TIMEOUT=600`). On every exit, passed or failed, it deletes what the
-   smoke device created (rows and media files) and revokes that device.
+   It also uploads a 5 s test video (static colour bars) and waits for the worker to analyse it and extract its
+   keyframe (90 s; behind a backlog of older recordings set e.g. `SMOKE_ANALYSIS_TIMEOUT=600`).
+   On every exit, passed or failed, it first tries to delete the smoke device's moments and items (their keyframes
+   and transcripts go with them) and its `raw/`, `view/` and `keyframes/` media directories, and then always tries
+   to revoke the device: by id, or by certificate fingerprint when the script stopped before it had looked the id
+   up. A failed deletion does not stop the revocation. A step that fails (for example because the stack is down)
+   prints a `WARN:` line and the script keeps its exit status; revoke a leftover `smoke` device on the Devices page.
 7. Browser: import `/srv/loopi/pki/ca.crt` into the OS trust store, then open `https://<LAN IP>:8443/`
    and log in with `LOOPI_WEB_USER`.
 8. Devices page → "Tạo token ghép cặp" → copy `pair_token` and `ca_fingerprint` into the device's `loopi.toml`.

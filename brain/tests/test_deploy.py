@@ -68,3 +68,19 @@ def test_smoke_script_removes_what_it_created_on_every_exit():
     first_upload = script.index('expect 201 "${MTLS[@]}"')
     assert script.index("trap on_exit EXIT") < script.index("/v1/pair") < script.index("DEVICE_ID=\"$(") < first_upload
     assert 'SMOKE_ANALYSIS_TIMEOUT="${SMOKE_ANALYSIS_TIMEOUT:-90}"' in script
+    # Deletion and revocation are separate steps of the exit trap: the device is revoked whatever happened to the
+    # DELETE or the rm (the api container may be the very thing that is down), by id when the id is a valid ULID,
+    # otherwise by the certificate fingerprint (valid fingerprints only).
+    remove_body = script.split("remove_smoke_data() {")[1].split("\n}\n")[0]
+    revoke_body = script.split("revoke_smoke_device() {")[1].split("\n}\n")[0]
+    on_exit_body = script.split("on_exit() {")[1].split("\n}\n")[0]
+    assert "revoked" not in remove_body
+    assert "id = '$DEVICE_ID'" in revoke_body and "cert_fingerprint = '$FP'" in revoke_body
+    assert '[[ "$DEVICE_ID" =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]]' in revoke_body
+    assert '[[ "$FP" =~ ^[0-9a-f]{64}$ ]]' in revoke_body
+    assert on_exit_body.index("remove_smoke_data ||") < on_exit_body.index("revoke_smoke_device ||")
+    assert "&&" not in on_exit_body and "-n " not in on_exit_body
+    # The pipeline check: a static test picture (an animated one is rejected as motion blur by the keyframe
+    # selection and yields no keyframe), and the wait ends on either final analysis state.
+    assert "smptebars=size=320x240:rate=2" in script and "testsrc" not in script
+    assert '[[ "$STATE" == "done" || "$STATE" == "skipped" ]] && break' in script
