@@ -6,6 +6,8 @@ import psycopg
 import pytest
 
 from helpers import (
+    QUIET_SPEECH,
+    ROOM_NOISE,
     T0,
     FakeTranscriber,
     fetch_all,
@@ -16,6 +18,7 @@ from helpers import (
     make_opus,
     paired_device,
 )
+from loopi_brain import audio_level
 from loopi_brain.config import Settings
 from loopi_brain.pipeline import asr
 from loopi_brain.pipeline.asr import Region, RegionResult, SegmentResult
@@ -135,6 +138,66 @@ def test_silence_has_no_speech_regions(tmp_path):
     audio = asr.load_audio(make_opus(tmp_path / "silence.opus", seconds=5))
     assert audio.dtype == np.float32 and len(audio) == 5 * SR
     assert asr.speech_regions(audio) == []
+
+
+LOUD_TONE = "aevalsrc=0.7*sin(2*PI*440*t):s=16000"  # -3 dBFS
+
+
+def _p999(audio: np.ndarray) -> float:
+    return float(np.percentile(np.abs(audio), 99.9))
+
+
+async def _vad_input(pool, settings, device_id, source, monkeypatch, seconds=4):
+    """Transcribe an audio item made from the lavfi ``source``; return (the decoded file, what VAD got,
+    the FakeTranscriber)."""
+    item_id = await insert_item(pool, device_id, kind="audio", seconds=seconds)
+    row = await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item_id,))
+    path = make_opus(settings.media_root / row["raw_path"], source, seconds)
+    seen = []
+
+    def regions(audio):
+        seen.append(audio)
+        return [Region(0.0, 2.0)]
+
+    monkeypatch.setattr(asr, "speech_regions", regions)
+    fake = FakeTranscriber(RegionResult("vi", 0.9, [seg("Mai mình đi chợ")]))
+    assert await asr.transcribe_audio(make_ctx(pool, settings, transcriber=fake), item_id) == 1
+    return asr.load_audio(path), seen[0], fake
+
+
+async def test_quiet_speech_reaches_vad_and_whisper_normalised(pool, pki_settings, dev, jobs_open, monkeypatch):
+    raw, heard, fake = await _vad_input(pool, pki_settings, dev["device_id"], QUIET_SPEECH, monkeypatch)
+    assert _p999(raw) == pytest.approx(0.02, rel=0.1)
+    assert heard.dtype == np.float32 and len(heard) == len(raw)
+    assert _p999(heard) == pytest.approx(0.5, rel=0.01), "the loud end is brought to -6 dBFS"
+    assert np.abs(heard).max() <= 1.0
+    assert fake.peaks[0] == pytest.approx(float(np.abs(heard[: 2 * SR]).max()))
+    assert fake.peaks[0] > 10 * float(np.abs(raw[: 2 * SR]).max()), "Whisper hears the normalised audio"
+
+
+@pytest.mark.parametrize("source", [LOUD_TONE, "anullsrc=r=16000:cl=mono"], ids=["loud", "silence"])
+async def test_loud_audio_and_silence_reach_vad_unchanged(pool, pki_settings, dev, jobs_open, monkeypatch, source):
+    raw, heard, _fake = await _vad_input(pool, pki_settings, dev["device_id"], source, monkeypatch)
+    assert np.array_equal(heard, raw)
+
+
+async def test_the_asr_gain_ceiling_is_a_setting(pool, pki_settings, dev, jobs_open, monkeypatch):
+    capped = pki_settings.model_copy(update={"asr_max_gain_db": 6.0})
+    raw, heard, _fake = await _vad_input(pool, capped, dev["device_id"], QUIET_SPEECH, monkeypatch)
+    assert _p999(heard) == pytest.approx(_p999(raw) * 10 ** (6 / 20), rel=0.01)
+
+
+async def test_room_noise_stays_without_speech_after_normalisation(pool, pki_settings, dev, jobs_open):
+    # The real Silero VAD on the mic's -55 dBFS room noise, raised by the level gain (+15 dB here).
+    item_id = await insert_item(pool, dev["device_id"], kind="audio", seconds=10)
+    row = await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item_id,))
+    path = make_opus(pki_settings.media_root / row["raw_path"], ROOM_NOISE, 10)
+    assert audio_level.dbfs(audio_level.level_gain(asr.load_audio(path))) > 10, "the noise is raised before VAD"
+    fake = FakeTranscriber()
+    assert await asr.transcribe_audio(make_ctx(pool, pki_settings, transcriber=fake), item_id) == 0
+    assert fake.chunks == [], "no speech region reaches Whisper"
+    assert await fetch_all(pool, "SELECT id FROM transcript_segment") == []
+    assert (await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (item_id,)))["analysis_state"] == "done"
 
 
 async def test_speech_regions_become_segments_and_moments(pool, pki_settings, dev, jobs_open, monkeypatch):

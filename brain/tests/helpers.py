@@ -337,6 +337,11 @@ async def insert_keyframe(pool, settings, item_id: str, device_id: str, ts: dt.d
     return kf_id
 
 
+# Shared ffmpeg lavfi test signals (make_opus ``source``) for the audio-level tests.
+QUIET_SPEECH = "aevalsrc=0.02*sin(2*PI*440*t)*mod(floor(2*t)\\,2):s=16000"  # -34 dBFS bursts, silence between
+ROOM_NOISE = "anoisesrc=colour=white:amplitude=0.003:sample_rate=16000:seed=1"  # -55 dBFS RMS, like the USB mic
+
+
 def make_opus(path, source: str = "anullsrc=r=16000:cl=mono", seconds: float = 5):
     """Encode an ffmpeg lavfi audio ``source`` (default: silence) as Ogg/Opus, like the device does."""
     import shutil
@@ -356,12 +361,15 @@ def make_opus(path, source: str = "anullsrc=r=16000:cl=mono", seconds: float = 5
 
 
 class FakeTranscriber:
-    """Stands in for Whisper: returns the scripted RegionResults in order, cycling."""
+    """Stands in for Whisper: returns the scripted RegionResults in order, cycling. Records each chunk's
+    length (``chunks``) and largest |sample| (``peaks``)."""
 
     def __init__(self, *results):
         self.results = list(results)
         self.chunks: list[int] = []
+        self.peaks: list[float] = []
 
     def transcribe(self, chunk):
         self.chunks.append(len(chunk))
+        self.peaks.append(float(abs(chunk).max()) if len(chunk) else 0.0)
         return self.results[(len(self.chunks) - 1) % len(self.results)]

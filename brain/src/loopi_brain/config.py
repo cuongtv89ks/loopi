@@ -2,6 +2,7 @@
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +31,7 @@ class Settings(BaseSettings):
     keyframe_min_gap_s: float = 30.0
     asr_languages: str = "vi,ko,en"
     whisper_cpu_threads: int = 4
+    asr_max_gain_db: float = Field(default=30.0, ge=0.0, le=60.0)  # level gain before VAD/Whisper (spec D19)
 
     @property
     def zone(self) -> ZoneInfo:

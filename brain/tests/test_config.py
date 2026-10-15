@@ -15,6 +15,7 @@ def test_pipeline_defaults():
     )
     assert s.asr_language_list == ["vi", "ko", "en"]
     assert s.whisper_cpu_threads == 4
+    assert s.asr_max_gain_db == 30.0
 
 
 def test_pipeline_settings_from_env(monkeypatch):
@@ -26,3 +27,16 @@ def test_pipeline_settings_from_env(monkeypatch):
     assert s.asr_language_list == ["ko", "en"]
     assert s.keyframe_min_gap_s == 45.0
     assert s.providers_file == Path("/etc/loopi/providers.yaml")
+
+
+def test_asr_gain_ceiling_from_env(monkeypatch):
+    import pydantic
+    import pytest
+
+    monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("LOOPI_ASR_MAX_GAIN_DB", "12")
+    assert Settings().asr_max_gain_db == 12.0
+    for bad in ("-1", "61", "nan"):
+        monkeypatch.setenv("LOOPI_ASR_MAX_GAIN_DB", bad)
+        with pytest.raises(pydantic.ValidationError, match="asr_max_gain_db"):
+            Settings()

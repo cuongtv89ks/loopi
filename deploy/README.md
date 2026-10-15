@@ -40,5 +40,8 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - Upgrading from P1: the migration marks every existing recording as pending, so the worker analyses the
   recordings made before the upgrade too; on a CPU-only PC that backlog drains over hours.
 - Model server down: captions and embeddings wait and resume by themselves; uploads are never affected.
+- Audio level (spec D19): the device's microphone records speech very quietly, so the worker raises each recording
+  before VAD and Whisper (the 99.9th percentile of the samples to -6 dBFS, at most `LOOPI_ASR_MAX_GAIN_DB`, default
+  30 dB, and never a quiet room's hiss above -40 dBFS). Only the decoded copy in memory changes; raw files stay as recorded.
 - `docker compose logs -f worker` follows the pipeline; `docker compose exec worker loopi-brain worker-health`
   checks its heartbeat.

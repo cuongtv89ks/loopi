@@ -20,6 +20,7 @@ def test_worker_runs_the_pipeline_with_the_api_image_and_data():
     assert env["LOOPI_OLLAMA_URL"] == "http://models:11434"
     assert env["LOOPI_PROVIDERS_FILE"] == "/etc/loopi/providers.yaml"
     assert env["LOOPI_MODEL_DIR"] == "/srv/loopi/models" and env["HF_HOME"] == "/srv/loopi/models/hf"
+    assert env["LOOPI_ASR_MAX_GAIN_DB"] == "${LOOPI_ASR_MAX_GAIN_DB:-30}"  # the README advertises it
     assert worker["volumes"] == ["${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi", PROVIDERS_MOUNT]
     assert worker["healthcheck"]["test"] == ["CMD", "loopi-brain", "worker-health"]
     assert worker["healthcheck"]["interval"] == "30s" and worker["stop_grace_period"] == "2m"

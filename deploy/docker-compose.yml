@@ -50,6 +50,7 @@ services:
       LOOPI_OLLAMA_URL: http://models:11434
       LOOPI_PROVIDERS_FILE: /etc/loopi/providers.yaml
       LOOPI_MODEL_DIR: /srv/loopi/models
+      LOOPI_ASR_MAX_GAIN_DB: ${LOOPI_ASR_MAX_GAIN_DB:-30}
       # The container user has no home directory; Hugging Face caches go next to the models.
       HF_HOME: /srv/loopi/models/hf
       # Whisper sets its own thread count (LOOPI_WHISPER_CPU_THREADS); keep every other library

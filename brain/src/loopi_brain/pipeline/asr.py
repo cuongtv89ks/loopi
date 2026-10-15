@@ -1,6 +1,6 @@
-"""transcribe_audio: Silero VAD + faster-whisper per speech region (spec §9.2 audio steps 1-2).
+"""transcribe_audio: level normalisation, then Silero VAD + faster-whisper per speech region (spec §9.2, D19).
 
-Step 3 (deleting raw audio after transcription) is retention, which lands in P2b: P2a deletes no media.
+Step 4 (deleting raw audio after transcription) is retention, which lands in P2b: P2a deletes no media.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Protocol
 import anyio
 import numpy as np
 
-from .. import devices
+from .. import audio_level, devices
 from ..config import Settings
 from . import dispatch, jobs
 from .context import PipelineContext, get_context
@@ -170,6 +170,15 @@ def load_audio(path: Path) -> np.ndarray:
     return decode_audio(str(path), sampling_rate=SAMPLE_RATE)
 
 
+def normalise(audio: np.ndarray, max_gain_db: float = audio_level.MAX_GAIN_DB) -> np.ndarray:
+    """``audio`` raised by the shared level gain (spec D19) and clipped to [-1, 1]; unchanged when the
+    gain is 1 (loud enough already, or silence)."""
+    gain = audio_level.level_gain(audio, max_gain_db=max_gain_db)
+    if gain == 1.0:
+        return audio
+    return np.clip(audio * np.float32(gain), -1.0, 1.0)
+
+
 def speech_regions(audio: np.ndarray) -> list[Region]:
     """Where someone speaks, by the Silero VAD model bundled with faster-whisper (no download)."""
     from faster_whisper.vad import VadOptions, get_speech_timestamps
@@ -223,9 +232,12 @@ class WhisperTranscriber:
         ])
 
 
-def transcribe_file(path: Path, transcriber: Transcriber) -> list[tuple[Region, RegionResult]]:
-    """Blocking: decode, find speech, transcribe each region. Segment times stay region-relative."""
-    audio = load_audio(path)
+def transcribe_file(
+    path: Path, transcriber: Transcriber, max_gain_db: float = audio_level.MAX_GAIN_DB
+) -> list[tuple[Region, RegionResult]]:
+    """Blocking: decode, normalise the level, find speech, transcribe each region. Segment times stay
+    region-relative."""
+    audio = normalise(load_audio(path), max_gain_db)
     results = []
     for region in speech_regions(audio):
         chunk = audio[int(region.start * SAMPLE_RATE): int(region.end * SAMPLE_RATE)]
@@ -246,7 +258,7 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
     if not path.is_file():
         await finish_item(pool, item_id, "skipped")
         return 0
-    results = await anyio.to_thread.run_sync(transcribe_file, path, ctx.transcriber)
+    results = await anyio.to_thread.run_sync(transcribe_file, path, ctx.transcriber, ctx.settings.asr_max_gain_db)
     version = ctx.router.model_version("asr")
     start: dt.datetime = item["started_at"]
     moments = 0
