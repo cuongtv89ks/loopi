@@ -73,6 +73,9 @@ def test_a_minute_of_turn_taking_is_split_into_regions_of_at_most_20_s():
         "시청해주셔서 감사합니다.",
         "Thanks for watching!",
         "Subtitles by the Amara.org community",
+        "Hẹn gặp lại các bạn trong những video tiếp theo",
+        "구독과 좋아요 부탁드립니다",
+        "Đăng kí kênh",
     ],
 )
 def test_known_hallucinations_are_dropped(text):
@@ -82,7 +85,17 @@ def test_known_hallucinations_are_dropped(text):
 
 @pytest.mark.parametrize(
     "text",
-    ["Anh đã đăng ký kênh K+ chưa?", "Thanks for watching the kids yesterday!", "Hẹn gặp lại anh vào thứ Hai nhé"],
+    [
+        "Anh đã đăng ký kênh K+ chưa?",
+        "Thanks for watching the kids yesterday!",
+        "Hẹn gặp lại anh vào thứ Hai nhé",
+        # "hẹn gặp lại" is only a fragment: real goodbyes survive, however short.
+        "Hẹn gặp lại em",
+        "Hẹn gặp lại mẹ",
+        "Ừ, hẹn gặp lại",
+        "Ok hẹn gặp lại",
+        "Hẹn gặp lại!",
+    ],
 )
 def test_real_speech_that_contains_a_phrase_is_kept(text):
     assert not asr.is_hallucination(text)
@@ -95,6 +108,9 @@ def test_real_speech_that_contains_a_phrase_is_kept(text):
         (seg("Mai mình đi chợ nhé"), True),
         (seg("내일 회의는 열 시예요"), True),
         (seg("   "), False),
+        (seg("..."), False),  # no letters at all
+        (seg("…"), False),
+        (seg("-"), False),
         (seg("uh", logprob=-1.5, no_speech=0.8), False),
         (seg("probably real", logprob=-1.5, no_speech=0.4), True),
         (seg("la la la la la la la la", ratio=2.6), False),
@@ -102,6 +118,11 @@ def test_real_speech_that_contains_a_phrase_is_kept(text):
 )
 def test_segment_filters(segment, kept):
     assert asr.keep_segment(segment) is kept
+
+
+def test_text_without_letters_is_not_a_hallucination_but_is_still_dropped():
+    assert not asr.is_hallucination("...")  # nothing to cover; keep_segment drops it on its own
+    assert not asr.keep_segment(seg("..."))
 
 
 def test_pick_language_is_restricted_to_the_configured_ones():

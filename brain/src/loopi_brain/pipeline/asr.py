@@ -41,12 +41,19 @@ HALLUCINATIONS = (
     "cảm ơn các bạn đã theo dõi",
     "hãy subscribe cho kênh",
     "đăng ký kênh",
-    "hẹn gặp lại",
+    "đăng kí kênh",
     "시청해 주셔서 감사합니다",
+    "구독과 좋아요 부탁드립니다",
     "구독과 좋아요",
     "thanks for watching",
     "thank you for watching",
     "subtitles by the amara.org community",
+)
+# Fragments are too common in real speech to condemn a segment alone ("Hẹn gặp lại em" is a
+# goodbye): they count toward the coverage only when a full phrase above matched in the same segment
+# ("Cảm ơn các bạn đã theo dõi và hẹn gặp lại").
+HALLUCINATION_FRAGMENTS = (
+    "hẹn gặp lại",
 )
 HALLUCINATION_COVERAGE = 0.8
 
@@ -84,26 +91,36 @@ def _normalise(text: str) -> str:
 
 
 _HALLUCINATIONS = tuple(sorted({_normalise(p) for p in HALLUCINATIONS}, key=len, reverse=True))
+_FRAGMENTS = tuple(sorted({_normalise(p) for p in HALLUCINATION_FRAGMENTS}, key=len, reverse=True))
+
+
+def _mark(covered: list[bool], norm: str, phrases: tuple[str, ...]) -> bool:
+    """Mark every occurrence of ``phrases`` in ``norm`` as covered; true if there was one."""
+    found = False
+    for phrase in phrases:
+        start = norm.find(phrase)
+        while start != -1:
+            found = True
+            covered[start: start + len(phrase)] = [True] * len(phrase)
+            start = norm.find(phrase, start + 1)
+    return found
 
 
 def is_hallucination(text: str) -> bool:
     """True when known hallucinated phrases cover at least 80 % of the segment (lower case,
-    NFC, punctuation and spaces removed)."""
+    NFC, punctuation and spaces removed); fragments count only next to a full phrase."""
     norm = _normalise(text)
     if not norm:
         return False
     covered = [False] * len(norm)
-    for phrase in _HALLUCINATIONS:
-        start = norm.find(phrase)
-        while start != -1:
-            covered[start: start + len(phrase)] = [True] * len(phrase)
-            start = norm.find(phrase, start + 1)
+    if _mark(covered, norm, _HALLUCINATIONS):
+        _mark(covered, norm, _FRAGMENTS)
     return sum(covered) >= HALLUCINATION_COVERAGE * len(norm)
 
 
 def keep_segment(seg: SegmentResult) -> bool:
-    """Drop empty text, likely non-speech, repetition loops and known hallucinations."""
-    if not seg.text.strip():
+    """Drop text without a letter or digit, likely non-speech, repetition loops and known hallucinations."""
+    if not _normalise(seg.text):
         return False
     if seg.no_speech_prob > 0.6 and seg.avg_logprob < -1.0:
         return False
