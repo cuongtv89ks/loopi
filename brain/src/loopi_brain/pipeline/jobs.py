@@ -13,6 +13,7 @@ from psycopg_pool import AsyncConnectionPool
 TASK_MODULES = [
     "loopi_brain.pipeline.dispatch",
     "loopi_brain.pipeline.video",
+    "loopi_brain.pipeline.moments",
 ]
 
 ANALYZE_VIDEO = "analyze_video"
