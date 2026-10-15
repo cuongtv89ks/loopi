@@ -94,7 +94,8 @@ async def index_marker_job(item_id: str) -> None:
 
 
 # Deferred when moments are written, and by the dispatcher every minute while moments wait and the
-# embedding model is available (so an outage creates no job at all).
-@job_app.task(name=jobs.EMBED_MOMENTS, queue="light", queueing_lock="embed", retry=jobs.RETRY)
+# embedding model is available (so an outage creates no job at all). The queueing lock keeps one
+# run waiting; the lock keeps that run from starting while another one still embeds.
+@job_app.task(name=jobs.EMBED_MOMENTS, queue="light", lock="embed", queueing_lock="embed", retry=jobs.RETRY)
 async def embed_moments_job() -> None:
     await embed_pending(get_context())

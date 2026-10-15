@@ -86,10 +86,10 @@ async def defer_keyframes(pool: AsyncConnectionPool, keyframe_ids: list[str]) ->
 
 
 async def defer_embed(pool: AsyncConnectionPool) -> None:
-    """Ask for an embedding run; one waiting run is enough (errors are logged)."""
+    """Ask for an embedding run; one waiting run is enough, and runs never overlap (errors are logged)."""
     try:
         async with pool.connection() as conn, conn.transaction():
-            await jobs.enqueue(conn, jobs.EMBED_MOMENTS, queue="light", queueing_lock="embed")
+            await jobs.enqueue(conn, jobs.EMBED_MOMENTS, queue="light", lock="embed", queueing_lock="embed")
     except AlreadyEnqueued:
         pass
     except Exception:
@@ -133,9 +133,15 @@ async def dispatch_pending(
 
     Backlog work is fed a little at a time: for each task, rows are deferred (oldest first) only
     while fewer than ``max_queued`` jobs of that task wait, so a fresh upload — deferred by the
-    uncapped fast path — never queues behind a whole backlog. Caption jobs and the embedding run
-    are deferred only if the model server can serve them right now (one health check per tick);
-    otherwise that work is skipped with one log line, and no job is created just to fail.
+    uncapped fast path — never queues behind a whole backlog. Caption jobs that video analysis
+    defers for its new keyframes bypass that cap: a fresh upload can still wait behind about
+    ``max_queued`` analyses × keyframes per segment caption jobs (≈ 20 × 2 = 40 for 60 s segments,
+    more for longer ones). That bound holds only because this tick waits its turn in the same FIFO.
+
+    Caption jobs and the embedding run are deferred only if the model server can serve them right
+    now (one health check per tick); otherwise that work is skipped with one log line, and no job
+    is created just to fail. Each tick first prunes the failed runs of the automatic tasks
+    (``prune_failed_auto_runs``).
     """
     await prune_failed_auto_runs(pool)
     queued = await _queued(pool)

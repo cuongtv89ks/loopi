@@ -4,6 +4,7 @@ import json
 import types
 
 import pytest
+from procrastinate.jobs import Status
 
 from helpers import (
     T0,
@@ -211,7 +212,22 @@ async def test_embedding_runs_are_coalesced(pool, jobs_open):
     await dispatch.defer_embed(pool)
     await dispatch.defer_embed(pool)
     [job] = (await jobs_by_lock(pool))["embed"]
-    assert (job["task_name"], job["queue_name"], job["status"]) == (jobs.EMBED_MOMENTS, "light", "todo")
+    assert (job["task_name"], job["queue_name"], job["status"], job["lock"]) == (
+        jobs.EMBED_MOMENTS, "light", "todo", "embed",
+    )
+
+
+async def test_embedding_runs_never_overlap(pool, jobs_open):
+    await dispatch.defer_embed(pool)
+    manager = jobs.job_app.job_manager
+    worker_id = await manager.register_worker()
+    running = await manager.fetch_job(queues=None, worker_id=worker_id)
+    await dispatch.defer_embed(pool)  # a caption finished meanwhile: the next run waits ...
+    assert await manager.fetch_job(queues=None, worker_id=worker_id) is None  # ... for this one to end
+    await manager.finish_job(running, status=Status.SUCCEEDED, delete_job=False)
+    assert (await manager.fetch_job(queues=None, worker_id=worker_id)).task_name == jobs.EMBED_MOMENTS
+    jobs.job_app.perform_import_paths()
+    assert jobs.job_app.tasks[jobs.EMBED_MOMENTS].lock == "embed"  # also when deferred without defer_embed
 
 
 async def test_failed_embedding_runs_do_not_pile_up_on_the_dead_letter_list(pool, dev, router, jobs_open):
