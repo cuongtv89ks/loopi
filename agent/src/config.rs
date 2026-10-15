@@ -401,6 +401,18 @@ mod tests {
     }
 
     #[test]
+    fn a_capture_table_without_audio_gain_db_keeps_the_default() {
+        // The shape of an already provisioned device (flash-dev.sh writes `[capture]` with video_fps and
+        // audio_enabled only): the other keys of the table must still default, `audio_gain_db` to 20 dB, not 0.
+        let c = Config::parse(&format!("{MINIMAL}[capture]\nvideo_fps = 2\n")).unwrap();
+        assert_eq!(c.capture.audio_gain_db, DEFAULT_AUDIO_GAIN_DB);
+        assert_eq!(c.capture.audio_gain_db, 20.0);
+        let c = Config::parse(&format!("{MINIMAL}[capture]\nvideo_fps = 1\naudio_enabled = false\n")).unwrap();
+        assert_eq!((c.capture.video_fps, c.capture.audio_enabled), (1, false));
+        assert_eq!(c.capture.audio_gain_db, DEFAULT_AUDIO_GAIN_DB);
+    }
+
+    #[test]
     fn audio_gain_outside_0_to_36_db_is_rejected() {
         for value in ["-1", "-0.5", "36.5", "100", "nan", "inf", "-inf"] {
             let err = Config::parse(&format!("{MINIMAL}[capture]\naudio_gain_db = {value}\n")).unwrap_err().to_string();
