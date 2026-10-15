@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end check of a running brain: pairing, mTLS upload, duplicate, spoofing, heartbeat, web auth,
-# and the same stack reached through an IP-literal URL (no TLS SNI), which is how devices are configured.
+# the same stack reached through an IP-literal URL (no TLS SNI), which is how devices are configured,
+# and the pipeline worker turning an uploaded test video into keyframes. It removes everything it created.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -20,8 +21,45 @@ if ! [[ "$LOOPI_SMOKE_IP" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
   exit 1
 fi
 IP_BASE="https://$LOOPI_SMOKE_IP:8443"
+# How long the worker may take to analyse the test video; behind a backlog it needs longer (README step 6).
+SMOKE_ANALYSIS_TIMEOUT="${SMOKE_ANALYSIS_TIMEOUT:-90}"
+if ! [[ "$SMOKE_ANALYSIS_TIMEOUT" =~ ^[0-9]+$ ]]; then
+  echo "FAIL: SMOKE_ANALYSIS_TIMEOUT must be a number of seconds (got '$SMOKE_ANALYSIS_TIMEOUT')" >&2
+  exit 1
+fi
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+FP=""         # sha256 of the smoke device's certificate, set as soon as the device is paired
+DEVICE_ID=""  # set once the smoke device's id is looked up; from then on every exit removes what it created
+
+remove_smoke_data() {  # delete the smoke device's rows and media files, then revoke it
+  [[ "$DEVICE_ID" =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]] || return 0  # never delete anything for a malformed id
+  # Moments and items of that device only (keyframes and transcripts go with their items).
+  docker compose exec -T db psql -U loopi -d loopi -v ON_ERROR_STOP=1 -q -c \
+    "DELETE FROM moment WHERE device_id = '$DEVICE_ID'; DELETE FROM item WHERE device_id = '$DEVICE_ID';" >/dev/null &&
+  # Paths inside the api container (LOOPI_MEDIA_ROOT).
+  docker compose exec -T api rm -rf "/srv/loopi/media/raw/$DEVICE_ID" "/srv/loopi/media/view/$DEVICE_ID" \
+    "/srv/loopi/media/keyframes/$DEVICE_ID" &&
+  docker compose exec -T db psql -U loopi -d loopi -v ON_ERROR_STOP=1 -q -c \
+    "UPDATE device SET revoked = TRUE WHERE id = '$DEVICE_ID'" >/dev/null
+}
+
+revoke_by_fingerprint() {  # the device is paired but its id is not known: revoke it by certificate fingerprint
+  [[ "$FP" =~ ^[0-9a-f]{64}$ ]] || return 0
+  docker compose exec -T db psql -U loopi -d loopi -v ON_ERROR_STOP=1 -q -c \
+    "UPDATE device SET revoked = TRUE WHERE cert_fingerprint = '$FP'" >/dev/null
+}
+
+on_exit() {
+  local status=$?
+  if [[ -n "$DEVICE_ID" ]]; then
+    remove_smoke_data || echo "WARN: test data of smoke device $DEVICE_ID was not fully removed" >&2
+  elif [[ -n "$FP" ]]; then
+    revoke_by_fingerprint || echo "WARN: smoke device with fingerprint $FP was not revoked" >&2
+  fi
+  rm -rf "$WORK"
+  exit "$status"
+}
+trap on_exit EXIT
 
 sha256_hex() {  # reads stdin, prints lowercase hex sha256 (Linux and macOS)
   if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi
@@ -67,10 +105,20 @@ expect 201 -H 'Content-Type: application/json' --data @"$WORK/pair.json" "$BASE/
 python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cert_pem"], end="")' "$WORK/body" > "$WORK/device.crt"
 FP="$(openssl x509 -in "$WORK/device.crt" -outform DER | sha256_hex)"
 MTLS=(--cert "$WORK/device.crt" --key "$WORK/device.key")
+DEVICE_ID="$(docker compose exec -T db psql -U loopi -d loopi -tAc \
+  "SELECT id FROM device WHERE cert_fingerprint = '$FP'" | head -n1 | tr -d '\r')"
+if ! [[ "$DEVICE_ID" =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]]; then
+  echo "FAIL: smoke device not found (got '$DEVICE_ID')" >&2
+  DEVICE_ID=""  # not a usable id: the exit trap revokes the device by its fingerprint instead
+  exit 1
+fi
 
-ID="$(python3 -c 'import secrets,time
+new_ulid() {
+  python3 -c 'import secrets,time
 A="0123456789ABCDEFGHJKMNPQRSTVWXYZ"; t=int(time.time()*1000)
-print("".join(A[(t>>(5*i))&31] for i in range(9,-1,-1))+"".join(secrets.choice(A) for _ in range(16)))')"
+print("".join(A[(t>>(5*i))&31] for i in range(9,-1,-1))+"".join(secrets.choice(A) for _ in range(16)))'
+}
+ID="$(new_ulid)"
 printf '{"note":"smoke"}' > "$WORK/marker.json"
 SHA="$(sha256_hex < "$WORK/marker.json")"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -88,10 +136,37 @@ expect 200 "${MTLS[@]}" -H 'Content-Type: application/json' --data "$HB" "$BASE/
 expect 401 "$BASE/"
 # Same device through the IP-literal URL: the client-cert fingerprint must reach the api without SNI too.
 expect 200 "${MTLS[@]}" -H 'Content-Type: application/json' --data "$HB" "$IP_BASE/v1/heartbeat"
-# Leave no test device behind: revoke the smoke device (a revoked device is rejected from now on).
-DEVICE_ID="$(docker compose exec -T db psql -U loopi -d loopi -tAc \
-  "UPDATE device SET revoked = TRUE WHERE cert_fingerprint = '$FP' RETURNING id" | head -n1 | tr -d '\r')"
-[[ -n "$DEVICE_ID" ]] || { echo "FAIL: could not revoke smoke device" >&2; exit 1; }
+# Pipeline: a 5 s test video (made by the api image's ffmpeg) must be analysed by the worker within
+# SMOKE_ANALYSIS_TIMEOUT seconds. Keyframe extraction needs no AI model.
+docker compose exec -T api ffmpeg -nostdin -loglevel error -f lavfi -i testsrc2=size=320x240:rate=2 \
+  -frames:v 10 -c:v libx264 -g 4 -bsf:v h264_mp4toannexb -f h264 - > "$WORK/video.h264"
+VID="$(new_ulid)"
+VSHA="$(sha256_hex < "$WORK/video.h264")"
+expect 201 "${MTLS[@]}" -X PUT -H "Content-Type: video/h264" -H "X-Loopi-Kind: video" -H "X-Loopi-Video-Fps: 2" \
+  -H "X-Loopi-Start: $NOW" -H "X-Loopi-End: $NOW" -H "X-Loopi-Sha256: $VSHA" \
+  --data-binary @"$WORK/video.h264" "$BASE/v1/items/$VID"
+STATE=""
+DEADLINE=$((SECONDS + SMOKE_ANALYSIS_TIMEOUT))
+while (( SECONDS < DEADLINE )); do
+  STATE="$(docker compose exec -T db psql -U loopi -d loopi -tAc \
+    "SELECT analysis_state FROM item WHERE id = '$VID'" | tr -d '\r')"
+  [[ "$STATE" == "done" ]] && break
+  sleep 2
+done
+if [[ "$STATE" != "done" ]]; then
+  echo "FAIL: test video not analysed within $SMOKE_ANALYSIS_TIMEOUT s (state '$STATE');" \
+    "a backlog delays it (raise SMOKE_ANALYSIS_TIMEOUT); see: docker compose logs worker" >&2
+  exit 1
+fi
+KEYFRAMES="$(docker compose exec -T db psql -U loopi -d loopi -tAc \
+  "SELECT count(*) FROM keyframe WHERE item_id = '$VID'" | tr -d '\r')"
+[[ "$KEYFRAMES" -ge 1 ]] || { echo "FAIL: test video produced no keyframe" >&2; exit 1; }
+docker compose exec -T worker loopi-brain worker-health >/dev/null \
+  || { echo "FAIL: the worker sent no heartbeat in the last 60 s" >&2; exit 1; }
+# Leave nothing behind (the exit trap does the same after a failure), then check the revocation.
+remove_smoke_data
+REMOVED="$DEVICE_ID"; REMOVED_FP="$FP"
+DEVICE_ID=""; FP=""  # all removed and revoked: the exit trap has nothing left to do
 expect 401 "${MTLS[@]}" -H 'Content-Type: application/json' --data "$HB" "$BASE/v1/heartbeat"
-echo "Revoked smoke device $DEVICE_ID"
-echo "OK: smoke test passed (device fingerprint $FP)"
+echo "Removed the smoke data and revoked smoke device $REMOVED"
+echo "OK: smoke test passed (device fingerprint $REMOVED_FP)"

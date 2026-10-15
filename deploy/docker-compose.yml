@@ -21,8 +21,11 @@ services:
       LOOPI_MEDIA_ROOT: /srv/loopi/media
       LOOPI_PKI_DIR: /srv/loopi/pki
       LOOPI_TZ: ${LOOPI_TZ:-Asia/Seoul}
+      LOOPI_OLLAMA_URL: http://models:11434
+      LOOPI_PROVIDERS_FILE: /etc/loopi/providers.yaml
     volumes:
       - ${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi
+      - ./providers.yaml:/etc/loopi/providers.yaml:ro
     healthcheck:
       # Passes only once `serve` has applied migrations and uvicorn is listening.
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
@@ -33,6 +36,59 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: ../brain
+    command: ["loopi-brain", "worker"]
+    user: "${LOOPI_UID:-1000}:${LOOPI_GID:-1000}"
+    environment:
+      LOOPI_DATABASE_URL: postgresql://loopi:${LOOPI_DB_PASSWORD}@db:5432/loopi
+      LOOPI_MEDIA_ROOT: /srv/loopi/media
+      LOOPI_PKI_DIR: /srv/loopi/pki
+      LOOPI_TZ: ${LOOPI_TZ:-Asia/Seoul}
+      LOOPI_OLLAMA_URL: http://models:11434
+      LOOPI_PROVIDERS_FILE: /etc/loopi/providers.yaml
+      LOOPI_MODEL_DIR: /srv/loopi/models
+      # The container user has no home directory; Hugging Face caches go next to the models.
+      HF_HOME: /srv/loopi/models/hf
+      # Whisper sets its own thread count (LOOPI_WHISPER_CPU_THREADS); keep every other library
+      # single-threaded so nothing oversubscribes the CPU (measured: CTranslate2 is not slower).
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    volumes:
+      - ${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi
+      - ./providers.yaml:/etc/loopi/providers.yaml:ro
+    healthcheck:
+      # A Procrastinate worker heartbeat younger than 60 s (a light command: psycopg only).
+      test: ["CMD", "loopi-brain", "worker-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # On `docker compose stop/up`, running jobs (a Whisper run takes < 1 min) finish before the kill.
+    stop_grace_period: 2m
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy  # api applies the migrations first
+    restart: unless-stopped
+
+  models:
+    image: ollama/ollama:0.35.1
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_NUM_PARALLEL: "1"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     restart: unless-stopped
 
   proxy:
@@ -56,3 +112,4 @@ services:
 volumes:
   db: {}
   caddy_data: {}
+  ollama: {}
