@@ -43,6 +43,13 @@ below -30 dBFS after the gain, raise it; if the limiter flattens normal speech, 
 again for transcription and playback, so the raw files only need to be loud enough to keep speech above the encoder's
 noise.
 
+To change it on a running device, edit `/data/config/loopi.toml` (the only file the agent reads at run time), set
+`audio_gain_db = <dB>` (a number from 0 to 36) under `[capture]` (add the table if the file has none), and run
+`systemctl restart loopi-agent` (or reboot): the agent reads its config once at start. `/boot/loopi.toml` is imported
+only at the first boot, while it still holds the WiFi passphrase or pair token, so later edits there are ignored. A value
+outside 0-36 or a misspelt key makes the agent refuse to start (nothing is recorded, LED off), so check
+`journalctl -u loopi-agent -n 20` afterwards.
+
 ## USB port modes (one per boot)
 - `gadget` (default on dev images): console + network to your computer; no microphone.
 - `host`: the microphone goes into `USB` (OTG adapter if needed) and the charger into `PWR`; reach the
