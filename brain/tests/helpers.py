@@ -244,3 +244,40 @@ async def jobs_by_lock(pool) -> dict[str, list[dict]]:
     for row in await fetch_all(pool, "SELECT * FROM procrastinate_jobs ORDER BY id"):
         grouped.setdefault(row["queueing_lock"], []).append(row)
     return grouped
+
+
+def make_h264(path, source: str, seconds: float, fps: int = 2):
+    """Encode an ffmpeg lavfi ``source`` (e.g. ``testsrc2=size=640x360``) as raw Annex-B H.264."""
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg is required for video tests")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", source, "-t", str(seconds),
+         "-r", str(fps), "-c:v", "libx264", "-g", str(fps * 2), "-pix_fmt", "yuv420p",
+         "-bsf:v", "h264_mp4toannexb", "-f", "h264", str(path)],
+        check=True,
+    )
+    return path
+
+
+# 40 s of testsrc2 then 40 s of SMPTE bars at 640x360: two scenes, one hard cut at frame 80.
+TWO_SCENES = (
+    "testsrc2=size=640x360:rate=2:duration=40[a];"
+    "smptebars=size=640x360:rate=2:duration=40[b];[a][b]concat=n=2:v=1:a=0"
+)
+NIGHT = "color=c=0x101010:size=640x360:rate=2"
+
+
+def make_ctx(pool, settings, *, ollama=None, transcriber=None):
+    """A PipelineContext whose Ollama is ``ollama`` (a FakeOllama; a fresh one if None)."""
+    from loopi_brain.pipeline.context import PipelineContext
+    from loopi_brain.providers.config import DEFAULT_CONFIG
+    from loopi_brain.providers.router import build_router
+
+    ollama = ollama or FakeOllama()
+    return PipelineContext(pool, settings, build_router(DEFAULT_CONFIG, settings, ollama.client()), transcriber)

@@ -12,6 +12,7 @@ from psycopg_pool import AsyncConnectionPool
 # Modules that register tasks on job_app; the worker imports them all before fetching jobs.
 TASK_MODULES = [
     "loopi_brain.pipeline.dispatch",
+    "loopi_brain.pipeline.video",
 ]
 
 ANALYZE_VIDEO = "analyze_video"
