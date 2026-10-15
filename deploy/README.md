@@ -43,5 +43,9 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - Audio level (spec D19): the device's microphone records speech very quietly, so the worker raises each recording
   before VAD and Whisper (the 99.9th percentile of the samples to -6 dBFS, at most `LOOPI_ASR_MAX_GAIN_DB`, default
   30 dB, and never a quiet room's hiss above -40 dBFS). Only the decoded copy in memory changes; raw files stay as recorded.
+- Audio playback: the timeline plays `/audio/<item id>.opus`, a copy raised by the same rule through a -1 dBFS limiter.
+  The api makes it on the first play and keeps it under `view/` next to the video MP4s; if ffmpeg cannot read the
+  recording, the raw file plays instead (a `plays at its raw level` warning in `docker compose logs api`). Deleting
+  `view/**/*.opus` makes the copies again.
 - `docker compose logs -f worker` follows the pipeline; `docker compose exec worker loopi-brain worker-health`
   checks its heartbeat.

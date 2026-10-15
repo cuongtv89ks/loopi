@@ -1,4 +1,5 @@
-"""Browser-playable views of raw media (raw H.264 -> MP4 without re-encoding)."""
+"""Browser-playable views of raw media: raw H.264 -> MP4 without re-encoding, and audio at a level you
+can hear (spec D19). Raw files are only ever read."""
 from __future__ import annotations
 
 import asyncio
@@ -7,17 +8,51 @@ import uuid
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
 
+import anyio
+import numpy as np
 from psycopg_pool import AsyncConnectionPool
 
+from . import audio_level
 from .config import Settings
 
 log = logging.getLogger(__name__)
 STDERR_TAIL = 500
 FFMPEG_TIMEOUT_S = 300.0
+AUDIO_TIMEOUT_S = 120.0  # per ffmpeg pass; a 10-minute segment (the agent's longest) takes a few seconds
+# -1 dBFS ceiling; level=false: no automatic make-up gain on top of ours; latency=true: no 5 ms shift.
+AUDIO_LIMITER = "alimiter=limit=0.891:attack=5:release=50:level=false:latency=true"
 
 
 class MediaError(Exception):
     """ffmpeg failed to process a file."""
+
+
+async def run_ffmpeg(args: list[str], timeout: float) -> bytes:
+    """Run ffmpeg with ``args``; its stdout. MediaError on a non-zero exit or after ``timeout`` seconds,
+    and the process never outlives the call."""
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-nostdin", "-y", "-loglevel", "error", *args,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
+        except asyncio.TimeoutError as exc:
+            raise MediaError(f"ffmpeg timed out after {timeout}s") from exc
+        if proc.returncode != 0:
+            raise MediaError(stderr.decode(errors="replace")[-STDERR_TAIL:] or f"ffmpeg exit {proc.returncode}")
+        return stdout
+    except BaseException:
+        if proc.returncode is None:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            await asyncio.shield(proc.wait())
+        raise
+
+
+def _view_rel(raw_rel: PurePosixPath, suffix: str) -> PurePosixPath:
+    """``raw/<device>/YYYY/MM/DD/<id>.<ext>`` -> ``view/<device>/YYYY/MM/DD/<id><suffix>``."""
+    return PurePosixPath("view", *raw_rel.parts[1:]).with_suffix(suffix)
 
 
 # Assumption: raw input has no VUI timing (Pi encoder output), so -framerate sets the pace;
@@ -25,27 +60,41 @@ class MediaError(Exception):
 async def remux_to_mp4(src: Path, dst: Path, fps: int) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(f"{dst.stem}.{uuid.uuid4().hex}.part.mp4")
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
-        "-framerate", str(fps), "-f", "h264", "-i", str(src),
-        "-c", "copy", "-movflags", "+faststart", str(tmp),
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        try:
-            _, stderr = await asyncio.wait_for(proc.communicate(), FFMPEG_TIMEOUT_S)
-        except asyncio.TimeoutError as exc:
-            raise MediaError(f"ffmpeg timed out after {FFMPEG_TIMEOUT_S}s") from exc
-        if proc.returncode != 0:
-            raise MediaError(stderr.decode(errors="replace")[-STDERR_TAIL:] or f"ffmpeg exit {proc.returncode}")
+        await run_ffmpeg(
+            ["-framerate", str(fps), "-f", "h264", "-i", str(src), "-c", "copy", "-movflags", "+faststart", str(tmp)],
+            FFMPEG_TIMEOUT_S,
+        )
         tmp.replace(dst)
     except BaseException:
-        if proc.returncode is None:
-            with suppress(ProcessLookupError):
-                proc.kill()
-            await asyncio.shield(proc.wait())
         tmp.unlink(missing_ok=True)
         raise
+
+
+def audio_view_path(raw_rel: PurePosixPath) -> PurePosixPath:
+    """``raw/<device>/YYYY/MM/DD/<id>.opus`` -> ``view/<device>/YYYY/MM/DD/<id>.opus``."""
+    return _view_rel(raw_rel, ".opus")
+
+
+async def normalise_audio(src: Path, dst: Path) -> float:
+    """Write ``src`` to ``dst`` as Ogg Opus raised by the shared level gain, through a -1 dBFS limiter so
+    nothing clips; return the gain. ``src`` is only read; ``dst`` appears complete or not at all."""
+    pcm = await run_ffmpeg(["-i", str(src), "-vn", "-ac", "1", "-ar", str(audio_level.SAMPLE_RATE), "-f", "f32le", "-"],
+                           AUDIO_TIMEOUT_S)
+    gain = await anyio.to_thread.run_sync(audio_level.level_gain, np.frombuffer(pcm, dtype=np.float32))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f"{dst.stem}.{uuid.uuid4().hex}.part.opus")
+    try:
+        await run_ffmpeg(
+            ["-i", str(src), "-vn", "-ac", "1", "-ar", str(audio_level.SAMPLE_RATE),
+             "-af", f"volume={gain:.6f},{AUDIO_LIMITER}", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", str(tmp)],
+            AUDIO_TIMEOUT_S,
+        )
+        tmp.replace(dst)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return gain
 
 
 async def _mark_error(pool: AsyncConnectionPool, item_id: str, message: str) -> None:
@@ -75,7 +124,7 @@ async def remux_item(pool: AsyncConnectionPool, settings: Settings, item_id: str
     if row is None:
         return
     raw_rel = PurePosixPath(row["raw_path"])
-    view_rel = PurePosixPath("view", *raw_rel.parts[1:]).with_suffix(".mp4")
+    view_rel = _view_rel(raw_rel, ".mp4")
     fps = int(row["meta"].get("video_fps", settings.default_video_fps))
     try:
         await remux_to_mp4(settings.media_root / raw_rel, settings.media_root / view_rel, fps)

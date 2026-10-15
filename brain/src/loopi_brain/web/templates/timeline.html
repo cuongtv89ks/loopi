@@ -39,7 +39,7 @@
           {% elif it.status == "error" %}<span class="err">Không chuyển được video</span>
           {% else %}<span>Đang xử lý…</span>{% endif %}
         {% elif it.kind == "audio" %}
-          <audio controls preload="none" src="/media/{{ it.view_path }}"></audio>
+          <audio controls preload="none" src="/audio/{{ it.id }}.opus"></audio>
         {% else %}
           <span>★ {{ it.meta.get("note", "Đánh dấu") }}</span>
         {% endif %}

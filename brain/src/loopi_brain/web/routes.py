@@ -2,19 +2,21 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from collections import defaultdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from zoneinfo import ZoneInfo
 
 import psycopg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import devices, pki
+from .. import audio_level, devices, media, pki
 from ..pipeline import moments as moment_rules
 from ..pipeline import status
 
+log = logging.getLogger(__name__)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 TEMPLATES.env.filters["duration"] = status.fmt_duration
 ONLINE_WINDOW = dt.timedelta(seconds=45)
@@ -110,6 +112,31 @@ async def timeline(request: Request, day: dt.date | None = Query(default=None)):
         "timeline.html",
         {"day": day, "prev_day": day - dt.timedelta(days=1), "next_day": day + dt.timedelta(days=1), "hours": hours},
     )
+
+
+@router.get("/audio/{item_id}.opus")
+async def audio_playback(request: Request, item_id: str):
+    """An audio segment at a level you can hear (spec D19): a normalised copy under ``view/``, made on the
+    first request; the raw file when that fails. Raw files are never changed."""
+    settings = request.app.state.settings
+    async with request.app.state.pool.connection() as conn:
+        cur = await conn.execute("SELECT raw_path FROM item WHERE id = %s AND kind = 'audio'", (item_id,))
+        row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown audio item")
+    raw_rel = PurePosixPath(row["raw_path"])
+    raw = settings.media_root / raw_rel
+    if not raw.is_file():
+        raise HTTPException(status_code=404, detail="audio file missing")
+    view = settings.media_root / media.audio_view_path(raw_rel)
+    if not view.is_file():
+        try:
+            gain = await media.normalise_audio(raw, view)
+        except Exception as exc:
+            log.warning("audio %s plays at its raw level: %s", item_id, exc)
+            return FileResponse(raw, media_type="audio/ogg")
+        log.info("audio %s normalised: %+.1f dB", item_id, audio_level.dbfs(gain))
+    return FileResponse(view, media_type="audio/ogg")
 
 
 @router.get("/devices", response_class=HTMLResponse)

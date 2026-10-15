@@ -1,10 +1,8 @@
 """Keyframe selection (spec §9.2 steps 3-4): small grey frames, dHash, darkness and motion filters."""
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
 import uuid
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -12,10 +10,10 @@ import numpy as np
 from PIL import Image
 
 from ..config import Settings
+from ..media import MediaError, run_ffmpeg
 
 SMALL_W, SMALL_H = 64, 36
 FFMPEG_TIMEOUT_S = 300.0
-STDERR_TAIL = 500
 _U64 = 1 << 64
 # Neighbouring cells must differ by more than this many grey levels to give a 1 bit, so sensor noise
 # on flat or dim areas cannot flip bits (a still, noisy scene keeps one hash).
@@ -118,24 +116,10 @@ def keyframe_rel_path(device_id: str, ts: dt.datetime, keyframe_id: str) -> Pure
 
 
 async def _ffmpeg(args: list[str]) -> bytes:
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-nostdin", "-loglevel", "error", *args,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), FFMPEG_TIMEOUT_S)
-        except asyncio.TimeoutError as exc:
-            raise FrameError(f"ffmpeg timed out after {FFMPEG_TIMEOUT_S}s") from exc
-        if proc.returncode != 0:
-            raise FrameError(err.decode(errors="replace")[-STDERR_TAIL:] or f"ffmpeg exit {proc.returncode}")
-        return out
-    except BaseException:
-        if proc.returncode is None:
-            with suppress(ProcessLookupError):
-                proc.kill()
-            await asyncio.shield(proc.wait())
-        raise
+        return await run_ffmpeg(args, FFMPEG_TIMEOUT_S)
+    except MediaError as exc:
+        raise FrameError(str(exc)) from exc
 
 
 async def read_small_frames(src: Path, fps: int) -> np.ndarray:
@@ -156,7 +140,7 @@ async def extract_jpeg(src: Path, fps: int, index: int, dst: Path) -> None:
     tmp = dst.with_name(f".{dst.stem}.{uuid.uuid4().hex}.part.jpg")
     try:
         await _ffmpeg([
-            "-y", "-framerate", str(fps), "-f", "h264", "-i", str(src),
+            "-framerate", str(fps), "-f", "h264", "-i", str(src),
             "-vf", f"select=eq(n\\,{index})", "-fps_mode", "passthrough", "-frames:v", "1", "-q:v", "3", str(tmp),
         ])
         if not tmp.is_file():
