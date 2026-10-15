@@ -52,7 +52,16 @@ def pki_settings(settings):
 
 
 @pytest.fixture
-async def client(pki_settings, pool):
+async def jobs_open(pool):
+    """The job app opened on the test pool (httpx's ASGITransport does not run the app lifespan)."""
+    from loopi_brain.pipeline.jobs import open_jobs
+
+    async with open_jobs(pool) as app:
+        yield app
+
+
+@pytest.fixture
+async def client(pki_settings, pool, jobs_open):
     from loopi_brain.app import create_app
 
     app = create_app(pki_settings, pool=pool)

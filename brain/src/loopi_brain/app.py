@@ -12,6 +12,7 @@ from . import media
 from .api.device_routes import router as device_router
 from .config import Settings
 from .db import make_pool
+from .pipeline.jobs import open_jobs
 from .web.routes import router as web_router
 
 log = logging.getLogger(__name__)
@@ -25,20 +26,22 @@ def create_app(settings: Settings, pool: AsyncConnectionPool | None = None) -> F
     async def lifespan(_app: FastAPI):
         if owns_pool:
             await active_pool.open()
-        requeue = asyncio.create_task(media.requeue_stored(active_pool, settings))
-        _app.state.requeue_task = requeue
         try:
-            yield
+            async with open_jobs(active_pool):  # the API defers jobs and retries failed ones
+                requeue = asyncio.create_task(media.requeue_stored(active_pool, settings))
+                _app.state.requeue_task = requeue
+                try:
+                    yield
+                finally:
+                    requeue.cancel()
+                    try:
+                        with suppress(asyncio.CancelledError):
+                            await requeue
+                    except Exception:
+                        log.exception("requeue task ended with an error")
         finally:
-            requeue.cancel()
-            try:
-                with suppress(asyncio.CancelledError):
-                    await requeue
-            except Exception:
-                log.exception("requeue task ended with an error")
-            finally:
-                if owns_pool:
-                    await active_pool.close()
+            if owns_pool:
+                await active_pool.close()
 
     app = FastAPI(title="Loopi Brain", lifespan=lifespan)
     app.state.settings = settings

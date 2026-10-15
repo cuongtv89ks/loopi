@@ -165,3 +165,82 @@ class FakeOllama:
 
     def paths(self) -> list[str]:
         return [p for p, _ in self.requests]
+
+
+T0 = dt.datetime(2026, 10, 14, 1, 0, tzinfo=dt.UTC)
+
+
+def new_ulid() -> str:
+    from ulid import ULID
+
+    return str(ULID())
+
+
+async def insert_item(
+    pool,
+    device_id: str,
+    *,
+    kind: str = "video",
+    started_at: dt.datetime = T0,
+    seconds: float = 60,
+    item_id: str | None = None,
+    raw_path: str | None = None,
+    status: str = "ready",
+    meta: dict | None = None,
+) -> str:
+    """Insert an item row directly (no file is written unless the test does it); return its id."""
+    from psycopg.types.json import Jsonb
+
+    item_id = item_id or new_ulid()
+    ext = {"video": "h264", "audio": "opus", "marker": "json"}[kind]
+    raw_path = raw_path or f"raw/{device_id}/{started_at:%Y/%m/%d}/{item_id}.{ext}"
+    if meta is None:
+        meta = {"video_fps": 2} if kind == "video" else {}
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes, raw_path, meta, status)"
+            " VALUES (%s, %s, %s, %s, %s, 'x', 1, %s, %s, %s)",
+            (item_id, device_id, kind, started_at, started_at + dt.timedelta(seconds=seconds), raw_path,
+             Jsonb(meta), status),
+        )
+    return item_id
+
+
+async def insert_moment(
+    pool,
+    device_id: str,
+    *,
+    kind: str = "marker",
+    ts: dt.datetime | None = None,
+    text: str = "x",
+    lang: str | None = None,
+) -> str:
+    """Insert a moment row without an embedding (both timestamps = ``ts``, default now); return its id."""
+    moment_id = new_ulid()
+    ts = ts or dt.datetime.now(dt.UTC)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO moment (id, device_id, ts_start, ts_end, kind, text, lang, model_version)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, 'test')",
+            (moment_id, device_id, ts, ts, kind, text, lang),
+        )
+    return moment_id
+
+
+async def fetch_all(pool, sql: str, params: tuple = ()) -> list[dict]:
+    async with pool.connection() as conn:
+        cur = await conn.execute(sql, params)
+        return await cur.fetchall()
+
+
+async def fetch_one(pool, sql: str, params: tuple = ()) -> dict | None:
+    rows = await fetch_all(pool, sql, params)
+    return rows[0] if rows else None
+
+
+async def jobs_by_lock(pool) -> dict[str, list[dict]]:
+    """Procrastinate jobs grouped by queueing lock."""
+    grouped: dict[str, list[dict]] = {}
+    for row in await fetch_all(pool, "SELECT * FROM procrastinate_jobs ORDER BY id"):
+        grouped.setdefault(row["queueing_lock"], []).append(row)
+    return grouped

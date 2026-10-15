@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .. import devices, items, media, pki
+from ..pipeline import dispatch
 from .device_auth import check_agent_version, current_device
 
 router = APIRouter()
@@ -74,8 +75,11 @@ async def put_item(
         )
     except items.ItemRejected as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
-    if status == 201 and header.kind == "video":
-        background.add_task(media.remux_item, request.app.state.pool, settings, header.id)
+    if status == 201:
+        # Fast path into the pipeline; the periodic dispatcher catches anything this misses.
+        background.add_task(dispatch.defer_item, request.app.state.pool, header.id)
+        if header.kind == "video":
+            background.add_task(media.remux_item, request.app.state.pool, settings, header.id)
     return JSONResponse(ack, status_code=status)
 
 
