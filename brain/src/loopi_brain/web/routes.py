@@ -133,8 +133,12 @@ async def audio_playback(request: Request, item_id: str):
         try:
             gain = await media.normalise_audio(raw, view)
         except Exception as exc:
-            log.warning("audio %s plays at its raw level: %s", item_id, exc)
-            return FileResponse(raw, media_type="audio/ogg")
+            if isinstance(exc, (media.MediaError, OSError)):
+                log.warning("audio %s plays at its raw level: %s", item_id, exc)
+            else:
+                log.exception("audio %s plays at its raw level after an unexpected failure", item_id)
+            # no-store: once the copy exists, the browser must not keep playing this quiet file from its cache
+            return FileResponse(raw, media_type="audio/ogg", headers={"Cache-Control": "no-store"})
         log.info("audio %s normalised: %+.1f dB", item_id, audio_level.dbfs(gain))
     return FileResponse(view, media_type="audio/ogg")
 

@@ -78,7 +78,8 @@ def audio_view_path(raw_rel: PurePosixPath) -> PurePosixPath:
 
 async def normalise_audio(src: Path, dst: Path) -> float:
     """Write ``src`` to ``dst`` as Ogg Opus raised by the shared level gain, through a -1 dBFS limiter so
-    nothing clips; return the gain. ``src`` is only read; ``dst`` appears complete or not at all."""
+    nothing clips; return the gain. ``src`` is only read; ``dst`` appears complete or not at all. The encode is
+    bit-exact (no random Ogg stream serial), so two first plays racing for one item write identical copies."""
     pcm = await run_ffmpeg(["-i", str(src), "-vn", "-ac", "1", "-ar", str(audio_level.SAMPLE_RATE), "-f", "f32le", "-"],
                            AUDIO_TIMEOUT_S)
     gain = await anyio.to_thread.run_sync(audio_level.level_gain, np.frombuffer(pcm, dtype=np.float32))
@@ -87,7 +88,8 @@ async def normalise_audio(src: Path, dst: Path) -> float:
     try:
         await run_ffmpeg(
             ["-i", str(src), "-vn", "-ac", "1", "-ar", str(audio_level.SAMPLE_RATE),
-             "-af", f"volume={gain:.6f},{AUDIO_LIMITER}", "-c:a", "libopus", "-b:a", "32k", "-f", "ogg", str(tmp)],
+             "-af", f"volume={gain:.6f},{AUDIO_LIMITER}", "-c:a", "libopus", "-b:a", "32k",
+             "-fflags", "+bitexact", "-f", "ogg", str(tmp)],
             AUDIO_TIMEOUT_S,
         )
         tmp.replace(dst)

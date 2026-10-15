@@ -1,6 +1,8 @@
 """transcribe_audio: level normalisation, then Silero VAD + faster-whisper per speech region (spec §9.2, D19).
 
 Step 4 (deleting raw audio after transcription) is retention, which lands in P2b: P2a deletes no media.
+When P2b deletes a raw recording it must delete the playback copy ``view/<device>/YYYY/MM/DD/<id>.opus``
+(made on the first play, see ``media.normalise_audio``) with it, or the family's audio stays on disk.
 """
 from __future__ import annotations
 
