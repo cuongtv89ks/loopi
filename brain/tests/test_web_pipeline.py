@@ -166,6 +166,23 @@ async def test_retry_button_requeues_a_dead_lettered_job_once(web, pool, dev):
     assert "409: \"Job không còn ở trạng thái lỗi" in (await web.get("/pipeline")).text
 
 
+@pytest.mark.parametrize(("task", "label", "note"), [
+    (jobs.EMBED_MOMENTS, "Tạo embedding", "tự chạy lại mỗi phút"),
+    (jobs.DISPATCH_PENDING, "Điều phối xử lý", "tự chạy lại mỗi phút"),
+    (jobs.RETRY_STALLED, "Khôi phục job bị treo", "tự chạy lại theo lịch"),
+    (jobs.REMOVE_OLD_JOBS, "Dọn job cũ", "tự chạy lại theo lịch"),
+])
+async def test_a_failed_automatic_job_says_when_it_runs_again_and_has_no_retry_button(web, pool, task, label, note):
+    async with pool.connection() as conn:
+        job_id = await jobs.enqueue(conn, task, queue="light", queueing_lock=f"test-{task}")
+    await _fail_job(pool, job_id)
+    text = (await web.get("/pipeline")).text
+    row = text.split(f'id="job-{job_id}"')[1].split("</tr>")[0]
+    assert label in row and note in row and "hx-post" not in row
+    other = ({"tự chạy lại mỗi phút", "tự chạy lại theo lịch"} - {note}).pop()
+    assert other not in row
+
+
 async def test_retry_all_requeues_every_dead_letter_but_the_embedding_run(web, pool, dev):
     job_ids = []
     for minute in range(2):

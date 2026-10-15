@@ -65,8 +65,16 @@ SELECT count(*) AS n FROM keyframe k
  WHERE k.caption IS NULL AND j.id IS NULL
 """
 # These have no retry button: the dispatcher requests a new embedding run every minute, and the
-# scheduler starts the next tick of each periodic task by itself.
-NOT_RETRIED = (jobs.EMBED_MOMENTS, jobs.DISPATCH_PENDING, jobs.RETRY_STALLED, jobs.REMOVE_OLD_JOBS)
+# scheduler starts the next tick of each periodic task by itself. The value says when that happens.
+EVERY_MINUTE = "tự chạy lại mỗi phút"
+ON_SCHEDULE = "tự chạy lại theo lịch"
+AUTO_RERUN = {
+    jobs.EMBED_MOMENTS: EVERY_MINUTE,
+    jobs.DISPATCH_PENDING: EVERY_MINUTE,
+    jobs.RETRY_STALLED: ON_SCHEDULE,  # every 10 minutes
+    jobs.REMOVE_OLD_JOBS: ON_SCHEDULE,  # daily
+}
+NOT_RETRIED = tuple(AUTO_RERUN)
 
 
 def fmt_duration(seconds: float | None) -> str:
@@ -100,7 +108,12 @@ async def pipeline_status(pool: AsyncConnectionPool) -> dict:
         worker_seen = (await cur.fetchone())["seen"]
         cur = await conn.execute(FAILED_JOBS, (FAILED_LIMIT,))
         failed = [
-            {**r, "label": TASK_LABELS.get(r["task_name"], r["task_name"]), "retryable": r["task_name"] not in NOT_RETRIED}
+            {
+                **r,
+                "label": TASK_LABELS.get(r["task_name"], r["task_name"]),
+                "retryable": r["task_name"] not in NOT_RETRIED,
+                "rerun": AUTO_RERUN.get(r["task_name"]),
+            }
             for r in await cur.fetchall()
         ]
     worker_alive = worker_seen is not None and dt.datetime.now(dt.UTC) - worker_seen < dt.timedelta(

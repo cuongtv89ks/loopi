@@ -42,7 +42,7 @@
       <td>{{ j.id }}</td><td>{{ j.label }}</td><td><code>{{ j.target or "—" }}</code></td><td>{{ j.attempts }}</td>
       <td><code>{{ j.error or "—" }}</code></td>
       <td>{% if j.retryable %}<button hx-post="/pipeline/jobs/{{ j.id }}/retry" hx-target="#retry-{{ j.id }}">Xử lý lại</button>
-          <div id="retry-{{ j.id }}"></div>{% else %}<span class="muted">tự chạy lại mỗi phút</span>{% endif %}</td>
+          <div id="retry-{{ j.id }}"></div>{% else %}<span class="muted">{{ j.rerun }}</span>{% endif %}</td>
     </tr>
     {% endfor %}
   </table>
