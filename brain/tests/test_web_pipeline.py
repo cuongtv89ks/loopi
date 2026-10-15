@@ -12,10 +12,11 @@ from helpers import (
     insert_item,
     insert_keyframe,
     insert_moment,
+    make_ctx,
     paired_device,
 )
 from loopi_brain.app import create_app
-from loopi_brain.pipeline import dispatch, jobs
+from loopi_brain.pipeline import dispatch, jobs, moments
 from loopi_brain.pipeline.status import fmt_duration
 
 HX = {"HX-Request": "true"}
@@ -58,7 +59,9 @@ async def test_timeline_shows_keyframes_speech_and_markers_by_local_hour(web, po
         await conn.execute("UPDATE keyframe SET caption = %s WHERE id = %s", (Jsonb(DEFAULT_CAPTION), kf))
     await insert_moment(pool, device_id, kind="speech", ts=UTC_9AM_SEOUL + dt.timedelta(minutes=5),
                         text="Mai mình đi chợ <b>nhé</b>", lang="vi")
-    await insert_moment(pool, device_id, kind="marker", ts=UTC_9AM_SEOUL + dt.timedelta(minutes=7), text="chìa khoá")
+    marker = await insert_item(pool, device_id, kind="marker", started_at=UTC_9AM_SEOUL + dt.timedelta(minutes=7),
+                               seconds=0, meta={"note": "chìa khoá"})
+    assert await moments.index_marker(make_ctx(pool, pki_settings), marker)
     text = (await web.get("/", params={"day": DAY})).text
     assert "<h2>09:00</h2>" in text
     assert f'id="kf-{kf}"' in text and 'loading="lazy"' in text
@@ -69,6 +72,15 @@ async def test_timeline_shows_keyframes_speech_and_markers_by_local_hour(web, po
     assert '<span class="lang">VI</span> Mai mình đi chợ &lt;b&gt;nhé&lt;/b&gt;' in text
     assert "09:37:00</time> ★ chìa khoá" in text
     assert "<details>" in text and f'id="item-{item_id}"' in text and "Đang phân tích…" in text
+
+
+async def test_a_marker_without_a_note_reads_danh_dau_on_the_timeline(web, pool, pki_settings, dev):
+    # The device uploads every button press as an empty JSON object.
+    marker = await insert_item(pool, dev["device_id"], kind="marker", started_at=UTC_9AM_SEOUL, seconds=0, meta={})
+    assert await moments.index_marker(make_ctx(pool, pki_settings), marker)
+    text = (await web.get("/", params={"day": DAY})).text
+    assert '<p class="marker"><time>09:30:00</time> ★ Đánh dấu</p>' in text
+    assert moments.MARKER_TEXT not in text  # the English text is only what gets embedded
 
 
 async def test_analysed_items_are_not_marked_pending(web, pool, dev):

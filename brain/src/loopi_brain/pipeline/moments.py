@@ -18,9 +18,14 @@ MARKER_VERSION = "loopi:marker-v1"
 EMBED_BATCH = 32
 
 
-def marker_text(meta: dict) -> str:
+def marker_note(meta: dict) -> str | None:
+    """The note a marker carries (stripped), or None: the device's button sends ``{}``."""
     note = meta.get("note")
-    return note.strip() if isinstance(note, str) and note.strip() else MARKER_TEXT
+    return note.strip() if isinstance(note, str) and note.strip() else None
+
+
+def marker_text(meta: dict) -> str:
+    return marker_note(meta) or MARKER_TEXT
 
 
 async def _index(ctx: PipelineContext, item_id: str) -> bool:

@@ -12,11 +12,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from .. import devices, pki
+from ..pipeline import moments as moment_rules
 from ..pipeline import status
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 TEMPLATES.env.filters["duration"] = status.fmt_duration
 ONLINE_WINDOW = dt.timedelta(seconds=45)
+MARKER_LABEL = "Đánh dấu"  # a marker without a note
 COMMAND_LABELS = {
     "pause": "Tạm dừng ghi",
     "resume": "Tiếp tục ghi",
@@ -69,8 +71,9 @@ async def _day_by_hour(pool, day: dt.date, zone: ZoneInfo) -> dict[int, dict[str
         )
         keyframes = await cur.fetchall()
         cur = await conn.execute(
-            "SELECT id, kind, ts_start, lang, text FROM moment"
-            " WHERE kind IN ('speech', 'marker') AND ts_start >= %s AND ts_start < %s ORDER BY ts_start",
+            "SELECT m.id, m.kind, m.ts_start, m.lang, m.text, i.meta AS item_meta"
+            " FROM moment m LEFT JOIN item i ON i.id = m.item_id"
+            " WHERE m.kind IN ('speech', 'marker') AND m.ts_start >= %s AND m.ts_start < %s ORDER BY m.ts_start",
             (start, end),
         )
         moments = await cur.fetchall()
@@ -85,7 +88,11 @@ async def _day_by_hour(pool, day: dt.date, zone: ZoneInfo) -> dict[int, dict[str
         hours[local_ts.hour]["keyframes"].append({**row, "local_ts": local_ts})
     for row in moments:
         local_ts = row["ts_start"].astimezone(zone)
-        hours[local_ts.hour]["speech" if row["kind"] == "speech" else "markers"].append({**row, "local_ts": local_ts})
+        if row["kind"] == "speech":
+            hours[local_ts.hour]["speech"].append({**row, "local_ts": local_ts})
+        else:  # the marker's note; the moment's text is the English fallback that gets embedded
+            label = moment_rules.marker_note(row["item_meta"] or {}) or MARKER_LABEL
+            hours[local_ts.hour]["markers"].append({**row, "local_ts": local_ts, "label": label})
     return dict(sorted(hours.items()))
 
 
