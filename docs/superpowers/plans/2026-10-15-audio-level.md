@@ -1160,6 +1160,12 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-15; they amend the steps above):**
+- **R-F2:** also update the module docstring of `brain/src/loopi_brain/pipeline/asr.py` (line 3 says "Step 3 (deleting raw audio)") to the renumbered spec step (§9.2 step 4 after D19).
+- **R-F4:** put `QUIET_SPEECH` and `ROOM_NOISE` (the shared test signals) in `brain/tests/helpers.py` once and import them in `test_audio_level.py`/`test_asr.py`; Task 4's `test_audio_playback.py` imports them too instead of redefining them.
+- **R-F5:** the README advertises `LOOPI_ASR_MAX_GAIN_DB`, but the compose `worker` lists its environment explicitly: add `LOOPI_ASR_MAX_GAIN_DB: ${LOOPI_ASR_MAX_GAIN_DB:-30}` to the worker's `environment` in `deploy/docker-compose.yml` (adjust `tests/test_deploy.py` only if it pins the worker's environment keys). Never run docker compose.
+- **R-F10:** if a test looks flaky under load, re-run it once before blaming your change and say so in the report.
+
 ---
 
 ### Task 4 (P2a Task 10b): Normalised playback route and timeline — branch `feat/phase2`, worktree `/home/soul/loopi-p2`
@@ -1540,6 +1546,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-15; they amend the steps above):**
+- **R-F1 (one ffmpeg helper):** `pipeline/frames.py` has its own near-identical `_ffmpeg`. Make it a thin wrapper over the new media helper (exposed as `media.run_ffmpeg(args, timeout) -> bytes`; keep `media._ffmpeg` only if you name it that way consistently everywhere): `frames._ffmpeg(args)` calls it with `FFMPEG_TIMEOUT_S` and re-raises `MediaError` as `FrameError` (`raise FrameError(str(exc)) from exc`), so `video.py` and the P2a frame tests keep working unchanged. The extra `-y` is harmless for frames (it writes to a fresh temp path). Run `tests/test_frames.py` and `tests/test_video.py` too.
+- **R-F8:** keep two blank lines before `_mark_error` (PEP 8) after replacing the media block.
+- **R-F9:** one raw→view path mapping: extract a small helper (e.g. `_view_rel(raw_rel, suffix)`) used by both `remux_item` (`.mp4`) and `audio_view_path` (`.opus`).
+- **R-F3:** the Step 5 coverage grep for `routes.py` also prints `api/device_routes.py`; that extra line is expected.
+- **R-F4:** import `QUIET_SPEECH`/`ROOM_NOISE` from `tests/helpers.py` (added in Task 3) instead of redefining them.
 
 ---
 
