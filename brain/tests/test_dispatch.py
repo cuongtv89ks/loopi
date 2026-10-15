@@ -231,6 +231,32 @@ async def test_failed_embedding_runs_do_not_pile_up_on_the_dead_letter_list(pool
     assert runs[0]["id"] == newest_failed < runs[1]["id"]
 
 
+async def test_a_tick_keeps_only_the_newest_failed_run_of_each_automatic_task(pool, dev, router, jobs_open):
+    automatic = (jobs.EMBED_MOMENTS, jobs.DISPATCH_PENDING, jobs.RETRY_STALLED, jobs.REMOVE_OLD_JOBS)
+    runs = {task: [] for task in automatic}
+    for task in automatic:
+        for _ in range(2):  # e.g. two scheduler ticks that failed
+            async with pool.connection() as conn:
+                job_id = await jobs.enqueue(conn, task, queue="light", queueing_lock=f"test-{task}")
+                await conn.execute("UPDATE procrastinate_jobs SET status = 'failed' WHERE id = %s", (job_id,))
+            runs[task].append(job_id)
+    pipeline_failures = []
+    for minute in range(2):  # dead letters with a retry button are never pruned
+        item_id = await insert_item(pool, dev["device_id"], kind="marker", seconds=0,
+                                    started_at=T0 + dt.timedelta(minutes=minute))
+        pipeline_failures.append(await dispatch.defer_item(pool, item_id))
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE procrastinate_jobs SET status = 'failed' WHERE id = ANY(%s)", (pipeline_failures,))
+        # the scheduler's record of a periodic defer may still point at a failed tick
+        await conn.execute(
+            "INSERT INTO procrastinate_periodic_defers (task_name, defer_timestamp, job_id) VALUES (%s, 0, %s)",
+            (jobs.DISPATCH_PENDING, runs[jobs.DISPATCH_PENDING][0]),
+        )
+    assert await dispatch.dispatch_pending(pool, router) == (0, 0)
+    failed = await fetch_all(pool, "SELECT id FROM procrastinate_jobs WHERE status = 'failed' ORDER BY id")
+    assert [r["id"] for r in failed] == sorted([newest for _, newest in runs.values()] + pipeline_failures)
+
+
 async def test_upload_defers_analysis_on_the_fast_path(client, pool, dev):
     body = json.dumps({"note": "chìa khoá"}).encode()
     item_id = new_ulid()

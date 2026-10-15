@@ -64,17 +64,16 @@ SELECT count(*) AS n FROM keyframe k
   LEFT JOIN procrastinate_jobs j ON j.id = k.caption_job_id AND j.status = 'failed'
  WHERE k.caption IS NULL AND j.id IS NULL
 """
-# These have no retry button: the dispatcher requests a new embedding run every minute, and the
-# scheduler starts the next tick of each periodic task by itself. The value says when that happens.
+# jobs.AUTO_RERUN_TASKS have no retry button: the dispatcher requests a new embedding run every
+# minute, and the scheduler starts the next tick of each periodic task by itself (retry_stalled_jobs
+# every 10 minutes, remove_old_jobs daily). The value says when that happens.
 EVERY_MINUTE = "tự chạy lại mỗi phút"
 ON_SCHEDULE = "tự chạy lại theo lịch"
 AUTO_RERUN = {
-    jobs.EMBED_MOMENTS: EVERY_MINUTE,
-    jobs.DISPATCH_PENDING: EVERY_MINUTE,
-    jobs.RETRY_STALLED: ON_SCHEDULE,  # every 10 minutes
-    jobs.REMOVE_OLD_JOBS: ON_SCHEDULE,  # daily
+    task: EVERY_MINUTE if task in (jobs.EMBED_MOMENTS, jobs.DISPATCH_PENDING) else ON_SCHEDULE
+    for task in jobs.AUTO_RERUN_TASKS
 }
-NOT_RETRIED = tuple(AUTO_RERUN)
+NOT_RETRIED = jobs.AUTO_RERUN_TASKS
 
 
 def fmt_duration(seconds: float | None) -> str:
@@ -141,11 +140,12 @@ async def model_health(settings: Settings, client: httpx.AsyncClient) -> dict:
 
 
 async def retry_failed_job(pool: AsyncConnectionPool, job_id: int) -> bool:
-    """Put a dead-lettered job back in its queue (it runs once more); False if it is not 'failed'."""
+    """Put a dead-lettered job back in its queue (it runs once more); False if it is not 'failed', or
+    if it is a run that starts again by itself (NOT_RETRIED)."""
     async with pool.connection() as conn:
-        cur = await conn.execute("SELECT status FROM procrastinate_jobs WHERE id = %s", (job_id,))
+        cur = await conn.execute("SELECT status, task_name FROM procrastinate_jobs WHERE id = %s", (job_id,))
         row = await cur.fetchone()
-    if row is None or row["status"] != "failed":
+    if row is None or row["status"] != "failed" or row["task_name"] in NOT_RETRIED:
         return False
     try:
         await job_app.job_manager.retry_job_by_id_async(job_id, retry_at=dt.datetime.now(dt.UTC))

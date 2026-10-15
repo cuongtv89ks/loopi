@@ -96,17 +96,19 @@ async def defer_embed(pool: AsyncConnectionPool) -> None:
         log.exception("could not defer the embedding job")
 
 
-async def prune_failed_embed_runs(pool: AsyncConnectionPool) -> int:
-    """Delete every failed embedding run except the newest; return how many went.
+async def prune_failed_auto_runs(pool: AsyncConnectionPool) -> int:
+    """Delete every failed run of each jobs.AUTO_RERUN_TASKS task except its newest; return how many went.
 
-    The queueing lock ``embed`` covers only 'todo' runs, so a persistent embedding error would add
-    a failed run every few minutes and push real failures off the dead-letter list. Events cascade.
+    These runs start again by themselves, so a persistent error (or a transient one, every few
+    days) would add failed runs nobody can clear and push real failures off the dead-letter list.
+    Events cascade, and Procrastinate's delete trigger unlinks a periodic defer that names the run.
     """
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "DELETE FROM procrastinate_jobs WHERE task_name = %s AND status = 'failed'"
-            " AND id < (SELECT max(id) FROM procrastinate_jobs WHERE task_name = %s AND status = 'failed')",
-            (jobs.EMBED_MOMENTS, jobs.EMBED_MOMENTS),
+            "DELETE FROM procrastinate_jobs WHERE id IN ("
+            " SELECT id FROM (SELECT id, row_number() OVER (PARTITION BY task_name ORDER BY id DESC) AS newer"
+            " FROM procrastinate_jobs WHERE status = 'failed' AND task_name = ANY(%s)) runs WHERE newer > 1)",
+            (list(jobs.AUTO_RERUN_TASKS),),
         )
         return cur.rowcount
 
@@ -135,6 +137,7 @@ async def dispatch_pending(
     are deferred only if the model server can serve them right now (one health check per tick);
     otherwise that work is skipped with one log line, and no job is created just to fail.
     """
+    await prune_failed_auto_runs(pool)
     queued = await _queued(pool)
     items = keyframes = 0
     for kind in ITEM_KINDS:
@@ -169,7 +172,6 @@ async def dispatch_pending(
             cur = await conn.execute("SELECT EXISTS (SELECT 1 FROM moment WHERE embedding IS NULL) AS waiting")
             waiting = (await cur.fetchone())["waiting"]
         if waiting:
-            await prune_failed_embed_runs(pool)
             await defer_embed(pool)
     if not (caption_ready and embed_ready):
         state = f"lacks {', '.join(health.missing)}" if health.reachable else "is unreachable"

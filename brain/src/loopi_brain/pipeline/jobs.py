@@ -27,6 +27,9 @@ DISPATCH_PENDING = "dispatch_pending"
 RETRY_STALLED = "retry_stalled_jobs"
 REMOVE_OLD_JOBS = "remove_old_jobs"
 PIPELINE_TASKS = (ANALYZE_VIDEO, CAPTION_KEYFRAME, TRANSCRIBE_AUDIO, INDEX_MARKER, EMBED_MOMENTS)
+# Runs that start again by themselves (the dispatcher asks for embedding runs; the scheduler starts
+# each periodic tick), so a failed one is never retried and only the newest failed one is kept.
+AUTO_RERUN_TASKS = (EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS)
 
 # Spec §12: a failed job is retried 3 times, then stays 'failed' (the dead-letter list).
 # RetryStrategy compares max_attempts with the attempts already made (0 on the first run),

@@ -193,6 +193,7 @@ async def test_a_failed_automatic_job_says_when_it_runs_again_and_has_no_retry_b
     assert label in row and note in row and "hx-post" not in row
     other = ({"tự chạy lại mỗi phút", "tự chạy lại theo lịch"} - {note}).pop()
     assert other not in row
+    assert (await web.post(f"/pipeline/jobs/{job_id}/retry", headers=HX)).status_code == 409  # not by hand either
 
 
 async def test_retry_all_requeues_every_dead_letter_but_the_embedding_run(web, pool, dev):
