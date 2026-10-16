@@ -1,0 +1,3 @@
+<span>Ngày {{ day.strftime("%d/%m/%Y") }} sẽ được xử lý lại ({{ what|join(", ") }}):
+{{ r.keyframes }} khung hình mô tả lại, {{ r.audio_items }} đoạn âm thanh nhận dạng lại{% if r.expired_audio %} ({{ r.expired_audio }} đoạn đã hết hạn, không làm lại được){% endif %},
+{{ r.chapters }} chương chia lại{% if r.recap %}, recap sẽ được viết lại{% endif %}.</span>

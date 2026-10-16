@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Cài đặt</h1>
+<section class="card" id="providers">
+  <h2>Provider và model</h2>
+  {% if providers.error %}<p class="err">Cấu hình provider lỗi: {{ providers.error }}</p>
+  {% else %}
+  <table>
+    <tr><th>Tác vụ</th><th>Provider:model (dự phòng)</th></tr>
+    {% for t in providers.tasks %}<tr><td>{{ t.label }}</td><td><code>{{ t.chain }}</code></td></tr>{% endfor %}
+  </table>
+  <p>Ảnh gửi lên cloud: {{ "có" if providers.privacy.allow_cloud_images else "không" }} ·
+     âm thanh gửi lên cloud: {{ "có" if providers.privacy.allow_cloud_audio else "không" }}</p>
+  {% endif %}
+  {% if not health.error %}
+    {% if not health.reachable %}<p class="err">Không kết nối được Ollama ({{ health.url }}).</p>
+    {% elif health.missing %}<p class="err">Thiếu model: {{ health.missing|join(", ") }}.</p>
+    {% else %}<p class="online">Ollama sẵn sàng, đủ model.</p>{% endif %}
+  {% endif %}
+  <p class="muted">Sửa trong <code>deploy/providers.yaml</code> rồi khởi động lại api và worker. Múi giờ của dòng thời gian: {{ tz }}.</p>
+</section>
+<section class="card" id="retention">
+  <h2>Lưu trữ</h2>
+  <form hx-post="/settings/retention" hx-target="#retention-result">
+    <label>Giữ video thô <input type="number" name="video_days" min="1" max="{{ max_days }}" required value="{{ retention.video_days }}"> ngày</label>
+    <label>Giữ audio thô <input type="number" name="audio_days" min="1" max="{{ max_days }}" required value="{{ retention.audio_days }}"> ngày</label>
+    <label><input type="checkbox" name="enabled"{% if retention.enabled %} checked{% endif %}> Bật dọn dữ liệu cũ</label>
+    <button>Lưu</button>
+  </form>
+  <p>Dọn dữ liệu cũ: {% if retention.enabled %}<strong>đang bật</strong>{% else %}<strong>đang tắt</strong> (chưa xoá gì){% endif %}.</p>
+  <p class="muted">Khi bật, lúc 03:00 mỗi đêm file thô cũ hơn số ngày này bị xoá vĩnh viễn (chỉ những đoạn đã phân tích xong). Keyframe, transcript, chương và recap được giữ mãi.</p>
+  <div id="retention-result"></div>
+</section>
+<section class="card" id="reprocess">
+  <h2>Xử lý lại một ngày</h2>
+  <form hx-post="/settings/reprocess" hx-target="#reprocess-result" hx-confirm="Xử lý lại ngày này bằng các model hiện tại?">
+    <input type="date" name="day" required>
+    {% for value, label in choices.items() %}<label><input type="checkbox" name="what" value="{{ value }}"> {{ label }}</label> {% endfor %}
+    <button>Xử lý lại</button>
+  </form>
+  <p class="muted">Transcript chỉ làm lại được khi audio thô còn giữ.</p>
+  <div id="reprocess-result"></div>
+</section>
+<section class="card">
+  <h2>Job lỗi</h2>
+  <p>Job lỗi và nút xử lý lại ở trang <a href="/pipeline">Xử lý</a>.</p>
+</section>
+{% endblock %}

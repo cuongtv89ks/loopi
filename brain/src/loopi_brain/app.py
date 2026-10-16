@@ -18,6 +18,7 @@ from .providers.ollama import DEFAULT_TIMEOUT
 from .web.day_routes import router as day_router
 from .web.routes import router as web_router
 from .web.search_routes import router as search_router
+from .web.settings_routes import router as settings_router
 
 log = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ def create_app(
     app.include_router(web_router)
     app.include_router(day_router)
     app.include_router(search_router)
+    app.include_router(settings_router)
     settings.media_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=settings.media_root), name="media")
     app.mount(
