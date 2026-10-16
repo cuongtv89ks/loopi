@@ -1,4 +1,4 @@
-<form class="card" hx-post="/eval/audio" hx-target="this" hx-swap="outerHTML">
+<form class="card" method="post" hx-post="/eval/audio" hx-target="this" hx-swap="outerHTML">
   <input type="hidden" name="item_id" value="{{ it.id }}">
   <input type="hidden" name="prefilled" value="{{ '0' if blind else '1' }}">
   <p><time>{{ it.time }}</time> · {{ it.part }} <audio controls preload="none" src="/audio/{{ it.id }}.opus"></audio></p>

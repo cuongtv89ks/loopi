@@ -5,7 +5,7 @@
   {% set c = s.caption %}{% include "_eval_caption.html" %}
   <ul>{% for x in s.scores %}<li>{{ x.model_version }}: {{ x.score }}/5{% for name, label in FLAG_LABELS.items() %}{% if x[name] %} · {{ label }}{% endif %}{% endfor %}</li>{% endfor %}</ul>
   {% if s.caption %}
-  <form hx-post="/eval/captions/{{ s.id }}/score" hx-target="#picture-{{ s.id }}" hx-swap="outerHTML">
+  <form method="post" hx-post="/eval/captions/{{ s.id }}/score" hx-target="#picture-{{ s.id }}" hx-swap="outerHTML">
     {% if s.needs_score %}<p class="err">Mô tả của model hiện tại chưa được chấm.</p>{% endif %}
     {% set button = "Chấm mô tả hiện tại" %}{% include "_eval_score.html" %}
   </form>

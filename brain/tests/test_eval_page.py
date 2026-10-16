@@ -330,10 +330,35 @@ async def test_every_question_and_run_post_refuses_a_request_without_htmx(pool, 
     assert await fetch_all(pool, "SELECT id FROM eval_run") == []  # nothing was asked for
 
 
-async def test_a_submit_without_htmx_is_a_post_so_words_never_reach_a_url(pool, dev, web):
+async def test_a_submit_without_htmx_is_a_post_so_words_never_reach_a_url(pool, pki_settings, dev, web):
     question_id = await questions.create_question(pool, "Khi nào đi chợ?", None, None)
-    for path in ("/eval", "/eval/questions", f"/eval/questions/{question_id}"):
-        forms = re.findall(r"<form\b[^>]*>", (await web.get(path)).text)
+    device = dev["device_id"]
+    # Every form of the audio and caption pages must render: a clip to label, a labelled clip, a keyframe to caption
+    # and a scored one. Without htmx a form is submitted as a GET of the page, which would put the typed reference
+    # transcript in the URL (access log, browser history).
+    candidate = await _spoken(pool, pki_settings, device, 0, "vi", SPEECH)
+    labelled = await _spoken(pool, pki_settings, device, 10, "vi", SPEECH)
+    await web.post("/eval/audio", data={"item_id": labelled, "lang": "vi", "reference": SPEECH}, headers=HX)
+    [clip] = await golden.audio_samples(pool)
+    proposed = await captioned_keyframe(pool, pki_settings, device, NINE + dt.timedelta(hours=3))
+    scored = await captioned_keyframe(pool, pki_settings, device, NINE)
+    await web.post("/eval/captions", data={"keyframe_id": scored, "score": "4"}, headers=HX)
+    [picture] = await golden.caption_samples(pool)
+    pages = {
+        "/eval": [],
+        "/eval/questions": [],
+        f"/eval/questions/{question_id}": [],
+        "/eval/audio": [f'src="/audio/{candidate}.opus"', f'src="/eval/audio/{clip["id"]}.opus"',
+                        'hx-post="/eval/audio"', f'hx-post="/eval/audio/{clip["id"]}"'],
+        "/eval/audio?blind=1": [f'src="/audio/{candidate}.opus"', f'src="/eval/audio/{clip["id"]}.opus"',
+                                'hx-post="/eval/audio"', f'hx-post="/eval/audio/{clip["id"]}"'],
+        "/eval/captions": [f'src="/thumb/{proposed}.jpg"', f'src="/eval/keyframes/{picture["id"]}.jpg"',
+                           'hx-post="/eval/captions"', f'hx-post="/eval/captions/{picture["id"]}/score"'],
+    }
+    for path, rendered in pages.items():
+        html = (await web.get(path)).text
+        assert all(part in html for part in rendered), (path, [part for part in rendered if part not in html])
+        forms = re.findall(r"<form\b[^>]*>", html)
         assert forms, path
         for tag in forms:
             assert 'method="post"' in tag, (path, tag)
