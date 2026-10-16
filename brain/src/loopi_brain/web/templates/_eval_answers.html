@@ -1,0 +1,7 @@
+<div id="answers">
+  <h2>Moment đúng ({{ answers|length }})</h2>
+  {% for a in answers %}
+  <p class="hit"><time>{{ a.time }}</time> · {{ a.kind_label }} · {% if a.text is not none %}{{ a.text }}{% else %}<span class="muted">(đã xử lý lại; vẫn nhận ra theo nguồn)</span>{% endif %}
+    <button hx-post="/eval/questions/{{ question.id }}/answers/{{ a.moment_id }}/delete" hx-target="#answers" hx-swap="outerHTML">Bỏ</button></p>
+  {% else %}<p class="err">Chưa chọn moment đúng nào: câu hỏi này chưa được tính vào recall.</p>{% endfor %}
+</div>

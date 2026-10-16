@@ -1,0 +1,49 @@
+<div id="runs"{% if active %} hx-get="/eval/runs" hx-trigger="every 15s" hx-swap="outerHTML"{% endif %}>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  <div class="scroll"><table>
+    <tr><th>Lần chạy</th><th>Trạng thái</th><th>Tiếng Việt (WER)</th><th>Tiếng Hàn (CER)</th><th>Tiếng Anh (WER)</th>
+      <th>Không lời: bịa câu</th><th>Hit@5</th></tr>
+    {% for r in runs %}
+    {% set live = r.results.asr.variants.live if r.results else none %}
+    <tr>
+      <td>{{ r.time }}{% if r.config.overrides %}<br><span class="muted">{% for k, v in r.config.overrides.items() %}{{ k }}={{ v }} {% endfor %}</span>{% endif %}</td>
+      <td>{% if r.status == "done" %}xong{% elif r.status == "failed" %}<span class="err">lỗi: {{ r.error }}</span>{% elif r.status == "running" %}đang chạy ({{ r.heard }}/{{ r.clips }} đoạn){% else %}đang chờ{% endif %}</td>
+      {% for lang in ("vi", "ko", "en") %}
+      {% set row = live.languages.get(lang) if live else none %}
+      <td>{% if row %}{% if row.over_limit %}<strong class="err">{{ row.score|pct }}</strong>{% else %}{{ row.score|pct }}{% endif %} <span class="muted">({{ row.clips }} đoạn)</span>{% else %}—{% endif %}</td>
+      {% endfor %}
+      <td>{% if live and live.no_speech.clips %}{{ live.no_speech.invented }}/{{ live.no_speech.clips }}{% else %}—{% endif %}</td>
+      <td>{% if r.results and r.results.recall.hit5 is defined %}{{ r.results.recall.hit5|pct }} <span class="muted">({{ r.results.recall.found5 }}/{{ r.results.recall.questions }})</span>{% elif r.results %}<span class="muted">chưa đo</span>{% else %}—{% endif %}</td>
+    </tr>
+    {% if r.results %}
+    <tr><td colspan="7"><details><summary>Chi tiết</summary>
+      {% set a = r.results.asr %}
+      <p>ASR {{ r.config.models.asr if r.config.models else "" }}, gain ≤ {{ r.config.max_gain_db }} dB, VAD {{ r.config.vad_threshold }},
+        luật đang bật: {{ r.config.rules|join(", ") or "không" }}. {{ a.clips }} đoạn{% if a.recorded %}, ghi từ {{ a.recorded.first }} đến {{ a.recorded.last }}{% endif %};
+        transcript chuẩn sửa từ chữ của Whisper: {{ a.prefilled }}, tự gõ sau khi nghe: {{ a.blind }}.
+        Lỗi trên {{ (wer_limit * 100)|round|int }} % (WER cho tiếng Việt, tiếng Anh; CER cho tiếng Hàn, D22) thì phải đổi model hoặc cấu hình (§14).</p>
+      <div class="scroll"><table><tr><th>Luật lọc</th><th>vi</th><th>ko</th><th>en</th><th>Không lời: bịa câu (số từ)</th><th>Bỏ khỏi lời nói thật</th></tr>
+      {% for name in variants if name in a.variants %}{% set v = a.variants[name] %}
+        <tr><td>{{ name }}{% if name == "live" %} ({{ v.rules|join(", ") or "không" }}){% endif %}</td>
+        {% for lang in ("vi", "ko", "en") %}{% set row = v.languages.get(lang) %}<td>{{ row.score|pct if row else "—" }}</td>{% endfor %}
+        <td>{{ v.no_speech.invented }}/{{ v.no_speech.clips }} ({{ v.no_speech.words }})</td>
+        <td>{{ v.dropped.segments }} đoạn ({{ v.dropped.words }} từ)</td></tr>
+      {% endfor %}</table></div>
+      <div class="scroll"><table><tr><th>Ngôn ngữ</th><th>Số đoạn</th><th>WER (95 %)</th><th>CER (95 %)</th></tr>
+      {% for lang in ("vi", "ko", "en") %}{% set row = live.languages.get(lang) %}
+        <tr><td>{{ lang }}</td>{% if row %}<td>{{ row.clips }}</td><td>{{ row.wer|pct }} ({{ row.wer_ci|span }})</td><td>{{ row.cer|pct }} ({{ row.cer_ci|span }})</td>{% else %}<td colspan="3">chưa đo được (không có đoạn nào)</td>{% endif %}</tr>
+      {% endfor %}</table></div>
+      <p>Không có lời nói: {{ live.no_speech.clips }} đoạn ({{ live.no_speech.with_text }} đoạn Whisper có viết chữ lúc gán nhãn), bịa câu ở {{ live.no_speech.invented }} ({{ live.no_speech.rate|pct }}, 95 % {{ live.no_speech.rate_ci|span }}).</p>
+      <p>Mô tả khung hình: {% for model, c in r.results.captions.items() %}{{ model }}: {{ c.scored }} khung hình, điểm trung bình {{ "%.2f"|format(c.mean) }}, ≥ 4: {{ c.good }}; sai số người {{ c.wrong_people }}, bịa đồ vật {{ c.invented_objects }}, sai hoạt động {{ c.wrong_activity }}. {% else %}chưa chấm. {% endfor %}</p>
+      {% set rc = r.results.recall %}
+      {% if rc.hit5 is defined %}
+      <p>Tìm kiếm ({{ rc.questions }} câu hỏi, mỗi câu tìm trong các ngày bạn đã chọn, không qua bộ lọc thời gian của chat): hit@5 {{ rc.hit5|pct }} = {{ rc.found5 }}/{{ rc.questions }} (95 % {{ rc.hit5_ci|span }}; mục tiêu 70 %, D22), recall@5 có giới hạn {{ rc.recall5|pct }}, hit@10 {{ rc.hit10|pct }}, MRR {{ "%.2f"|format(rc.mrr) }}{% if not rc.semantic %} — chỉ tìm theo chữ{% endif %}.</p>
+      <div class="scroll"><table><tr><th>Khoảng cách tối đa</th>{% for s in similarities %}<th>độ giống chữ ≥ {{ s }}</th>{% endfor %}</tr>
+      {% for d in distances %}<tr><td>{{ d }}</td>{% for g in rc.grid if g.max_distance == d %}<td>{{ g.found5 }}/{{ rc.questions }}</td>{% endfor %}</tr>{% endfor %}</table></div>
+      {% if r.missed %}<p>Chưa có moment đúng trong 5 kết quả đầu:</p><ul>{% for text in r.missed %}<li>{{ text }}</li>{% endfor %}</ul>{% endif %}
+      {% else %}<p>Tìm kiếm: chưa đo ({{ rc.error or "chưa có câu hỏi nào có moment đúng" }}).</p>{% endif %}
+    </details></td></tr>
+    {% endif %}
+    {% else %}<tr><td colspan="7" class="muted">Chưa chạy lần nào.</td></tr>{% endfor %}
+  </table></div>
+</div>

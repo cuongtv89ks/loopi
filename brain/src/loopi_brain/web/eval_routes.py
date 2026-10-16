@@ -5,13 +5,16 @@ A form the owner filled in is never lost to an error: a value that cannot be sav
 the reason next to it (a phone shows no message at the top of a long page)."""
 from __future__ import annotations
 
+import datetime as dt
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
-from .. import media
-from ..evaluation import golden, questions
+from .. import media, search
+from ..evaluation import golden, questions, runner
 from ..evaluation.golden import GoldenError
 from .routes import TEMPLATES, require_htmx
+from .search_routes import KIND_LABELS, OptionalDate, hit_view
 
 LANGUAGE_LABELS = {"vi": "Tiếng Việt", "ko": "Tiếng Hàn", "en": "Tiếng Anh",
                    golden.NOISE: "Có chữ nhưng có thể chỉ là tiếng ồn", "": "Whisper không nghe thấy lời nào",
@@ -48,7 +51,7 @@ async def eval_page(request: Request):
     return TEMPLATES.TemplateResponse(request, "eval.html", {
         "p": await golden.progress(pool), "q": await questions.counts(pool), "suggested": golden.AUDIO_SUGGESTED,
         "audio_target": golden.AUDIO_TARGET, "caption_target": golden.CAPTION_TARGET,
-        "question_target": questions.QUESTION_TARGET,
+        "question_target": questions.QUESTION_TARGET, **await _runs_context(request),
     })
 
 
@@ -265,3 +268,166 @@ async def picture_file(request: Request, sample_id: str):
     if not await golden.sample_exists(request.app.state.pool, "eval_caption", sample_id):
         raise HTTPException(status_code=404, detail="unknown golden keyframe")
     return _eval_file(request, golden.keyframe_path(sample_id), "image/jpeg")
+
+
+# ---- questions -----------------------------------------------------------------------------------------------------
+
+DAYS_BACKWARDS = "Ngày đầu không được sau ngày cuối."
+NO_QUESTION = "Câu hỏi cần có chữ."
+RUN_VALUES = {"gain": "Gain tối đa là 0–30 dB (D19).", "vad": "Ngưỡng VAD nằm giữa 0 và 1.",
+              "number": "Gain và ngưỡng VAD phải là số (hoặc để trống)."}
+
+
+def _question_error(text: str, first: dt.date | None, last: dt.date | None) -> str | None:
+    if first and last and first > last:
+        return DAYS_BACKWARDS
+    return None if golden.clean_text(text, questions.TEXT_MAX) else NO_QUESTION
+
+
+def _error(text: str, tag: str = "p") -> HTMLResponse:
+    return HTMLResponse(f'<{tag} class="err" role="alert">{text}</{tag}>')
+
+
+@router.get("/eval/questions", response_class=HTMLResponse)
+async def eval_questions_page(request: Request):
+    pool = request.app.state.pool
+    return TEMPLATES.TemplateResponse(request, "eval_questions.html", {
+        "questions": await questions.list_questions(pool), "q": await questions.counts(pool),
+        "target": questions.QUESTION_TARGET,
+    })
+
+
+@router.post("/eval/questions", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
+async def new_question(request: Request, text: str = Form(..., max_length=2000),
+                       first: OptionalDate = Form(default=None, alias="from"),
+                       last: OptionalDate = Form(default=None, alias="to")):
+    error = _question_error(text, first, last)
+    if error:  # shown next to the form, which keeps what was typed
+        return _error(error)
+    question_id = await questions.create_question(request.app.state.pool, text, first, last)
+    return HTMLResponse("", headers={"HX-Redirect": f"/eval/questions/{question_id}"})
+
+
+async def _question_view(request: Request, question_id: str, template: str) -> HTMLResponse:
+    """The question page, or just its list of correct moments, each with its time and kind."""
+    question = await questions.get_question(request.app.state.pool, question_id)
+    if question is None:
+        raise HTTPException(status_code=404, detail="unknown question")
+    zone = request.app.state.settings.zone
+    answers = [{**a, "time": _local(a, "ts_start", zone), "kind_label": KIND_LABELS.get(a["kind"], a["kind"])}
+               for a in question["answers"]]
+    return TEMPLATES.TemplateResponse(request, template, {"question": question, "answers": answers})
+
+
+@router.get("/eval/questions/{question_id}", response_class=HTMLResponse)
+async def eval_question_page(request: Request, question_id: str):
+    return await _question_view(request, question_id, "eval_question.html")
+
+
+@router.post("/eval/questions/{question_id}", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
+async def edit_question(request: Request, question_id: str, text: str = Form(..., max_length=2000),
+                        first: OptionalDate = Form(default=None, alias="from"),
+                        last: OptionalDate = Form(default=None, alias="to")):
+    error = _question_error(text, first, last)
+    if error:
+        return _error(error, "span")
+    if not await questions.update_question(request.app.state.pool, question_id, text, first, last):
+        raise HTTPException(status_code=404, detail="unknown question")
+    return HTMLResponse('<span class="online">Đã lưu câu hỏi.</span>')
+
+
+@router.post("/eval/questions/{question_id}/delete", response_class=HTMLResponse,
+             dependencies=[Depends(require_htmx)])
+async def remove_question(request: Request, question_id: str):
+    if not await questions.delete_question(request.app.state.pool, question_id):
+        raise HTTPException(status_code=404, detail="unknown question")
+    return HTMLResponse("", headers={"HX-Redirect": "/eval/questions"})
+
+
+# A POST, although it changes nothing: the words searched for (often the question itself) stay out of URLs and
+# so out of the access logs.
+@router.post("/eval/questions/{question_id}/search", response_class=HTMLResponse,
+             dependencies=[Depends(require_htmx)])
+async def question_search(
+    request: Request, question_id: str, q: str = Form(default="", max_length=2000),
+    first: OptionalDate = Form(default=None, alias="from"),
+    last: OptionalDate = Form(default=None, alias="to"),
+):
+    state = request.app.state
+    zone = state.settings.zone
+    if first and last and first > last:
+        return _error(DAYS_BACKWARDS)
+    hits = await questions.label_search(state.pool, search.request_router(state.settings, state.llm), q,
+                                        first, last, zone)
+    browsing = not search.clean_query(q)
+    return TEMPLATES.TemplateResponse(request, "_eval_hits.html", {
+        "question_id": question_id, "hits": [hit_view(hit, zone) for hit in hits], "browsing": browsing,
+        # Browsing stops at BROWSE_LIMIT moments of the days: say so rather than let a busy day look complete.
+        "cut_at": questions.BROWSE_LIMIT if browsing and len(hits) >= questions.BROWSE_LIMIT else None,
+    })
+
+
+@router.post("/eval/questions/{question_id}/answers", response_class=HTMLResponse,
+             dependencies=[Depends(require_htmx)])
+async def pick_answer(request: Request, question_id: str, moment_id: str = Form(...)):
+    if not await questions.add_answer(request.app.state.pool, question_id, moment_id):
+        raise HTTPException(status_code=404, detail="unknown question or moment")
+    return await _question_view(request, question_id, "_eval_answers.html")
+
+
+@router.post("/eval/questions/{question_id}/answers/{moment_id}/delete", response_class=HTMLResponse,
+             dependencies=[Depends(require_htmx)])
+async def drop_answer(request: Request, question_id: str, moment_id: str):
+    await questions.remove_answer(request.app.state.pool, question_id, moment_id)
+    return await _question_view(request, question_id, "_eval_answers.html")
+
+
+# ---- runs ----------------------------------------------------------------------------------------------------------
+
+TEMPLATES.env.filters["pct"] = runner.pct
+TEMPLATES.env.filters["span"] = runner.span
+
+
+async def _runs_context(request: Request, error: str | None = None) -> dict:
+    state = request.app.state
+    zone = state.settings.zone
+    runs = await runner.list_runs(state.pool)
+    texts = {q["id"]: q["text"] for q in await questions.list_questions(state.pool)}
+    views = []
+    for run in runs:
+        view = {**run, "time": _local(run, "requested_at", zone), "missed": []}
+        recall = (run["results"] or {}).get("recall", {})
+        for row in recall.get("per_question", []):
+            if not any(rank <= 5 for rank in row["ranks"]):
+                view["missed"].append(texts.get(row["id"], "(câu hỏi đã xoá)"))
+        views.append(view)
+    return {"runs": views, "active": any(r["status"] in ("waiting", "running") for r in runs),
+            "settings": state.settings, "wer_limit": runner.WER_LIMIT, "distances": runner.DISTANCES,
+            "similarities": runner.SIMILARITIES, "variants": runner.VARIANTS, "error": error}
+
+
+@router.get("/eval/runs", response_class=HTMLResponse)
+async def runs_fragment(request: Request):
+    return TEMPLATES.TemplateResponse(request, "_eval_runs.html", await _runs_context(request))
+
+
+def _optional_float(value: str) -> float | None:
+    return float(value) if value.strip() else None
+
+
+@router.post("/eval/runs", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
+async def start_run(request: Request, max_gain_db: str = Form(""), vad_threshold: str = Form("")):
+    state = request.app.state
+    error = None
+    try:
+        gain, vad = _optional_float(max_gain_db), _optional_float(vad_threshold)
+    except ValueError:
+        error = RUN_VALUES["number"]
+    else:
+        if gain is not None and not 0.0 <= gain <= runner.MAX_GAIN_DB:
+            error = RUN_VALUES["gain"]
+        elif vad is not None and not 0.0 < vad < 1.0:
+            error = RUN_VALUES["vad"]
+        else:
+            await runner.start_run(state.pool, state.settings, max_gain_db=gain, vad_threshold=vad)
+    return TEMPLATES.TemplateResponse(request, "_eval_runs.html", await _runs_context(request, error))

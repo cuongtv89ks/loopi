@@ -16,4 +16,16 @@
   <h2><a href="/eval/questions">Câu hỏi</a>: {{ q.questions }}/{{ question_target }} câu</h2>
   <p>Đã chọn moment đúng: {{ q.answered }}</p>
 </section>
+<section class="card" id="evaluation-runs">
+  <h2>Chạy đánh giá</h2>
+  <form method="post" hx-post="/eval/runs" hx-target="#runs" hx-swap="outerHTML">
+    <label>Gain tối đa (dB) <input type="number" name="max_gain_db" min="0" max="30" step="0.5" placeholder="{{ settings.asr_max_gain_db }}"></label>
+    <label>Ngưỡng VAD <input type="number" name="vad_threshold" min="0.05" max="0.95" step="0.05" placeholder="{{ settings.asr_vad_threshold }}"></label>
+    <button>Chạy đánh giá</button>
+  </form>
+  <p class="muted">Nhận dạng lại mọi đoạn trong bộ đánh giá bằng đường ASR hiện tại (để trống = cấu hình đang chạy), chấm mọi bộ
+    luật lọc, tổng hợp điểm mô tả và đo tìm kiếm. Worker làm từng đoạn một, sau mọi việc đang chờ, nên mất vài phút;
+    nên chạy ngoài 08:00–22:00 để không chiếm CPU lúc đang ghi.</p>
+  {% include "_eval_runs.html" %}
+</section>
 {% endblock %}

@@ -1,4 +1,5 @@
 import datetime as dt
+import re
 
 import httpx
 import pytest
@@ -9,11 +10,12 @@ from helpers import (
     analysed_audio,
     captioned_keyframe,
     fetch_all,
+    insert_moment,
     insert_segment,
     paired_device,
 )
 from loopi_brain.app import create_app
-from loopi_brain.evaluation import golden
+from loopi_brain.evaluation import golden, questions
 
 HX = {"HX-Request": "true"}
 NINE = dt.datetime(2026, 10, 20, 0, 0, tzinfo=dt.UTC)  # 09:00 in Seoul, after the device gain change (D19)
@@ -226,3 +228,180 @@ async def test_a_sample_deleted_meanwhile_answers_404_even_for_a_label_that_was_
     for gone in ("/eval/audio/01NOSUCH000000000000000000", "/eval/captions/01NOSUCH000000000000000000/score"):
         wrong = await web.post(gone, data={"lang": "ja", "score": "0"}, headers=HX)
         assert wrong.status_code == 404  # the page shows "Không tìm thấy", never a 422
+
+
+async def test_the_owner_writes_a_question_and_picks_its_correct_moments(pool, pki_settings, dev, web):
+    d = dev["device_id"]
+    market = await insert_moment(pool, d, kind="speech", ts=NINE, axis=0, text="Mai mình đi chợ <b>sớm</b>")
+    await insert_moment(pool, d, kind="visual", ts=NINE + dt.timedelta(hours=1), axis=3, text="A dark room")
+    form = {"text": "Khi nào đi chợ?", "from": "2026-10-20", "to": "2026-10-20"}
+    assert (await web.post("/eval/questions", data=form)).status_code == 403
+    created = await web.post("/eval/questions", data=form, headers=HX)
+    question_id = created.headers["HX-Redirect"].rsplit("/", 1)[1]
+    page = _flat((await web.get(f"/eval/questions/{question_id}")).text)
+    assert 'name="q" value="Khi nào đi chợ?"' in page and 'name="from" value="2026-10-20"' in page
+    assert "Chưa chọn moment đúng nào" in page
+    search = f"/eval/questions/{question_id}/search"
+    assert (await web.post(search, data={"q": "đi chợ"})).status_code == 403  # a POST, so no words in any URL
+    found = (await web.post(search, data={"q": "đi chợ", "from": "2026-10-20", "to": "2026-10-20"}, headers=HX)).text
+    assert "&lt;b&gt;sớm&lt;/b&gt;" in found and f'"moment_id": "{market}"' in found
+    picked = await web.post(f"/eval/questions/{question_id}/answers", data={"moment_id": market}, headers=HX)
+    assert "Moment đúng (1)" in picked.text and "&lt;b&gt;sớm" in picked.text
+    browsed = (await web.post(search, data={"q": "", "from": "2026-10-20", "to": "2026-10-20"}, headers=HX)).text
+    assert browsed.count("Chọn là đúng") == 2  # every moment of the day, in time order
+    assert "Chọn ngày" in (await web.post(search, data={"q": ""}, headers=HX)).text
+    backwards = await web.post(search, data={"q": "x", "from": "2026-10-21", "to": "2026-10-20"}, headers=HX)
+    assert backwards.status_code == 200 and "Ngày đầu không được sau ngày cuối." in backwards.text
+    assert "chọn 1–3 khoảnh khắc tiêu biểu" in _flat((await web.get("/eval/questions")).text)
+    listing = _flat((await web.get("/eval/questions")).text)
+    assert "1/25 câu hỏi, 1 đã có moment đúng" in listing and "Khi nào đi chợ?</a>" in listing
+    dropped = await web.post(f"/eval/questions/{question_id}/answers/{market}/delete", headers=HX)
+    assert "Moment đúng (0)" in dropped.text
+    assert (await web.post(f"/eval/questions/{question_id}/answers", data={"moment_id": "01NOSUCH"},
+                           headers=HX)).status_code == 404
+    edited = await web.post(f"/eval/questions/{question_id}", data={"text": "Đi chợ lúc mấy giờ?", "from": "", "to": ""},
+                            headers=HX)
+    assert "Đã lưu câu hỏi." in edited.text
+    assert (await questions.get_question(pool, question_id))["first_day"] is None
+    empty = await web.post(f"/eval/questions/{question_id}", data={"text": " "}, headers=HX)
+    assert empty.status_code == 200 and "Câu hỏi cần có chữ." in empty.text
+    for bad in ({"text": "x", "from": "2026-10-21", "to": "2026-10-20"}, {"text": " \x00 "}):
+        answer = await web.post("/eval/questions", data=bad, headers=HX)
+        assert answer.status_code == 200 and "HX-Redirect" not in answer.headers and 'class="err"' in answer.text
+    removed = await web.post(f"/eval/questions/{question_id}/delete", headers=HX)
+    assert removed.headers["HX-Redirect"] == "/eval/questions"
+    for gone in (web.get(f"/eval/questions/{question_id}"),
+                 web.post(f"/eval/questions/{question_id}/delete", headers=HX),
+                 web.post(f"/eval/questions/{question_id}", data={"text": "x"}, headers=HX)):
+        assert (await gone).status_code == 404
+
+
+async def test_a_run_is_started_from_the_page_and_its_numbers_are_shown(pool, pki_settings, dev, web, monkeypatch):
+    from helpers import FakeTranscriber, make_ctx, run_jobs
+    from loopi_brain.pipeline import asr
+    from loopi_brain.pipeline.asr import Region, RegionResult, SegmentResult
+
+    item = await _spoken(pool, pki_settings, dev["device_id"], 0, "vi", "Mai mình đi chợ")
+    await golden.add_audio(pool, pki_settings, item, golden.AudioLabel("vi", False, "Mai mình đi chợ nhé"))
+    missed = await questions.create_question(pool, "Phòng tối lúc nào?", None, None)
+    room = await insert_moment(pool, dev["device_id"], kind="visual", ts=NINE, axis=3, text="A dark room")
+    await questions.add_answer(pool, missed, room)
+    assert "Chưa chạy lần nào." in (await web.get("/eval")).text
+    for bad, said in (({"vad_threshold": "2"}, "Ngưỡng VAD nằm giữa 0 và 1."), ({"max_gain_db": "31"}, "0–30 dB"),
+                      ({"max_gain_db": "loud"}, "phải là số")):
+        answer = await web.post("/eval/runs", data=bad, headers=HX)
+        assert answer.status_code == 200 and said in answer.text and "Chưa chạy lần nào." in answer.text
+    started = await web.post("/eval/runs", data={"max_gain_db": "", "vad_threshold": "0.4"}, headers=HX)
+    assert "đang chờ" in started.text and 'hx-trigger="every 15s"' in started.text and "vad_threshold=0.4" in started.text
+    again = await web.post("/eval/runs", data={}, headers=HX)
+    assert again.text.count("đang chờ") == 1  # one run at a time
+    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _threshold: [Region(0.0, 2.0)])
+    heard = RegionResult("vi", 0.9, [SegmentResult(0.0, 2.0, "Mai mình đi chợ", -0.3, 0.05, 1.2)])
+    await run_jobs(make_ctx(pool, pki_settings, transcriber=FakeTranscriber(heard)))
+    page = _flat((await web.get("/eval")).text)
+    assert "xong" in page and "20.0 % <span class=\"muted\">(1 đoạn)</span>" in page
+    assert "hit@5 0.0 % = 0/1 (95 % 0.0–79.3 %; mục tiêu 70 %, D22)" in page and "(0/1)</span>" in page
+    assert "WER (95 %)" in page and "ghi từ 2026-10-20 đến 2026-10-20" in page and "0 đoạn (0 từ)" in page
+    assert "Chưa có moment đúng trong 5 kết quả đầu:</p><ul><li>Phòng tối lúc nào?</li>" in page
+    order = [page.index(f"<tr><td>{name}") for name in ("live", "none", "outro", "lone_phrase", "short_foreign", "all")]
+    assert order == sorted(order)
+    assert 'hx-trigger="every 15s"' not in page  # nothing running any more
+    fragment = await web.get("/eval/runs")  # what the page polls while a run waits or runs
+    assert fragment.text.startswith('<div id="runs">') and "xong" in fragment.text
+
+
+async def test_every_question_and_run_post_refuses_a_request_without_htmx(pool, pki_settings, dev, web):
+    market = await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, axis=0, text="Mai mình đi chợ")
+    question_id = await questions.create_question(pool, "Khi nào đi chợ?", None, None)
+    await questions.add_answer(pool, question_id, market)
+    base = f"/eval/questions/{question_id}"
+    posts = [("/eval/questions", {"text": "Một câu hỏi mới"}), (base, {"text": "Sửa câu hỏi"}), (f"{base}/delete", {}),
+             (f"{base}/search", {"q": "đi chợ", "from": "2026-10-20"}), (f"{base}/answers", {"moment_id": market}),
+             (f"{base}/answers/{market}/delete", {}), ("/eval/runs", {"vad_threshold": "0.4"})]
+    for path, data in posts:
+        assert (await web.post(path, data=data)).status_code == 403, path
+    after = await questions.get_question(pool, question_id)
+    assert after["text"] == "Khi nào đi chợ?" and [a["moment_id"] for a in after["answers"]] == [market]
+    assert (await questions.counts(pool))["questions"] == 1
+    assert await fetch_all(pool, "SELECT id FROM eval_run") == []  # nothing was asked for
+
+
+async def test_a_submit_without_htmx_is_a_post_so_words_never_reach_a_url(pool, dev, web):
+    question_id = await questions.create_question(pool, "Khi nào đi chợ?", None, None)
+    for path in ("/eval", "/eval/questions", f"/eval/questions/{question_id}"):
+        forms = re.findall(r"<form\b[^>]*>", (await web.get(path)).text)
+        assert forms, path
+        for tag in forms:
+            assert 'method="post"' in tag, (path, tag)
+
+
+async def test_browsing_a_busy_day_says_when_the_list_stops(pool, dev, web, monkeypatch):
+    for minute in range(3):
+        await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE + dt.timedelta(minutes=minute), axis=0)
+    question_id = await questions.create_question(pool, "Một câu hỏi", None, None)
+    search = f"/eval/questions/{question_id}/search"
+    day = {"q": "", "from": "2026-10-20", "to": "2026-10-20"}
+    assert "Chỉ hiện" not in (await web.post(search, data=day, headers=HX)).text
+    monkeypatch.setattr(questions, "BROWSE_LIMIT", 2)
+    cut = (await web.post(search, data=day, headers=HX)).text
+    assert cut.count("Chọn là đúng") == 2 and "Chỉ hiện 2 khoảnh khắc đầu của các ngày này" in cut
+
+
+async def test_the_run_table_shows_a_failed_run_a_running_one_and_a_run_over_nothing(pool, pki_settings, web):
+    from psycopg.types.json import Jsonb
+
+    from helpers import make_ctx, run_jobs
+    from loopi_brain import devices
+
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO eval_run (id, status, config, error) VALUES (%s, 'failed', %s, %s)",
+                           (devices.new_id(), Jsonb({"overrides": {}}), "TimeoutError: the model server"))
+    page = _flat((await web.get("/eval/runs")).text)
+    assert "lỗi: TimeoutError: the model server" in page and 'hx-trigger="every 15s"' not in page
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO eval_run (id, status, config) VALUES (%s, 'running', %s)",
+                           (devices.new_id(), Jsonb({"overrides": {"max_gain_db": 12.0}})))
+    page = _flat((await web.get("/eval/runs")).text)
+    assert "đang chạy (0/0 đoạn)" in page and "max_gain_db=12.0" in page and 'hx-trigger="every 15s"' in page
+    async with pool.connection() as conn:  # a worker that finished it: no golden clip, no question
+        await conn.execute("UPDATE eval_run SET status = 'failed', error = 'stopped' WHERE status = 'running'")
+    await web.post("/eval/runs", data={}, headers=HX)
+    await run_jobs(make_ctx(pool, pki_settings))
+    page = _flat((await web.get("/eval/runs")).text)
+    assert "xong" in page and "chưa đo được (không có đoạn nào)" in page and "chưa chấm." in page
+    assert "Tìm kiếm: chưa đo (chưa có câu hỏi nào có moment đúng)" in page and "<span class=\"muted\">chưa đo</span>" in page
+
+
+async def test_a_question_deleted_after_a_run_is_still_listed_as_missed(pool, pki_settings, dev, web):
+    from helpers import make_ctx, run_jobs
+
+    question_id = await questions.create_question(pool, "Phòng tối lúc nào?", None, None)
+    room = await insert_moment(pool, dev["device_id"], kind="visual", ts=NINE, axis=3, text="A dark room")
+    await questions.add_answer(pool, question_id, room)
+    await web.post("/eval/runs", data={}, headers=HX)
+    await run_jobs(make_ctx(pool, pki_settings))
+    assert "<li>Phòng tối lúc nào?</li>" in (await web.get("/eval/runs")).text
+    await questions.delete_question(pool, question_id)
+    assert "<li>(câu hỏi đã xoá)</li>" in (await web.get("/eval/runs")).text
+
+
+async def test_the_words_of_a_question_and_of_a_search_stay_out_of_the_logs(pool, pki_settings, dev, web, caplog):
+    import logging
+
+    from helpers import make_ctx, run_jobs
+
+    caplog.set_level(logging.DEBUG)
+    moment = await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, axis=0, text="chuyện bí mật gia đình")
+    created = await web.post("/eval/questions", data={"text": "chuyện bí mật gia đình", "from": "2026-10-20"}, headers=HX)
+    base = created.headers["HX-Redirect"]
+    assert "bí mật" not in base  # the redirect is a URL
+    question_id = base.rsplit("/", 1)[1]
+    search = await web.post(f"{base}/search", data={"q": "bí mật gia đình", "from": "2026-10-20"}, headers=HX)
+    assert moment in search.text
+    await web.post(f"{base}/answers", data={"moment_id": moment}, headers=HX)
+    await web.post(base, data={"text": "chuyện bí mật khác"}, headers=HX)
+    await web.post(f"{base}/search", data={"q": "bí\x00 mật", "from": "2026-10-20"}, headers=HX)  # reaches the database
+    await web.post("/eval/runs", data={}, headers=HX)
+    await run_jobs(make_ctx(pool, pki_settings))
+    await web.post(f"/eval/questions/{question_id}/delete", headers=HX)
+    assert caplog.records and "bí mật" not in caplog.text and "bí\x00" not in caplog.text

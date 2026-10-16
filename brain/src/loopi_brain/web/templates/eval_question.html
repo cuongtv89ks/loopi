@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Đánh giá · Câu hỏi</h1>
+<p><a href="/eval/questions">← Câu hỏi</a></p>
+<form class="card" method="post" hx-post="/eval/questions/{{ question.id }}" hx-target="#saved">
+  <input name="text" required maxlength="500" size="60" value="{{ question.text }}">
+  <label>Từ ngày <input type="date" name="from" value="{{ question.first_day or '' }}"></label>
+  <label>đến ngày <input type="date" name="to" value="{{ question.last_day or '' }}"></label>
+  <button>Lưu</button> <span id="saved"></span>
+  <button hx-post="/eval/questions/{{ question.id }}/delete" hx-confirm="Xoá câu hỏi này?">Xoá câu hỏi</button>
+</form>
+{% include "_eval_answers.html" %}
+<form class="card" method="post" hx-post="/eval/questions/{{ question.id }}/search" hx-target="#hits">
+  <h2>Tìm khoảnh khắc đúng</h2>
+  <input type="search" name="q" value="{{ question.text }}" maxlength="500" size="50">
+  <label>Từ ngày <input type="date" name="from" value="{{ question.first_day or '' }}"></label>
+  <label>đến ngày <input type="date" name="to" value="{{ question.last_day or '' }}"></label>
+  <button>Tìm</button>
+  <p class="muted">Tìm rộng hơn trang Tìm kiếm (tối đa 50 kết quả). Để trống ô chữ và chọn ngày để xem mọi khoảnh khắc của ngày đó theo giờ.
+    Chọn 1–3 khoảnh khắc tiêu biểu là đủ.</p>
+</form>
+<div id="hits"></div>
+{% endblock %}

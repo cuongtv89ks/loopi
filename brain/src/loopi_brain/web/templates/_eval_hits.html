@@ -1,0 +1,14 @@
+{% if hits %}
+<ul class="hits">
+  {% for h in hits %}
+  <li class="hit">
+    {% if h.keyframe_id %}<img src="/thumb/{{ h.keyframe_id }}.jpg" loading="lazy" alt="" width="160">{% endif %}
+    <div><time>{{ h.time }}</time> · {{ h.kind_label }}{% if h.lang and h.kind == "speech" %} <span class="lang">{{ h.lang|upper }}</span>{% endif %}
+      <p>{{ h.text }}</p>
+      <button hx-post="/eval/questions/{{ question_id }}/answers" hx-vals='{"moment_id": "{{ h.id }}"}' hx-target="#answers" hx-swap="outerHTML">Chọn là đúng</button></div>
+  </li>
+  {% endfor %}
+</ul>
+{% if cut_at %}<p class="muted">Chỉ hiện {{ cut_at }} khoảnh khắc đầu của các ngày này, theo giờ. Chọn khoảng ngày ngắn hơn để xem các khoảnh khắc sau đó.</p>{% endif %}
+{% elif browsing %}<p class="muted">Chọn ngày để xem mọi khoảnh khắc của ngày đó, hoặc nhập từ để tìm.</p>
+{% else %}<p>Không tìm thấy khoảnh khắc nào.</p>{% endif %}

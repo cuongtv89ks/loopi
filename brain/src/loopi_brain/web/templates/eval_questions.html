@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Đánh giá · Câu hỏi</h1>
+<p><a href="/eval">← Đánh giá</a> · {{ q.questions }}/{{ target }} câu hỏi, {{ q.answered }} đã có moment đúng</p>
+<p class="muted">Viết câu hỏi như khi hỏi trang Tìm kiếm, rồi chọn 1–3 khoảnh khắc tiêu biểu trả lời đúng câu đó (một
+  câu hỏi được tính là tìm thấy khi ít nhất một khoảnh khắc đúng nằm trong 5 kết quả đầu, D22). "Hôm qua", "sáng nay"
+  trong câu hỏi: chọn ngày mà câu hỏi nói tới.</p>
+<form class="card" method="post" hx-post="/eval/questions" hx-target="#question-result">
+  <input name="text" required maxlength="500" size="60" placeholder="Ví dụ: Hôm qua mình hẹn đi đâu?">
+  <label>Từ ngày <input type="date" name="from"></label>
+  <label>đến ngày <input type="date" name="to"></label>
+  <button>Thêm câu hỏi</button>
+  <div id="question-result"></div>
+</form>
+<div class="scroll"><table>
+  <tr><th>Câu hỏi</th><th>Ngày</th><th>Moment đúng</th></tr>
+  {% for row in questions %}
+  <tr><td><a href="/eval/questions/{{ row.id }}">{{ row.text }}</a></td>
+    <td>{% if row.first_day or row.last_day %}{{ row.first_day or "…" }} – {{ row.last_day or "…" }}{% else %}—{% endif %}</td>
+    <td>{% if row.answers %}{{ row.answers }}{% else %}<span class="err">chưa chọn</span>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="3" class="muted">Chưa có câu hỏi nào.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}
