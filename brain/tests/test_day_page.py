@@ -234,3 +234,28 @@ async def test_thumbnails_are_small_cached_and_never_leave_the_media_root(web, p
         await conn.execute("UPDATE keyframe SET path = '../secret.jpg' WHERE id = %s", (kf,))
     assert (await web.get(f"/thumb/{kf}.jpg")).status_code == 404
     assert not (pki_settings.media_root.parent / "thumbs").exists()
+
+
+async def test_a_thumbnail_made_after_its_keyframe_was_forgotten_is_removed_and_not_served(
+    web, pool, pki_settings, dev, database_url, monkeypatch
+):
+    import psycopg
+
+    from loopi_brain import thumbs
+
+    device_id = dev["device_id"]
+    video = await insert_item(pool, device_id, kind="video", started_at=NINE)
+    kf = await insert_keyframe(pool, pki_settings, video, device_id, NINE)
+    row = await fetch_one(pool, "SELECT path FROM keyframe WHERE id = %s", (kf,))
+    thumb = pki_settings.media_root / row["path"].replace("keyframes/", "thumbs/", 1)
+    real = thumbs.make_thumb
+
+    def made_then_forgotten(src, dst):  # runs in a worker thread
+        real(src, dst)
+        with psycopg.connect(database_url, autocommit=True) as conn:  # the forget commits meanwhile
+            conn.execute("DELETE FROM keyframe WHERE id = %s", (kf,))
+
+    monkeypatch.setattr(thumbs, "make_thumb", made_then_forgotten)
+    r = await web.get(f"/thumb/{kf}.jpg")
+    assert r.status_code == 404 and r.headers["content-type"] != "image/jpeg"
+    assert not thumb.exists()

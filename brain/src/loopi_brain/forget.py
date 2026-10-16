@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 
 import anyio
 from psycopg import AsyncConnection
+from psycopg.errors import DeadlockDetected
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
@@ -35,7 +36,9 @@ from .pipeline.state import lock_day
 
 log = logging.getLogger(__name__)
 MAX_RANGE = dt.timedelta(days=7)  # one request stays a few seconds: ≈ 20 000 files and their rows at most
-LOCK_ATTEMPTS = 3  # passes to learn which days to lock; one is enough unless a recording arrives meanwhile
+# Passes to lock the days and delete: one is enough unless a recording arrives meanwhile, or another writer
+# (a caption, an embedding batch) wins a deadlock against this transaction, which then changed nothing.
+LOCK_ATTEMPTS = 3
 # An item touches [start, end) if it overlaps it, or is a zero-length item (a marker) inside it.
 _ITEMS = "started_at < %(end)s AND (ended_at > %(start)s OR started_at >= %(start)s)"
 
@@ -124,8 +127,11 @@ async def _derived(conn: AsyncConnection, targets: dict, days: list[dt.date], sp
     return {"commitments": commitments, "chapters": chapters, "recaps": (await cur.fetchone())["n"]}
 
 
-async def preview(pool: AsyncConnectionPool, start: dt.datetime, end: dt.datetime, zone) -> ForgetCounts:
-    """What ``forget_range`` would delete; changes nothing."""
+async def preview_span(
+    pool: AsyncConnectionPool, start: dt.datetime, end: dt.datetime, zone
+) -> tuple[ForgetCounts, tuple[dt.datetime, dt.datetime]]:
+    """What ``forget_range`` would delete, and the span it would cover (the range widened to the recordings that
+    go whole); changes nothing."""
     check_range(start, end)
     async with pool.connection() as conn:
         targets = await _targets(conn, start, end, lock=False)
@@ -134,8 +140,14 @@ async def preview(pool: AsyncConnectionPool, start: dt.datetime, end: dt.datetim
         item_ids = [r["id"] for r in targets["items"]]
         cur = await conn.execute("SELECT count(*) AS n FROM transcript_segment WHERE item_id = ANY(%s)", (item_ids,))
         segments = (await cur.fetchone())["n"]
-    return ForgetCounts(items=len(targets["items"]), keyframes=len(targets["keyframes"]), transcript_segments=segments,
-                        moments=len(targets["moments"]), **derived)
+    counts = ForgetCounts(items=len(targets["items"]), keyframes=len(targets["keyframes"]),
+                          transcript_segments=segments, moments=len(targets["moments"]), **derived)
+    return counts, span
+
+
+async def preview(pool: AsyncConnectionPool, start: dt.datetime, end: dt.datetime, zone) -> ForgetCounts:
+    """What ``forget_range`` would delete; changes nothing."""
+    return (await preview_span(pool, start, end, zone))[0]
 
 
 def _files(targets: dict) -> tuple[list[str], dict[str, str]]:
@@ -230,8 +242,13 @@ async def forget_range(pool: AsyncConnectionPool, settings: Settings, start: dt.
             break
         except _MoreDays as more:  # a recording arrived since the first look: lock all the days, again in order
             days = sorted(set(days) | set(more.days))
+        except DeadlockDetected:  # this transaction was the victim: it rolled back, nothing changed
+            log.warning("forget %s .. %s lost a deadlock; trying again", start.isoformat(), end.isoformat())
     else:
-        raise RuntimeError("the recordings of this range keep changing; nothing was forgotten, try again")
+        raise RuntimeError(
+            "this range could not be locked (its recordings keep changing, or the database kept refusing);"
+            " nothing was forgotten, try again"
+        )
     for day in days:
         try:
             await chapter_rules.defer_build(pool, day, zone)

@@ -15,7 +15,7 @@ from ..days import day_bounds_utc, local_now
 from ..pipeline import jobs
 from ..pipeline import moments as moment_rules
 from ..pipeline import recap as recap_rules
-from ..pipeline.state import clear_day_error
+from ..pipeline.state import clear_day_error, keyframe_exists
 from .markdown import render_markdown
 from .routes import MARKER_LABEL, TEMPLATES, require_htmx
 
@@ -184,6 +184,9 @@ async def thumbnail(request: Request, keyframe_id: str):
         raise HTTPException(status_code=404, detail="keyframe file missing")
     if not dst.is_file():
         await anyio.to_thread.run_sync(thumbs.make_thumb, src, dst)
+        if not await keyframe_exists(request.app.state.pool, keyframe_id):  # forgotten while the thumbnail was made
+            media.remove_files(settings.media_root, [str(thumbs.thumb_rel(rel))])
+            raise HTTPException(status_code=404, detail="unknown keyframe")
     return FileResponse(dst, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 

@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import PurePosixPath
 
 import httpx
+import psycopg
 import pytest
 
 from helpers import (
@@ -526,9 +527,12 @@ async def test_the_form_values_are_local_times_without_an_offset(web, pool, pki_
     assert await fetch_all(pool, "SELECT id FROM forget_log") == []
 
 
-@pytest.mark.parametrize("start, end", [("0001-01-01T00:00", "0001-01-02T00:00"), ("9999-12-30T00:00", "9999-12-31T23:59")])
+@pytest.mark.parametrize(
+    "start, end, day",
+    [("0001-01-01T00:00", "0001-01-02T00:00", "0001-01-01"), ("9999-12-30T00:00", "9999-12-31T23:59", "9999-12-31")],
+)
 async def test_a_range_at_the_edge_of_the_calendar_forgets_nothing_and_does_not_fail(
-    web, pool, pki_settings, dev, start, end, caplog
+    web, pool, pki_settings, dev, start, end, day, caplog
 ):
     await insert_item(pool, dev["device_id"], kind="marker", started_at=NINE, seconds=0)
     form = {"start": start, "end": end}
@@ -536,4 +540,117 @@ async def test_a_range_at_the_edge_of_the_calendar_forgets_nothing_and_does_not_
     with caplog.at_level(logging.ERROR):  # the chapter request for a day without UTC bounds is logged, not raised
         r = await web.post("/settings/forget", data={**form, "confirm": "yes"}, headers=HX)
     assert r.status_code == 200 and "0 đoạn ghi" in r.text
+    assert f"could not ask for the chapters of {day}" in caplog.text
     assert len(await fetch_all(pool, "SELECT id FROM item")) == 1
+
+
+async def test_recordings_of_every_device_in_the_range_go_and_only_those(pool, pki_settings, dev):
+    other = await paired_device(pool, pki_settings)
+    first, second = dev["device_id"], other["device_id"]
+    gone = [
+        await _recorded(pool, pki_settings, first, "video", NINE),
+        await _recorded(pool, pki_settings, second, "audio", NINE + dt.timedelta(minutes=5)),
+        await _recorded(pool, pki_settings, second, "marker", NINE + dt.timedelta(minutes=6), seconds=0),
+    ]
+    kept = [
+        await _recorded(pool, pki_settings, first, "audio", NINE + dt.timedelta(hours=2)),
+        await _recorded(pool, pki_settings, second, "video", NINE - dt.timedelta(hours=2)),
+    ]
+    counts = await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)
+    assert (counts.items, counts.files, counts.files_failed) == (3, 5, 0)
+    assert {r["id"] for r in await fetch_all(pool, "SELECT id FROM item")} == {k["id"] for k in kept}
+    assert not any((pki_settings.media_root / rel).exists() for g in gone for rel in g["files"])
+    assert all((pki_settings.media_root / rel).exists() for k in kept for rel in k["files"])
+
+
+async def test_a_video_that_was_not_remuxed_yet_loses_an_mp4_that_already_exists(pool, pki_settings, dev):
+    item = await insert_item(pool, dev["device_id"], kind="video", started_at=NINE, status="stored")
+    raw = (await fetch_one(pool, "SELECT raw_path, view_path FROM item WHERE id = %s", (item,)))
+    assert raw["view_path"] is None  # the remux has not recorded its result
+    mp4 = raw["raw_path"].replace("raw/", "view/", 1).replace(".h264", ".mp4")
+    _write(pki_settings, raw["raw_path"])
+    _write(pki_settings, mp4)  # ... but its output is already on disk
+    counts = await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)
+    assert (counts.items, counts.files, counts.files_failed) == (1, 2, 0)
+    assert not (pki_settings.media_root / mp4).exists()
+
+
+async def test_a_remux_that_ends_after_a_forget_leaves_no_mp4_behind(pool, pki_settings, dev, monkeypatch):
+    item = await insert_item(pool, dev["device_id"], kind="video", started_at=NINE, status="stored")
+    raw = (await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item,)))["raw_path"]
+    _write(pki_settings, raw)
+    made = []
+
+    async def forgotten_while_ffmpeg_ran(src, dst, fps):
+        await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)  # commits and deletes its files first ...
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"mp4")  # ... then the remux finishes and writes its output
+        made.append(dst)
+
+    monkeypatch.setattr(media, "remux_to_mp4", forgotten_while_ffmpeg_ran)
+    await media.remux_item(pool, pki_settings, item)
+    assert len(made) == 1 and not made[0].exists()
+    assert await fetch_all(pool, "SELECT id FROM item") == []
+    assert [p for p in pki_settings.media_root.rglob("*") if p.is_file()] == []
+
+
+async def test_a_link_to_a_file_that_stays_is_removed_without_the_file(pool, pki_settings, dev):
+    kept = await _recorded(pool, pki_settings, dev["device_id"], "audio", NINE + dt.timedelta(hours=1))
+    rel = f"raw/{dev['device_id']}/2026/10/14/link.opus"
+    link = pki_settings.media_root / rel
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(pki_settings.media_root / kept["files"][0])  # a recording of the range whose "file" is a link
+    await insert_item(pool, dev["device_id"], kind="audio", started_at=NINE, raw_path=rel)
+    counts = await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)
+    assert (counts.items, counts.files, counts.files_failed) == (1, 1, 0)
+    assert not link.is_symlink()
+    assert all((pki_settings.media_root / f).exists() for f in kept["files"])
+
+
+async def test_a_forget_that_loses_a_deadlock_tries_again(pool, pki_settings, dev, monkeypatch, caplog):
+    await insert_item(pool, dev["device_id"], kind="marker", started_at=NINE, seconds=0)
+    real = forget._delete_rows
+    attempts = []
+
+    async def victim_once(*args):
+        attempts.append(args)
+        if len(attempts) == 1:
+            raise psycopg.errors.DeadlockDetected("deadlock detected")
+        return await real(*args)
+
+    monkeypatch.setattr(forget, "_delete_rows", victim_once)
+    with caplog.at_level(logging.WARNING, logger="loopi_brain.forget"):
+        counts = await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)
+    assert counts.items == 1 and len(attempts) == 2 and await fetch_all(pool, "SELECT id FROM item") == []
+    assert "deadlock" in caplog.text
+    assert len(await fetch_all(pool, "SELECT id FROM forget_log")) == 1  # one audit row, written once
+
+
+async def test_a_forget_that_keeps_losing_deadlocks_gives_up_without_changing_anything(pool, pki_settings, dev,
+                                                                                       monkeypatch):
+    await insert_item(pool, dev["device_id"], kind="marker", started_at=NINE, seconds=0)
+
+    async def always_victim(*args):
+        raise psycopg.errors.DeadlockDetected("deadlock detected")
+
+    monkeypatch.setattr(forget, "_delete_rows", always_victim)
+    with pytest.raises(RuntimeError, match="nothing was forgotten"):
+        await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)
+    assert len(await fetch_all(pool, "SELECT id FROM item")) == 1
+
+
+async def test_the_preview_says_when_a_recording_on_the_edge_widens_what_is_deleted(web, pool, pki_settings, dev):
+    await _straddler(pool, pki_settings, dev["device_id"])  # 23:59:30 on the 14th -> 00:00:30 on the 15th
+    form = {"start": "2026-10-15T00:00", "end": "2026-10-15T00:10"}
+    r = await web.post("/settings/forget/preview", data=form, headers=HX)
+    assert r.status_code == 200
+    assert "Thực tế sẽ xoá từ 14/10/2026 23:59:30 đến 15/10/2026 00:10:00" in r.text  # what the confirm will remove
+    assert "trước khi bạn bấm xác nhận" in r.text  # recordings uploaded meanwhile go too
+    assert 'value="2026-10-15T00:00"' in r.text  # the confirm still carries what was typed
+
+
+async def test_the_preview_of_a_range_no_recording_crosses_does_not_claim_a_wider_span(web, pool, pki_settings, dev):
+    await _morning(pool, pki_settings, dev["device_id"])
+    r = await web.post("/settings/forget/preview", data={"start": "2026-10-14T09:00", "end": "2026-10-14T09:30"},
+                       headers=HX)
+    assert "Thực tế sẽ xoá" not in r.text and "trước khi bạn bấm xác nhận" in r.text

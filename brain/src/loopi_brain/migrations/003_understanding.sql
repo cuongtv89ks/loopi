@@ -60,8 +60,9 @@ CREATE TABLE setting (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Audit of "Quên khoảng thời gian": what was asked and how much went (no content). `pending_files` lists the media
--- paths still to delete after the commit; the nightly retention run retries them until the list is empty.
+-- Audit of "Quên khoảng thời gian": the span that was deleted (the requested range widened to the whole recordings
+-- that crossed its edges) and how much went (no content). `pending_files` lists the media paths still to delete after
+-- the commit; the nightly retention run retries them until the list is empty.
 CREATE TABLE forget_log (
     id             TEXT PRIMARY KEY,
     range_start    TIMESTAMPTZ NOT NULL,

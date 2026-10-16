@@ -3,7 +3,9 @@
      {{ c.items }} đoạn ghi, {{ c.keyframes }} khung hình, {{ c.transcript_segments }} đoạn transcript,
      {{ c.moments }} khoảnh khắc, {{ c.commitments }} việc cần làm; {{ c.chapters }} chương mất tóm tắt và
      {{ c.recaps }} recap sẽ được viết lại.</p>
-  <p class="muted">Dữ liệu thiết bị chưa gửi lên brain (ví dụ khi mất mạng) không bị xoá.</p>
+  {% if widened %}<p><strong>Thực tế sẽ xoá từ {{ span_start.strftime("%d/%m/%Y %H:%M:%S") }} đến {{ span_end.strftime("%d/%m/%Y %H:%M:%S") }}</strong>,
+     vì có đoạn ghi nằm vắt qua ranh giới của khoảng này và chỉ xoá được trọn vẹn.</p>{% endif %}
+  <p class="muted">Dữ liệu thiết bị chưa gửi lên brain (ví dụ khi mất mạng) không bị xoá. Đoạn ghi nào được tải lên brain trong khoảng này trước khi bạn bấm xác nhận cũng sẽ bị xoá (số liệu có thể khác lúc xem trước).</p>
   <form hx-post="/settings/forget" hx-target="#forget-result" hx-confirm="Xoá vĩnh viễn? Không thể hoàn tác.">
     <input type="hidden" name="start" value="{{ start }}"><input type="hidden" name="end" value="{{ end }}">
     <input type="hidden" name="confirm" value="yes">

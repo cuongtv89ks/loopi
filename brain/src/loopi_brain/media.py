@@ -63,15 +63,28 @@ def inside(media_root: Path, rel: str | PurePosixPath) -> Path:
     return path
 
 
+def _entry(media_root: Path, rel: str) -> Path:
+    """The directory entry ``rel`` names, for deleting it. ``inside`` checks where ``rel`` leads; the entry itself
+    is what goes (a symlink is removed, never the file it points to), and the folder it lives in must also lie
+    inside the media root (a link kept in a folder outside the root is not ours to remove)."""
+    inside(media_root, rel)
+    root = media_root.resolve()
+    entry = (root / rel).parent.resolve() / PurePosixPath(rel).name
+    if not entry.parent.is_relative_to(root):
+        raise ValueError(f"path outside the media root: {rel}")
+    return entry
+
+
 def remove_files(media_root: Path, rels: list[str]) -> tuple[int, list[str]]:
     """Delete media files (blocking); return (files deleted, paths that could not be deleted). A missing file
-    counts as gone; a path outside the media root is refused and reported, never touched."""
+    counts as gone; a path outside the media root is refused and reported, never touched; a symlink inside the
+    root is removed without the file it points to."""
     deleted, failed = 0, []
     for rel in rels:
         try:
-            path = inside(media_root, rel)
-            if path.is_file():
-                path.unlink()
+            entry = _entry(media_root, rel)
+            if entry.is_symlink() or entry.is_file():
+                entry.unlink()
                 deleted += 1
         except (ValueError, OSError) as exc:
             log.warning("could not delete media file %s: %s", rel, exc)
@@ -107,11 +120,15 @@ def audio_view_path(raw_rel: PurePosixPath) -> PurePosixPath:
 
 def item_files(kind: str, raw_path: str, view_path: str | None) -> list[str]:
     """Every media file that belongs to one item, relative to the media root: its raw file, the MP4 view of a
-    video (``view_path``, once remuxed) and the playback copy of an audio recording. One rule for "Quên khoảng
-    thời gian" and for retention; keyframes and their thumbnails belong to the item's keyframes, not to it."""
+    video and the playback copy of an audio recording. The MP4 is listed by its fixed name even when ``view_path``
+    is not recorded (a remux may have written it a moment ago and not yet said so); a file that does not exist
+    counts as gone. One rule for "Quên khoảng thời gian" and for retention; keyframes and their thumbnails belong
+    to the item's keyframes, not to it."""
     files = [raw_path]
-    if kind == "video" and view_path:
-        files.append(view_path)
+    if kind == "video":
+        files.append(str(_view_rel(PurePosixPath(raw_path), ".mp4")))
+        if view_path and view_path not in files:
+            files.append(view_path)
     if kind == "audio":
         files.append(str(audio_view_path(PurePosixPath(raw_path))))
     return files
@@ -179,11 +196,24 @@ async def remux_item(pool: AsyncConnectionPool, settings: Settings, item_id: str
         log.exception("unexpected remux failure for %s", item_id)
         await _mark_error(pool, item_id, f"unexpected: {type(exc).__name__}: {exc}")
         return
-    await _update(
-        pool, item_id,
-        "UPDATE item SET status = 'ready', view_path = %s, error = NULL WHERE id = %s AND status = 'stored'",
-        (str(view_rel), item_id),
-    )
+    try:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE item SET status = 'ready', view_path = %s, error = NULL"
+                " WHERE id = %s AND status = 'stored' RETURNING id",
+                (str(view_rel), item_id),
+            )
+            recorded = await cur.fetchone() is not None
+            gone = False
+            if not recorded:  # moved on (kept as it is), or forgotten while ffmpeg worked
+                cur = await conn.execute("SELECT 1 FROM item WHERE id = %s", (item_id,))
+                gone = await cur.fetchone() is None
+    except Exception:
+        log.exception("could not record remux result for %s", item_id)
+        return
+    if gone:
+        log.info("item %s was deleted during its remux; its MP4 is removed", item_id)
+        remove_files(settings.media_root, [str(view_rel)])
 
 
 async def requeue_stored(pool: AsyncConnectionPool, settings: Settings) -> None:

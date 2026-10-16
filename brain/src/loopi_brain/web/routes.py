@@ -16,6 +16,7 @@ from .. import audio_level, devices, media, pki
 from ..days import day_bounds_utc
 from ..pipeline import moments as moment_rules
 from ..pipeline import status
+from ..pipeline.state import item_exists
 
 log = logging.getLogger(__name__)
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -137,6 +138,9 @@ async def audio_playback(request: Request, item_id: str):
             # no-store: once the copy exists, the browser must not keep playing this quiet file from its cache
             return FileResponse(raw, media_type="audio/ogg", headers={"Cache-Control": "no-store"})
         log.info("audio %s normalised: %+.1f dB", item_id, audio_level.dbfs(gain))
+        if not await item_exists(request.app.state.pool, item_id):  # forgotten while the copy was being made
+            media.remove_files(settings.media_root, [str(media.audio_view_path(raw_rel))])
+            raise HTTPException(status_code=404, detail="unknown audio item")
     return FileResponse(view, media_type="audio/ogg")
 
 

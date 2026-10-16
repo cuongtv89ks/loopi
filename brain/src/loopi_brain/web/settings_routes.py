@@ -103,9 +103,11 @@ def _local_range(start: str, end: str, zone) -> tuple[dt.datetime, dt.datetime]:
 async def forget_preview(request: Request, start: str = Form(...), end: str = Form(...)):
     zone = request.app.state.settings.zone
     first, last = _local_range(start, end, zone)
-    counts = await forget.preview(request.app.state.pool, first, last, zone)
+    counts, span = await forget.preview_span(request.app.state.pool, first, last, zone)
     return TEMPLATES.TemplateResponse(
-        request, "_forget_preview.html", {"start": start, "end": end, "first": first, "last": last, "c": counts}
+        request, "_forget_preview.html",
+        {"start": start, "end": end, "first": first, "last": last, "c": counts,
+         "widened": span != (first, last), "span_start": span[0].astimezone(zone), "span_end": span[1].astimezone(zone)},
     )
 
 

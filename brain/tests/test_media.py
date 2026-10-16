@@ -352,7 +352,10 @@ def test_a_media_root_that_is_itself_a_symlink_still_works(tmp_path):
 def test_item_files_lists_the_raw_file_and_the_copies_made_from_it():
     raw_video, raw_audio = "raw/dev/2026/10/14/V1.h264", "raw/dev/2026/10/14/A1.opus"
     assert media.item_files("video", raw_video, "view/dev/2026/10/14/V1.mp4") == [raw_video, "view/dev/2026/10/14/V1.mp4"]
-    assert media.item_files("video", raw_video, None) == [raw_video]  # not remuxed (yet): no view copy recorded
+    # not remuxed (yet), or remuxed a moment ago: the MP4 may exist without a recorded view_path, so it is listed
+    assert media.item_files("video", raw_video, None) == [raw_video, "view/dev/2026/10/14/V1.mp4"]
+    assert media.item_files("video", raw_video, "view/odd/V1.mp4") == [raw_video, "view/dev/2026/10/14/V1.mp4",
+                                                                      "view/odd/V1.mp4"]  # a recorded path stays listed
     assert media.item_files("audio", raw_audio, None) == [raw_audio, "view/dev/2026/10/14/A1.opus"]
     assert media.item_files("marker", "raw/dev/2026/10/14/M1.json", None) == ["raw/dev/2026/10/14/M1.json"]
 
@@ -395,3 +398,84 @@ def test_remove_files_reports_what_the_disk_refuses(tmp_path):
     finally:
         (root / "raw").chmod(0o755)
     assert (root / "raw" / "a.opus").exists()
+
+
+def test_remove_files_removes_a_link_not_the_file_it_points_to(tmp_path):
+    root = tmp_path / "media"
+    (root / "raw").mkdir(parents=True)
+    kept = root / "raw" / "kept.opus"
+    kept.write_bytes(b"keep me")
+    (root / "raw" / "link.opus").symlink_to(kept)  # inside the root, pointing at another file inside it
+    assert media.remove_files(root, ["raw/link.opus"]) == (1, [])
+    assert not (root / "raw" / "link.opus").exists() and not (root / "raw" / "link.opus").is_symlink()
+    assert kept.read_bytes() == b"keep me"
+
+
+def test_remove_files_never_removes_a_link_that_lives_outside_the_root(tmp_path):
+    root = tmp_path / "media"
+    (root / "raw").mkdir(parents=True)
+    kept = root / "raw" / "kept.opus"
+    kept.write_bytes(b"keep me")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "a.opus").symlink_to(kept)  # a link outside the root whose target is inside it
+    (root / "raw" / "door").symlink_to(elsewhere)
+    assert media.remove_files(root, ["raw/door/a.opus"]) == (0, ["raw/door/a.opus"])
+    assert (elsewhere / "a.opus").is_symlink() and kept.read_bytes() == b"keep me"
+
+
+async def test_a_remux_that_ends_after_its_item_was_forgotten_removes_the_mp4_it_made(pool, pki_settings, monkeypatch):
+    dev = await paired_device(pool, pki_settings)
+    await _insert_item(pool, dev)
+    made = []
+
+    async def written_then_forgotten(src, dst, fps):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"mp4")
+        made.append(dst)
+        async with pool.connection() as conn:  # "Quên khoảng thời gian" commits between the write and the update
+            await conn.execute("DELETE FROM item WHERE id = %s", (ITEM_ID,))
+
+    monkeypatch.setattr(media, "remux_to_mp4", written_then_forgotten)
+    await media.remux_item(pool, pki_settings, ITEM_ID)
+    assert len(made) == 1 and not made[0].exists()
+    assert await _status_row(pool) is None
+
+
+async def test_a_late_remux_result_for_an_item_that_still_exists_keeps_its_mp4(pool, pki_settings, monkeypatch):
+    dev = await paired_device(pool, pki_settings)
+    await _insert_item(pool, dev)
+    made = []
+
+    async def written_then_moved_on(src, dst, fps):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"mp4")
+        made.append(dst)
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE item SET status = 'error', error = 'other' WHERE id = %s", (ITEM_ID,))
+
+    monkeypatch.setattr(media, "remux_to_mp4", written_then_moved_on)
+    await media.remux_item(pool, pki_settings, ITEM_ID)
+    assert made[0].read_bytes() == b"mp4" and (await _status_row(pool))["status"] == "error"
+
+
+async def test_a_remux_result_that_cannot_be_recorded_is_logged_not_raised(pool, pki_settings, monkeypatch, caplog):
+    dev = await paired_device(pool, pki_settings)
+    await _insert_item(pool, dev)
+
+    class FlakyPool:  # the first connection (reading the item) works, the one recording the result does not
+        calls = 0
+
+        def connection(self):
+            FlakyPool.calls += 1
+            if FlakyPool.calls > 1:
+                raise RuntimeError("pool down")
+            return pool.connection()
+
+    async def made(src, dst, fps):
+        return None
+
+    monkeypatch.setattr(media, "remux_to_mp4", made)
+    await media.remux_item(FlakyPool(), pki_settings, ITEM_ID)
+    assert "could not record remux result" in caplog.text
+    assert (await _status_row(pool))["status"] == "stored"

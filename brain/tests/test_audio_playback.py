@@ -212,3 +212,23 @@ async def test_the_timeline_plays_audio_through_the_normalising_route(web, pool,
     text = (await web.get("/hours", params={"day": DAY})).text
     assert f'<audio controls preload="none" src="/audio/{item_id}.opus"></audio>' in text
     assert "/media/raw/" not in text, "the raw file is not linked"
+
+
+async def test_a_playback_copy_written_after_its_item_was_forgotten_is_removed_and_not_served(
+    web, pool, pki_settings, dev, monkeypatch
+):
+    item_id, raw = await _audio(pool, pki_settings, dev["device_id"], body=b"raw bytes")
+    view = _view(pki_settings, raw)
+
+    async def written_then_forgotten(src, dst):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"copy")
+        async with pool.connection() as conn:  # "Quên khoảng thời gian" commits while the copy is being made
+            await conn.execute("DELETE FROM item WHERE id = %s", (item_id,))
+        return 1.0
+
+    monkeypatch.setattr(media, "normalise_audio", written_then_forgotten)
+    r = await web.get(f"/audio/{item_id}.opus")
+    assert r.status_code == 404 and b"copy" not in r.content
+    assert not view.exists()
+    assert _leftovers(pki_settings) == []
