@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # text task to "anthropic". Read from ANTHROPIC_API_KEY (no LOOPI_ prefix); never logged or shown.
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     anthropic_url: str = "https://api.anthropic.com"
+    # Evaluation (P2c, spec D21): the owner's golden set — copies of the chosen recordings and keyframes — lives
+    # here, in the brain's data dir and never in git; retention never deletes it.
+    eval_dir: Path = Path("/srv/loopi/eval")
 
     @field_validator("anthropic_api_key", mode="before")
     @classmethod

@@ -18,6 +18,14 @@ def test_pipeline_defaults():
     assert s.asr_max_gain_db == 30.0
 
 
+def test_the_golden_set_lives_in_the_data_dir_outside_git(monkeypatch):
+    # Spec D21: the owner's clips, keyframe copies and references stay in the brain's data dir, never in the repo.
+    assert Settings(database_url="postgresql://x").eval_dir == Path("/srv/loopi/eval")
+    monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("LOOPI_EVAL_DIR", "/data/eval")
+    assert Settings().eval_dir == Path("/data/eval")
+
+
 def test_pipeline_settings_from_env(monkeypatch):
     monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
     monkeypatch.setenv("LOOPI_ASR_LANGUAGES", " ko , en ,")

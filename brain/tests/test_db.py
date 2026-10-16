@@ -12,6 +12,8 @@ EXPECTED_TABLES = {
     "device", "pair_token", "item", "device_command", "schema_migration",
     "keyframe", "transcript_segment", "moment",
     "chapter", "day_recap", "commitment", "setting", "forget_log", "day_job_error",
+    "eval_audio", "eval_caption", "eval_caption_score", "eval_question", "eval_answer", "eval_run",
+    "eval_run_audio",
     "procrastinate_jobs", "procrastinate_events", "procrastinate_workers", "procrastinate_periodic_defers",
 }
 
@@ -25,7 +27,8 @@ def test_migrate_is_idempotent_and_creates_schema(database_url):
         ).fetchall()
         names = {r[0] for r in conn.execute("SELECT name FROM schema_migration")}
     assert EXPECTED_TABLES <= {r[0] for r in rows}
-    applied = {"001_init.sql", "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql"}
+    applied = {"001_init.sql", "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql",
+               "005_evaluation.sql"}
     assert applied | {PROCRASTINATE_SCHEMA} <= names
 
 
@@ -62,7 +65,8 @@ def test_p1_rows_become_pending_after_upgrade(database_url):
                 " VALUES ('I1', 'D1', 'audio', now(), now(), 'x', 1, 'raw/x.opus', 'ready')"
             )
         assert migrate(url) == [
-            "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql", PROCRASTINATE_SCHEMA
+            "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql", "005_evaluation.sql",
+            PROCRASTINATE_SCHEMA,
         ]
         with psycopg.connect(url) as conn:
             state = conn.execute("SELECT analysis_state, analysis_job_id FROM item WHERE id = 'I1'").fetchone()
@@ -88,7 +92,8 @@ def test_concurrent_migrations_apply_each_step_once(database_url):
     assert errors == []
     assert sorted(results, key=len) == [
         [],
-        ["001_init.sql", "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql", PROCRASTINATE_SCHEMA],
+        ["001_init.sql", "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql", "005_evaluation.sql",
+         PROCRASTINATE_SCHEMA],
     ]
 
 
@@ -104,7 +109,10 @@ def test_cascading_foreign_keys_are_indexed(database_url):
         }
     assert {("keyframe", "item_id"), ("transcript_segment", "item_id"), ("moment", "item_id"),
             ("moment", "keyframe_id"), ("moment", "transcript_segment_id"),
-            ("commitment", "source_moment_id")} <= indexed
+            ("commitment", "source_moment_id"),
+            ("eval_audio", "item_id"), ("eval_caption", "keyframe_id"), ("eval_caption_score", "sample_id"),
+            ("eval_answer", "question_id"), ("eval_answer", "item_id"), ("eval_answer", "keyframe_id"),
+            ("eval_run_audio", "run_id"), ("eval_run_audio", "sample_id")} <= indexed
 
 
 async def test_pool_connections_read_and_write_vectors(pool, pki_settings):
@@ -148,3 +156,44 @@ async def test_understanding_tables_keep_their_rules(pool, pki_settings):
             await conn.execute(
                 "INSERT INTO forget_log (id, range_start, range_end, counts) VALUES ('F1', now(), now(), '{}')"
             )
+
+
+
+async def test_evaluation_tables_keep_their_rules(pool, pki_settings):
+    dev = await paired_device(pool, pki_settings)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes, raw_path, status)"
+            " VALUES ('I1', %s, 'audio', now(), now(), 'x', 1, 'raw/x.opus', 'ready')",
+            (dev["device_id"],),
+        )
+        await conn.execute(
+            "INSERT INTO eval_audio (id, item_id, path, lang, reference) VALUES ('A1', 'I1', 'audio/A1.opus', 'vi', 'ừ')"
+        )
+        row = await (await conn.execute("SELECT had_text, prefilled FROM eval_audio")).fetchone()
+        assert row == {"had_text": False, "prefilled": True}
+        await conn.execute("INSERT INTO eval_run (id, config) VALUES ('R1', '{}')")
+        await conn.execute("INSERT INTO eval_run_audio (run_id, sample_id, segments) VALUES ('R1', 'A1', '[]')")
+        bad = [
+            (psycopg.errors.UniqueViolation,  # one golden clip per recording
+             "INSERT INTO eval_audio (id, item_id, path, lang, reference) VALUES ('A2', 'I1', 'audio/A2.opus', 'vi', 'x')"),
+            (psycopg.errors.CheckViolation, "UPDATE eval_audio SET lang = 'ja'"),  # vi, ko or en
+            (psycopg.errors.CheckViolation, "UPDATE eval_audio SET reference = ' '"),  # speech needs its reference
+            # "không có lời nói" has no language and no reference
+            (psycopg.errors.CheckViolation, "UPDATE eval_audio SET no_speech = true"),
+            (psycopg.errors.CheckViolation,
+             "INSERT INTO eval_question (id, text, first_day, last_day) VALUES ('Q1', 'Hôm qua?', '2026-10-14',"
+             " '2026-10-13')"),
+            (psycopg.errors.CheckViolation, "INSERT INTO eval_question (id, text) VALUES ('Q2', '  ')"),
+            (psycopg.errors.CheckViolation, "UPDATE eval_run SET status = 'later'"),
+        ]
+        for error, sql in bad:
+            with pytest.raises(error):
+                async with conn.transaction():
+                    await conn.execute(sql)
+        await conn.execute("UPDATE eval_audio SET no_speech = true, lang = NULL, reference = ''")
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM item WHERE id = 'I1'")  # forgotten: the golden clip and its results go too
+        assert await (await conn.execute("SELECT id FROM eval_audio")).fetchall() == []
+        assert await (await conn.execute("SELECT run_id FROM eval_run_audio")).fetchall() == []
+        assert await (await conn.execute("SELECT id FROM eval_run")).fetchall() == [{"id": "R1"}]  # numbers stay

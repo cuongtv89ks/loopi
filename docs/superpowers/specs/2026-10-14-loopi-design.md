@@ -2,7 +2,7 @@
 
 - **Ngày:** 2026-10-14
 - **Trạng thái:** Draft, chờ review
-- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18); 2026-10-15: agent khuếch đại âm thanh (có bộ giới hạn đỉnh) trước khi encode, brain chuẩn hoá mức âm thanh trước ASR và khi phát lại (D19); 2026-10-16: brain giữ audio thô 7 ngày như video thay vì xoá ngay sau khi có transcript, số ngày chỉnh được trong trang Cài đặt (D20)
+- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18); 2026-10-15: agent khuếch đại âm thanh (có bộ giới hạn đỉnh) trước khi encode, brain chuẩn hoá mức âm thanh trước ASR và khi phát lại (D19); 2026-10-16: brain giữ audio thô 7 ngày như video thay vì xoá ngay sau khi có transcript, số ngày chỉnh được trong trang Cài đặt (D20); 2026-10-16: dữ liệu của bộ đánh giá (golden set) nằm ngoài git, trong thư mục dữ liệu và database của brain, người dùng tự gán nhãn trên trang Đánh giá, repo chỉ giữ code và các con số kết quả (D21); recall@5 trong tiêu chí nghiệm thu P2 là hit@5, quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh (D22)
 - **Phạm vi tài liệu:** kiến trúc tổng thể và thiết kế cho cả 3 dự án con (`os/`, `agent/`, `brain/`). Mỗi phase sẽ có implementation plan riêng.
 
 ---
@@ -78,6 +78,8 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D18 | Đèn báo ghi hình | Đèn báo ghi hình là LED ACT (xanh lá) có sẵn trên Pi Zero W, agent điều khiển qua `/sys/class/leds/ACT`, nên không phải gắn LED ngoài. Sau khi boot, firmware và kernel không dùng LED này nữa; agent thoát thì systemd tắt nó. LED đỏ gắn GPIO17 vẫn cấu hình được. Ý nghĩa các kiểu sáng (mục 7.2) và bất biến riêng tư giữ nguyên |
 | D19 | Mức âm thanh | USB mic thu tiếng nói rất nhỏ: đo trên hơn 1 300 đoạn ghi trong 2 ngày, RMS khoảng −55 dBFS cả ngày lẫn đêm, kể cả khi bật AGC của mic; tăng volume mixer chỉ được thêm 2–3 dB. Vì vậy agent khuếch đại số mỗi khung âm thanh trước khi encode Opus, qua một bộ giới hạn đỉnh −1 dBFS (attack tức thì, nhả khoảng 100 ms) để tiếng động lớn sát mic không bị vỡ. Mức khuếch đại là `capture.audio_gain_db` trong `loopi.toml` (mặc định 20 dB, cho phép 0–36 dB), không chỉnh từ xa; protocol v1 giữ nguyên. Brain chuẩn hoá mức âm thanh trước VAD/ASR và cho bản nghe trên web: đưa phân vị 99,9 của biên độ lên −6 dBFS (phân vị chứ không phải đỉnh, vì có những mẫu nhiễu lẻ chạm 0 dBFS), tối đa +30 dB, không bao giờ giảm, và không nâng nền nhiễu của phòng lên quá −40 dBFS. File thô giữ nguyên như lúc thu |
 | D20 | Lưu audio thô | Brain giữ audio thô 7 ngày như video, không xoá ngay sau khi có transcript: transcript chưa đủ tin cậy (Whisper có thể bịa câu trên tiếng ồn hoặc bỏ sót tiếng nói nhỏ) và người dùng cần nghe lại bản đã chuẩn hoá mức âm thanh (D19). Số ngày giữ video thô và audio thô chỉnh được trong trang Cài đặt (mặc định 7 và 7). Job lưu trữ lúc 03:00 chỉ chạy sau khi người dùng bật trong Cài đặt (mặc định tắt) và chỉ xoá file thô (kèm bản xem/nghe đã chuyển đổi) của những đoạn đã phân tích xong; keyframe, transcript, caption, chương và recap vẫn giữ vĩnh viễn |
+| D21 | Bộ đánh giá chất lượng AI | Dữ liệu của bộ đánh giá (golden set) không vào git: các đoạn audio thật, bản sao keyframe, transcript chuẩn và câu hỏi nằm trong thư mục dữ liệu của brain (`/srv/loopi/eval` trong container, đặt bằng `LOOPI_EVAL_DIR`) và trong database của brain. Repo chỉ chứa code đánh giá (`brain/src/loopi_brain/evaluation/`) và các con số kết quả (WER, CER, điểm caption, recall), không chứa transcript hay câu hỏi nào. Người dùng tự gán nhãn trên trang "Đánh giá" của brain: nghe từng đoạn audio đã chuẩn hoá mức âm thanh rồi sửa transcript thành bản chuẩn (hoặc đánh dấu "không có lời nói"), chấm điểm caption của keyframe, viết câu hỏi và chọn moment đúng. Job lưu trữ không xoá bản sao trong bộ đánh giá; "Quên khoảng thời gian" xoá cả các mẫu đánh giá lấy từ khoảng đó |
+| D22 | Cách đo nghiệm thu P2 | "Recall@5 ≥ 70%" ở mục 14 là **hit@5**: một câu hỏi được tính là tìm thấy khi ít nhất một khoảnh khắc đúng của nó nằm trong 5 kết quả đầu. Báo cáo ghi thêm recall@5 có giới hạn (số khoảnh khắc đúng tìm được trong 5 kết quả đầu chia cho min(n, 5), n là số khoảnh khắc đúng của câu hỏi), hit@10 và MRR. Quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh; báo cáo ghi cả WER lẫn CER cho mọi ngôn ngữ. Mọi con số kèm số mẫu và khoảng tin cậy 95% |
 
 ---
 
@@ -382,6 +384,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 | Vlog | Xem và tải từng ngày |
 | Thiết bị | Trạng thái lấy từ heartbeat, nút Pause/Resume, bật/tắt audio, mã QR ghép cặp, thu hồi thiết bị |
 | Cài đặt | Provider, chính sách lưu trữ, "Quên khoảng thời gian", token MCP, job lỗi và nút xử lý lại |
+| Đánh giá | Gán nhãn bộ đánh giá (audio, caption, câu hỏi), chạy đánh giá và xem kết quả các lần chạy (D21) |
 
 ---
 
@@ -417,10 +420,11 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 - **Agent:** unit test với các trait `Camera`, `AudioSource`, `Clock`, `Transport`, chạy được trên máy dev. Integration test dùng script `rpicam-vid` giả phát đoạn H.264 mẫu, gửi tới brain giả (wiremock). Trên thiết bị có `loopi-selftest`: in ra sensor camera nhận được, kiểm USB mic có mặt và mức âm thanh (trước và sau khuếch đại), NTP, một vòng upload và LED.
 - **OS:** CI build cả hai defconfig (có ccache). Smoke test boot trên phần cứng thật mỗi khi phát hành.
 - **Brain:** pytest cho từng stage với fixture, integration test với Postgres thật (testcontainers), và bài E2E "phát lại một ngày".
-- **Đánh giá chất lượng AI (golden set, lưu ở `brain/eval/`):**
+- **Đánh giá chất lượng AI (golden set do người dùng gán nhãn trên trang Đánh giá; dữ liệu nằm ngoài git, D21):**
   - 30 keyframe có nhãn (caption chấm thủ công)
   - 20 đoạn audio vi/ko/en kèm transcript chuẩn (WER/CER)
   - 25 câu hỏi kèm moment đúng (recall@5)
+  - Chạy bằng `loopi-brain eval run` hoặc nút trên trang Đánh giá: nhận dạng lại từng đoạn audio bằng đường ASR hiện tại (chuẩn hoá mức âm thanh, VAD, Whisper, bộ lọc), tính WER/CER theo ngôn ngữ, tỉ lệ bịa câu trên các đoạn không có lời nói, điểm caption theo model và recall@5 qua tìm kiếm hybrid. Mỗi lần chạy lưu cấu hình và các con số; chỉ các con số được đưa vào repo
 
 ---
 
@@ -429,7 +433,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 | Phase | Nội dung | Hoàn thành khi |
 |---|---|---|
 | **P1** | Image dev, agent v0 (video, audio, hàng đợi, uploader, nút, LED, heartbeat, pairing qua `loopi.toml`), protocol v1, brain ingest, timeline video thô, pause/resume từ web | Flash, sửa `loopi.toml`, boot lên là tự ghép cặp. Đoạn ghi hiện trên timeline trong vòng 2 phút. Chạy 24h không crash. Ngắt WiFi 1h, có mạng lại thì hàng đợi đẩy hết, không mất gì. Rút điện 10 lần vẫn boot bình thường. Kill agent thì việc ghi dừng và LED tắt. **Có số đo** CPU%, RAM, bitrate thực tế và dung lượng mỗi ngày |
-| **P2** | Pipeline AI: lọc keyframe, caption, ASR, moment, embedding, chương, recap, việc cần làm, tìm kiếm và hỏi đáp, provider router | Độ trễ trung bình từ lúc ghi tới khi có caption/transcript **≤ 15 phút** trong khung 08:00–22:00. Recap tự sinh mỗi tối. Có baseline WER/CER cho vi/ko/en; WER trên 30% thì đổi model hoặc cấu hình. Recall@5 ≥ 70%. Có số đo thời gian CPU mỗi ngày |
+| **P2** | Pipeline AI: lọc keyframe, caption, ASR, moment, embedding, chương, recap, việc cần làm, tìm kiếm và hỏi đáp, provider router | Độ trễ trung bình từ lúc ghi tới khi có caption/transcript **≤ 15 phút** trong khung 08:00–22:00. Recap tự sinh mỗi tối. Có baseline WER/CER cho vi/ko/en; lỗi trên 30% (WER cho vi/en, CER cho ko, D22) thì đổi model hoặc cấu hình. Recall@5 ≥ 70% (hit@5, D22). Có số đo thời gian CPU mỗi ngày |
 | **P3** | MCP server, vlog timelapse | Gọi được 5 tool từ Claude Code. Vlog tự sinh mỗi tối |
 | **P4** | Image prod, cấp WiFi bằng QR (kèm captive portal dự phòng), OTA qua RAUC, BLE presence để giới hạn ghi âm | Cấp WiFi không phải sửa file. OTA thành công, boot lỗi thì tự rollback. Image prod không có SSH. Điện thoại ra khỏi tầm thì audio dừng trong vòng 60s |
 
@@ -461,7 +465,7 @@ Truyện tranh (sinh ảnh qua cloud) · Burst 30fps khi bấm Mark · Tìm ki�
 ```
 loopi/
 ├── agent/            # Rust (crate loopi-agent), target arm-unknown-linux-gnueabihf
-├── brain/            # Python (uv): api/, worker/, pipeline/, web/, mcp/, eval/
+├── brain/            # Python (uv): api/, worker/, pipeline/, web/, mcp/, evaluation/ (code; dữ liệu đánh giá ngoài git, D21)
 ├── os/               # BR2_EXTERNAL: configs/, board/loopi/, package/loopi-agent/, rootfs-overlay/
 ├── hw/               # BOM, sơ đồ nối dây, STL vỏ
 ├── deploy/           # docker-compose.yml, Caddyfile, providers.yaml.example
