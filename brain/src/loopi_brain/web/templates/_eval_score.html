@@ -1,0 +1,3 @@
+<p>{% for n in range(1, 6) %}<label><input type="radio" name="score" value="{{ n }}" required> {{ n }}</label> {% endfor %}
+  {% for name, label in FLAG_LABELS.items() %}<label><input type="checkbox" name="{{ name }}"> {{ label }}</label> {% endfor %}
+  <button>{{ button }}</button></p>

@@ -127,11 +127,16 @@ async def _drop(pool: AsyncConnectionPool, settings: Settings, table: str, sampl
 
 # ---- clips -------------------------------------------------------------------------------------------------------
 
-_AUDIO_CANDIDATES = """
+# The language Whisper heard most (by duration) in recording ``i``; the same expression proposes a recording and
+# shows it again when the owner's form comes back with an error.
+DOMINANT_LANG = (
+    "(SELECT s.lang FROM transcript_segment s WHERE s.item_id = i.id GROUP BY s.lang"
+    " ORDER BY sum(extract(epoch FROM s.end_ts - s.start_ts)) DESC, s.lang LIMIT 1)"
+)
+_AUDIO_CANDIDATES = f"""
 WITH c AS (
     SELECT i.id, i.started_at,
-           (SELECT s.lang FROM transcript_segment s WHERE s.item_id = i.id GROUP BY s.lang
-             ORDER BY sum(extract(epoch FROM s.end_ts - s.start_ts)) DESC, s.lang LIMIT 1) AS lang,
+           {DOMINANT_LANG} AS lang,
            t.words, t.logprob,
            extract(hour FROM i.started_at AT TIME ZONE %(tz)s)::int / 6 AS part
       FROM item i
@@ -155,6 +160,11 @@ WITH c AS (
 )
 SELECT id, started_at, lang, stratum, part, available FROM r WHERE n <= %(per_part)s ORDER BY stratum, started_at
 """
+
+
+def day_part(started_at: dt.datetime, zone) -> str:
+    """The part of the local day (``DAY_PARTS``) a recording started in."""
+    return DAY_PARTS[started_at.astimezone(zone).hour // 6]
 
 
 async def transcripts(pool: AsyncConnectionPool, item_ids: list[str]) -> dict[str, str]:

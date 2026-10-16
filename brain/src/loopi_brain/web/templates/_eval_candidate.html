@@ -1,0 +1,16 @@
+<form class="card" hx-post="/eval/audio" hx-target="this" hx-swap="outerHTML">
+  <input type="hidden" name="item_id" value="{{ it.id }}">
+  <input type="hidden" name="prefilled" value="{{ '0' if blind else '1' }}">
+  <p><time>{{ it.time }}</time> · {{ it.part }} <audio controls preload="none" src="/audio/{{ it.id }}.opus"></audio></p>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  {% set chosen = typed.lang if typed else it.lang %}
+  {% if blind %}
+  <textarea name="reference" rows="6" maxlength="5000" placeholder="Gõ những gì bạn nghe được">{{ typed.reference if typed else "" }}</textarea>
+  {% if it.transcript %}<details><summary>Xem transcript của Whisper (sau khi đã tự gõ)</summary><p>{{ it.transcript }}</p></details>{% endif %}
+  {% else %}
+  <textarea name="reference" rows="6" maxlength="5000" placeholder="Transcript chuẩn">{{ typed.reference if typed else it.transcript }}</textarea>
+  {% endif %}
+  <p>{% for code in languages %}<label><input type="radio" name="lang" value="{{ code }}"{% if code == chosen %} checked{% endif %}> {{ LANGUAGE_LABELS[code] }}</label> {% endfor %}
+    <label><input type="checkbox" name="no_speech"{% if typed and typed.no_speech %} checked{% endif %}> Không có lời nói</label>
+    <button>Lưu vào bộ đánh giá</button></p>
+</form>

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Đánh giá · Mô tả khung hình</h1>
+<p><a href="/eval">← Đánh giá</a> · {{ p.captions }}/{{ target }} khung hình, {{ p.captions_scored }} đã chấm với model hiện tại</p>
+<p class="muted">Chấm mô tả từ 1 (sai hẳn) đến 5 (đúng và đủ), và đánh dấu lỗi nếu có.</p>
+<section>
+  <h2>Gợi ý (mỗi ngày, mỗi khung 3 giờ một khung hình)</h2>
+  {% for k in candidates %}{% set error = none %}{% include "_eval_keyframe.html" %}
+  {% else %}<p class="muted">Không còn khung hình nào để chọn.</p>{% endfor %}
+  <p><a href="/eval/captions?seed={{ seed + 1 }}">Gợi ý khác</a></p>
+</section>
+<h2>Đã chấm ({{ samples|length }})</h2>
+{% for s in samples %}{% set saved = false %}{% set error = none %}{% include "_eval_picture.html" %}{% else %}<p class="muted">Chưa có khung hình nào.</p>{% endfor %}
+{% endblock %}

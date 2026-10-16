@@ -1,0 +1,2 @@
+{% if c %}<p>{{ c.scene }} — {{ c.activity }} · {{ c.people_count }} người{% if c.objects %} · đồ vật: {{ c.objects|join(", ") }}{% endif %}{% if c.text_seen %} · chữ: “{{ c.text_seen }}”{% endif %}</p>
+{% else %}<p class="muted">Đang chờ mô tả lại.</p>{% endif %}

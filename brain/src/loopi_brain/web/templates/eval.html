@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Đánh giá</h1>
+<p class="muted">Bộ đánh giá (golden set) do bạn gán nhãn: nằm trong thư mục dữ liệu và database của brain, không bao giờ
+  vào git (D21). Lần chạy đánh giá chỉ ghi lại các con số. Tổng cộng mất khoảng 2–3 giờ; làm nhiều lần được.</p>
+<section class="card">
+  <h2><a href="/eval/audio">Âm thanh</a>: {{ p.audio_total }}/{{ audio_target }} đoạn</h2>
+  <p>{% for lang, n in suggested.items() %}{{ LANGUAGE_LABELS[lang] }} {{ p.audio[lang] }}/{{ n }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  <p class="muted">Nghe từng đoạn, sửa transcript hiện tại thành bản chuẩn, hoặc đánh dấu "không có lời nói".</p>
+</section>
+<section class="card">
+  <h2><a href="/eval/captions">Mô tả khung hình</a>: {{ p.captions }}/{{ caption_target }} khung hình</h2>
+  <p>Đã chấm với model hiện tại: {{ p.captions_scored }}</p>
+</section>
+<section class="card">
+  <h2><a href="/eval/questions">Câu hỏi</a>: {{ q.questions }}/{{ question_target }} câu</h2>
+  <p>Đã chọn moment đúng: {{ q.answered }}</p>
+</section>
+{% endblock %}

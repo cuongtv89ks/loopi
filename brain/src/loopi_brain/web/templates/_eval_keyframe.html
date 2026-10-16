@@ -1,0 +1,8 @@
+<form class="card" hx-post="/eval/captions" hx-target="this" hx-swap="outerHTML">
+  <input type="hidden" name="keyframe_id" value="{{ k.id }}">
+  <img src="/thumb/{{ k.id }}.jpg" loading="lazy" alt="" width="320">
+  <p><time>{{ k.time }}</time> · {{ k.caption_model }}</p>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  {% set c = k.caption %}{% include "_eval_caption.html" %}
+  {% set button = "Lưu vào bộ đánh giá" %}{% include "_eval_score.html" %}
+</form>

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Đánh giá · Âm thanh</h1>
+<p><a href="/eval">← Đánh giá</a> · {{ p.audio_total }}/{{ target }} đoạn:
+  {% for lang, n in suggested.items() %}{{ LANGUAGE_LABELS[lang] }} {{ p.audio[lang] }}/{{ n }} · {% endfor %}{{ LANGUAGE_LABELS["silent"] }}: {{ p.audio["silent"] }}</p>
+<p class="muted">Nghe đoạn ghi (đã chuẩn hoá mức âm thanh), sửa transcript thành đúng những gì được nói, chọn ngôn ngữ
+  chính, rồi lưu. Không chắc thì nghe lại; đừng giữ chữ của Whisper nếu bạn nghe khác. Đoạn chỉ có tiếng ồn, TV hay im
+  lặng: đánh dấu "Không có lời nói". Chỉ gợi ý đoạn ghi từ {{ since }} (từ khi thiết bị tăng âm lượng thu, D19).</p>
+<p>{% if blind %}<a href="/eval/audio?seed={{ seed }}">Hiện transcript của Whisper trong ô</a>{% else %}<a href="/eval/audio?seed={{ seed }}&blind=1">Nghe trước, tự gõ (ẩn transcript của Whisper)</a>{% endif %}</p>
+{% for note in scarce %}<p class="err">{{ note }}</p>{% endfor %}
+{% for group, stratum in strata.items() %}
+<section>
+  <h2>{{ LANGUAGE_LABELS[group] }} <span class="muted">({{ stratum.available }} đoạn có thể chọn)</span></h2>
+  {% if hints[group] %}<p class="muted">{{ hints[group] }}</p>{% endif %}
+  {% for it in stratum["items"] %}{% set typed = none %}{% set error = none %}{% include "_eval_candidate.html" %}
+  {% else %}<p class="muted">Không còn đoạn nào để chọn.</p>{% endfor %}
+</section>
+{% endfor %}
+<p><a href="/eval/audio?seed={{ seed + 1 }}{% if blind %}&blind=1{% endif %}">Gợi ý khác</a></p>
+<h2>Đã gán nhãn ({{ samples|length }})</h2>
+{% for s in samples %}{% set saved = false %}{% set error = none %}{% include "_eval_clip.html" %}{% else %}<p class="muted">Chưa có đoạn nào.</p>{% endfor %}
+{% endblock %}

@@ -1,0 +1,11 @@
+<form class="card" id="clip-{{ s.id }}" hx-post="/eval/audio/{{ s.id }}" hx-target="this" hx-swap="outerHTML">
+  <p><time>{{ s.time }}</time> <audio controls preload="none" src="/eval/audio/{{ s.id }}.opus"></audio>
+    {% if saved %}<span class="online">Đã lưu</span>{% endif %}</p>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  <textarea name="reference" rows="6" maxlength="5000" placeholder="Transcript chuẩn">{{ s.reference }}</textarea>
+  <p>{% for lang in languages %}<label><input type="radio" name="lang" value="{{ lang }}"{% if s.lang == lang %} checked{% endif %}> {{ LANGUAGE_LABELS[lang] }}</label> {% endfor %}
+    <label><input type="checkbox" name="no_speech"{% if s.no_speech %} checked{% endif %}> Không có lời nói</label>
+    <button>Lưu</button>
+    <button hx-post="/eval/audio/{{ s.id }}/delete" hx-target="#clip-{{ s.id }}" hx-swap="outerHTML"
+            hx-confirm="Xoá đoạn này khỏi bộ đánh giá?">Xoá</button></p>
+</form>

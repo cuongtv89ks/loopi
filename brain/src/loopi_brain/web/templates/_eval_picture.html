@@ -1,0 +1,15 @@
+<div class="card" id="picture-{{ s.id }}">
+  <img src="/eval/keyframes/{{ s.id }}.jpg" loading="lazy" alt="" width="320">
+  <p><time>{{ s.time }}</time> · {{ s.caption_model }} {% if saved %}<span class="online">Đã lưu</span>{% endif %}</p>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  {% set c = s.caption %}{% include "_eval_caption.html" %}
+  <ul>{% for x in s.scores %}<li>{{ x.model_version }}: {{ x.score }}/5{% for name, label in FLAG_LABELS.items() %}{% if x[name] %} · {{ label }}{% endif %}{% endfor %}</li>{% endfor %}</ul>
+  {% if s.caption %}
+  <form hx-post="/eval/captions/{{ s.id }}/score" hx-target="#picture-{{ s.id }}" hx-swap="outerHTML">
+    {% if s.needs_score %}<p class="err">Mô tả của model hiện tại chưa được chấm.</p>{% endif %}
+    {% set button = "Chấm mô tả hiện tại" %}{% include "_eval_score.html" %}
+  </form>
+  {% endif %}
+  <button hx-post="/eval/captions/{{ s.id }}/delete" hx-target="#picture-{{ s.id }}" hx-swap="outerHTML"
+          hx-confirm="Xoá khung hình này khỏi bộ đánh giá?">Xoá</button>
+</div>
