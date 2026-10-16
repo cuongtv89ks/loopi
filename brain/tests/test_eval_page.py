@@ -330,20 +330,44 @@ async def test_every_question_and_run_post_refuses_a_request_without_htmx(pool, 
     assert await fetch_all(pool, "SELECT id FROM eval_run") == []  # nothing was asked for
 
 
-async def test_a_submit_without_htmx_is_a_post_so_words_never_reach_a_url(pool, pki_settings, dev, web):
-    question_id = await questions.create_question(pool, "Khi nào đi chợ?", None, None)
-    device = dev["device_id"]
-    # Every form of the audio and caption pages must render: a clip to label, a labelled clip, a keyframe to caption
-    # and a scored one. Without htmx a form is submitted as a GET of the page, which would put the typed reference
-    # transcript in the URL (access log, browser history).
-    candidate = await _spoken(pool, pki_settings, device, 0, "vi", SPEECH)
-    labelled = await _spoken(pool, pki_settings, device, 10, "vi", SPEECH)
+async def _every_form(pool, settings, device_id, web) -> dict:
+    """What the audio and caption pages need to render every one of their forms: a clip to label, a labelled clip, a
+    keyframe to caption and a scored one."""
+    candidate = await _spoken(pool, settings, device_id, 0, "vi", SPEECH)
+    labelled = await _spoken(pool, settings, device_id, 10, "vi", SPEECH)
     await web.post("/eval/audio", data={"item_id": labelled, "lang": "vi", "reference": SPEECH}, headers=HX)
     [clip] = await golden.audio_samples(pool)
-    proposed = await captioned_keyframe(pool, pki_settings, device, NINE + dt.timedelta(hours=3))
-    scored = await captioned_keyframe(pool, pki_settings, device, NINE)
+    proposed = await captioned_keyframe(pool, settings, device_id, NINE + dt.timedelta(hours=3))
+    scored = await captioned_keyframe(pool, settings, device_id, NINE)
     await web.post("/eval/captions", data={"keyframe_id": scored, "score": "4"}, headers=HX)
     [picture] = await golden.caption_samples(pool)
+    return {"candidate": candidate, "clip": clip["id"], "proposed": proposed, "picture": picture["id"]}
+
+
+async def test_every_golden_clip_and_keyframe_post_refuses_a_request_without_htmx(pool, pki_settings, dev, web):
+    found = await _every_form(pool, pki_settings, dev["device_id"], web)
+    clip, picture = found["clip"], found["picture"]
+    before = ([dict(c) for c in await golden.audio_samples(pool)], [dict(c) for c in await golden.caption_samples(pool)])
+    copies = sorted(str(p) for p in pki_settings.eval_dir.rglob("*") if p.is_file())
+    posts = [("/eval/audio", {"item_id": found["candidate"], "lang": "vi", "reference": "Một đoạn nữa"}),
+             (f"/eval/audio/{clip}", {"lang": "ko", "reference": "Sửa lại"}), (f"/eval/audio/{clip}/delete", {}),
+             ("/eval/captions", {"keyframe_id": found["proposed"], "score": "3"}),
+             (f"/eval/captions/{picture}/score", {"score": "1"}), (f"/eval/captions/{picture}/delete", {})]
+    for path, data in posts:
+        assert (await web.post(path, data=data)).status_code == 403, path
+    after = ([dict(c) for c in await golden.audio_samples(pool)], [dict(c) for c in await golden.caption_samples(pool)])
+    assert after == before  # no label changed, nothing added, nothing deleted
+    assert sorted(str(p) for p in pki_settings.eval_dir.rglob("*") if p.is_file()) == copies  # and every copy stays
+    assert [r["id"] for r in await fetch_all(pool, "SELECT id FROM eval_audio")] == [clip]
+
+
+async def test_a_submit_without_htmx_is_a_post_so_words_never_reach_a_url(pool, pki_settings, dev, web):
+    question_id = await questions.create_question(pool, "Khi nào đi chợ?", None, None)
+    # Every form of the audio and caption pages must render. Without htmx a form is submitted as a GET of the page,
+    # which would put the typed reference transcript in the URL (access log, browser history).
+    found = await _every_form(pool, pki_settings, dev["device_id"], web)
+    candidate, proposed = found["candidate"], found["proposed"]
+    clip, picture = {"id": found["clip"]}, {"id": found["picture"]}
     pages = {
         "/eval": [],
         "/eval/questions": [],
