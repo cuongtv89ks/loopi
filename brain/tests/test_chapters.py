@@ -74,9 +74,9 @@ async def test_a_settled_day_becomes_closed_chapters_with_vietnamese_summaries(p
     assert (second["ts_start"], second["moment_count"]) == (NINE + dt.timedelta(minutes=15), 16)
     assert first["closed"] and second["closed"]
     assert (first["title"], first["summary"]) == ("Chương 1", "Buổi sáng ở nhà. Mọi người làm việc.")
-    assert first["model_version"] == "ollama:qwen3:4b" and first["summary_signature"] == first["signature"]
+    assert first["model_version"] == "ollama:qwen3:8b" and first["summary_signature"] == first["signature"]
     body = _chats(ollama)[1]
-    assert body["model"] == "qwen3:4b" and body["format"] == chapters.SUMMARY_SCHEMA and body["think"] is False
+    assert body["model"] == "qwen3:8b" and body["format"] == chapters.SUMMARY_SCHEMA and body["think"] is False
     system, user = body["messages"]
     assert ASR_CAVEAT in system["content"] and "Vietnamese" in system["content"]
     assert user["content"].startswith("Part of the day from 09:15 to 09:29:")
@@ -285,9 +285,9 @@ async def test_the_planner_comes_back_for_summaries_an_outage_or_a_failure_left_
     await _old(pool, dev["device_id"], 10)
     chapter = await insert_chapter(pool, old_day, NINE - dt.timedelta(days=10), NINE - dt.timedelta(days=10))
     now, zone = NINE + dt.timedelta(days=1), pki_settings.zone
-    ollama.models.remove("qwen3:4b")  # the summary model cannot run: no build just to fail
+    ollama.models.remove("qwen3:8b")  # the summary model cannot run: no build just to fail
     assert old_day not in await chapters.plan_chapters(pool, ctx.router, zone, now)
-    ollama.models.append("qwen3:4b")
+    ollama.models.append("qwen3:8b")
     async with pool.connection() as conn:
         await conn.execute("UPDATE chapter SET summary_error = 'x', summary_error_at = %s WHERE id = %s",
                            (now - dt.timedelta(hours=1), chapter))

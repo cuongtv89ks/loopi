@@ -78,6 +78,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D18 | Đèn báo ghi hình | Đèn báo ghi hình là LED ACT (xanh lá) có sẵn trên Pi Zero W, agent điều khiển qua `/sys/class/leds/ACT`, nên không phải gắn LED ngoài. Sau khi boot, firmware và kernel không dùng LED này nữa; agent thoát thì systemd tắt nó. LED đỏ gắn GPIO17 vẫn cấu hình được. Ý nghĩa các kiểu sáng (mục 7.2) và bất biến riêng tư giữ nguyên |
 | D19 | Mức âm thanh | USB mic thu tiếng nói rất nhỏ: đo trên hơn 1 300 đoạn ghi trong 2 ngày, RMS khoảng −55 dBFS cả ngày lẫn đêm, kể cả khi bật AGC của mic; tăng volume mixer chỉ được thêm 2–3 dB. Vì vậy agent khuếch đại số mỗi khung âm thanh trước khi encode Opus, qua một bộ giới hạn đỉnh −1 dBFS (attack tức thì, nhả khoảng 100 ms) để tiếng động lớn sát mic không bị vỡ. Mức khuếch đại là `capture.audio_gain_db` trong `loopi.toml` (mặc định 20 dB, cho phép 0–36 dB), không chỉnh từ xa; protocol v1 giữ nguyên. Brain chuẩn hoá mức âm thanh trước VAD/ASR và cho bản nghe trên web: đưa phân vị 99,9 của biên độ lên −6 dBFS (phân vị chứ không phải đỉnh, vì có những mẫu nhiễu lẻ chạm 0 dBFS), tối đa +30 dB, không bao giờ giảm, và không nâng nền nhiễu của phòng lên quá −40 dBFS. File thô giữ nguyên như lúc thu |
 | D20 | Lưu audio thô | Brain giữ audio thô 7 ngày như video, không xoá ngay sau khi có transcript: transcript chưa đủ tin cậy (Whisper có thể bịa câu trên tiếng ồn hoặc bỏ sót tiếng nói nhỏ) và người dùng cần nghe lại bản đã chuẩn hoá mức âm thanh (D19). Số ngày giữ video thô và audio thô chỉnh được trong trang Cài đặt (mặc định 7 và 7). Job lưu trữ lúc 03:00 chỉ chạy sau khi người dùng bật trong Cài đặt (mặc định tắt) và chỉ xoá file thô (kèm bản xem/nghe đã chuyển đổi) của những đoạn đã phân tích xong; keyframe, transcript, caption, chương và recap vẫn giữ vĩnh viễn |
+| D23 | Một model chữ | Tóm tắt chương, recap và chat dùng chung một model chữ cục bộ (`qwen3:8b`) thay vì `qwen3:4b` cho tóm tắt chương: đo ngày 2026-10-17, recap nạp `qwen3:8b` (6,7 GB) khi `qwen3:4b` (3,9 GB) vẫn còn trong RAM sau lượt tóm tắt cuối, máy chỉ còn 661 MB trống và swap đầy. Với một model chữ, lúc cao nhất Ollama giữ `qwen3:8b` cùng một model ảnh hoặc embedding (≈ 9,6 GB). Tóm tắt chương chậm hơn khoảng gấp đôi |
 
 ---
 
@@ -301,7 +302,7 @@ tasks:
   caption:         { provider: ollama, model: minicpm-v4.6 }
   asr:             { provider: local,  model: faster-whisper/large-v3-turbo-int8 }
   embed:           { provider: ollama, model: qwen3-embedding:0.6b }
-  chapter_summary: { provider: ollama, model: qwen3:4b }
+  chapter_summary: { provider: ollama, model: qwen3:8b }
   recap:           { provider: ollama, model: qwen3:8b }
   chat:            { provider: ollama, model: qwen3:8b }
   # Tuỳ chọn, chỉ khi đã đặt ANTHROPIC_API_KEY:

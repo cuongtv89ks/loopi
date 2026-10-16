@@ -38,7 +38,7 @@ def test_committed_providers_yaml_equals_built_in_defaults():
     assert load_providers(None) == DEFAULT_CONFIG
     assert DEFAULT_CONFIG.privacy.allow_cloud_images is False
     assert DEFAULT_CONFIG.privacy.allow_cloud_audio is False
-    assert DEFAULT_CONFIG.ollama_models() == ["minicpm-v4.6:1b", "qwen3-embedding:0.6b", "qwen3:4b", "qwen3:8b"]
+    assert DEFAULT_CONFIG.ollama_models() == ["minicpm-v4.6:1b", "qwen3-embedding:0.6b", "qwen3:8b"]
 
 
 @pytest.mark.parametrize(
@@ -209,7 +209,7 @@ async def test_health_reports_missing_models_and_unreachable_server():
     health = await router.health()
     assert health.reachable is True
     assert health.present == ["minicpm-v4.6:1b", "qwen3:8b"]
-    assert health.missing == ["qwen3-embedding:0.6b", "qwen3:4b"]
+    assert health.missing == ["qwen3-embedding:0.6b"]
     assert fake.timeouts == [("/api/tags", {"connect": 5.0, "read": 5.0, "write": 5.0, "pool": 5.0})]
     assert router.task_ready("caption", health) and not router.task_ready("embed", health)
     fake.down = True
@@ -351,7 +351,7 @@ async def test_a_thread_count_is_sent_for_text_models_only_and_only_when_set():
 
 
 async def test_build_router_gives_every_text_task_model_the_text_options():
-    assert DEFAULT_CONFIG.ollama_text_models() == {"qwen3:4b", "qwen3:8b"}
+    assert DEFAULT_CONFIG.ollama_text_models() == {"qwen3:8b"}
     fake = FakeOllama()
     settings = Settings(database_url="postgresql://unused", ollama_url="http://models.test:11434",
                         ollama_text_keep_alive="2m", llm_num_ctx=4096, llm_timeout_s=600, llm_num_thread=3)
@@ -361,7 +361,7 @@ async def test_build_router_gives_every_text_task_model_the_text_options():
     await router.chat("caption", [{"role": "user", "content": "x"}], images=[b"img"])
     assert [(b["model"], b["keep_alive"], b["options"].get("num_ctx"), b["options"].get("num_thread"))
             for _, b in fake.requests] == [
-        ("qwen3:4b", "2m", 4096, 3), ("qwen3:8b", "2m", 4096, 3), ("qwen3:8b", "2m", 4096, 3),
+        ("qwen3:8b", "2m", 4096, 3), ("qwen3:8b", "2m", 4096, 3), ("qwen3:8b", "2m", 4096, 3),
         ("minicpm-v4.6:1b", "30m", None, None),
     ]
     assert [t["read"] for _, t in fake.timeouts] == [600.0, 600.0, 600.0, 5.0]

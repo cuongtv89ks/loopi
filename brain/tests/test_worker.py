@@ -7,7 +7,6 @@ import pytest
 from procrastinate.periodic import PeriodicRegistry
 
 from helpers import (
-    DEFAULT_OLLAMA_MODELS,
     T0,
     TWO_SCENES,
     FakeOllama,
@@ -26,6 +25,7 @@ from loopi_brain import cli, health
 from loopi_brain.config import Settings
 from loopi_brain.pipeline import asr, context, dispatch, jobs, worker
 from loopi_brain.pipeline.asr import Region, RegionResult, SegmentResult
+from loopi_brain.providers.config import DEFAULT_CONFIG
 
 
 @pytest.fixture
@@ -155,10 +155,11 @@ async def test_models_pull_fetches_every_configured_model(pki_settings):
     fake = FakeOllama(models=[])
     downloads, lines = [], []
     pulled = await worker.pull_models(pki_settings, fake.client(), download=downloads.append, report=lines.append)
-    assert [body["model"] for _, body in fake.requests] == DEFAULT_OLLAMA_MODELS
-    assert pulled == [*DEFAULT_OLLAMA_MODELS, "faster-whisper/large-v3-turbo"]
+    configured = DEFAULT_CONFIG.ollama_models()
+    assert [body["model"] for _, body in fake.requests] == configured
+    assert pulled == [*configured, "faster-whisper/large-v3-turbo"]
     assert downloads == [pki_settings]
-    assert len(lines) == len(DEFAULT_OLLAMA_MODELS) + 1
+    assert len(lines) == len(configured) + 1
 
 
 def test_models_pull_command(monkeypatch, capsys):

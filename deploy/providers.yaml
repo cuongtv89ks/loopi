@@ -9,7 +9,7 @@ tasks:
   caption:         { provider: ollama, model: "minicpm-v4.6:1b" }
   asr:             { provider: local,  model: faster-whisper/large-v3-turbo-int8 }
   embed:           { provider: ollama, model: "qwen3-embedding:0.6b" }
-  chapter_summary: { provider: ollama, model: "qwen3:4b" }
+  chapter_summary: { provider: ollama, model: "qwen3:8b" }
   recap:           { provider: ollama, model: "qwen3:8b" }
   chat:            { provider: ollama, model: "qwen3:8b" }
   # Optional cloud routes, for text tasks only (chapter_summary, recap, chat), used only when ANTHROPIC_API_KEY is
