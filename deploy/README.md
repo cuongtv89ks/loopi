@@ -67,7 +67,8 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - **Tìm kiếm** (`/search`): plain search by meaning and by words; "Hỏi" answers from the matching moments only, cites
   them, and streams the answer (on a CPU the first words take tens of seconds). No matching moment: "Không tìm thấy".
 - **Cài đặt** (`/settings`): providers (read only; edit `deploy/providers.yaml`, then
-  `docker compose up -d api worker`), how many days raw video and audio are kept (7 and 7 by default, spec D20),
+  `docker compose -p deploy up -d --force-recreate api worker`: the file is bind-mounted, so plain `up -d` sees no
+  change and the worker only reads it at start), how many days raw video and audio are kept (7 and 7 by default, spec D20),
   "Quên khoảng thời gian" (preview, then permanent deletion of everything recorded in the range, at most 7 days at a
   time; an audit row keeps the range and the counts, never content), and reprocessing a day with the current models.
 - Retention is **off** after installing: Cài đặt shows how many recordings (and GB) it would delete; once turned on
@@ -79,4 +80,5 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   Ollama from ≈ 4.2 GB to ≈ 9.4–10 GB; text models unload 1 minute after their last request. A text request may
   take up to 15 minutes on the CPU (`LOOPI_LLM_TIMEOUT_S`, 900 s).
 - Optional Anthropic text provider: set `ANTHROPIC_API_KEY` in `deploy/.env` and route a text task to `anthropic` in
-  `deploy/providers.yaml` (examples there). Images and audio are never sent; without the key those routes are skipped.
+  `deploy/providers.yaml` (examples there). Only text goes to the cloud provider (including captions and transcripts
+  derived from your recordings); images and audio are never sent. Without the key those routes are skipped.

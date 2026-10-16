@@ -98,4 +98,7 @@ def test_the_anthropic_key_is_optional_and_comes_only_from_the_env_file():
     example = (DEPLOY / ".env.example").read_text()
     assert "\nANTHROPIC_API_KEY=\n" in example  # empty: 100 % local unless the owner adds a key
     providers = yaml.safe_load((DEPLOY / "providers.yaml").read_text())
-    assert all(step["provider"] != "anthropic" for step in providers["tasks"].values())  # routes stay commented out
+    for task, route in providers["tasks"].items():  # 100 % local by default: no route, fallbacks included
+        while route:
+            assert route["provider"] != "anthropic", f"{task} routes to anthropic; keep the examples commented out"
+            route = route.get("fallback")
