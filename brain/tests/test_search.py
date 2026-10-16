@@ -183,3 +183,25 @@ async def test_the_date_range_means_local_days_not_utc_days(web, pool, dev):
     on_the_15th = (await web.get("/search", params={"q": "đọc sách", "from": "2026-10-15", "to": "2026-10-15"})).text
     assert f'<a href="/?day=2026-10-15#m-{moment}">' in on_the_15th
     assert "<time>15/10/2026 01:00</time>" in on_the_15th
+
+
+async def test_empty_date_fields_of_the_form_mean_no_limit(web, pool, dev):
+    ids = await _memories(pool, dev["device_id"])
+    text = (await web.get("/search", params={"q": "đi chợ", "from": "", "to": ""})).text  # what the form submits
+    assert text.count('class="hit"') == 3 and 'name="from" value=""' in text and 'name="to" value=""' in text
+    response = await web.get("/search", params={"q": "đi chợ", "from": "  ", "to": " "})
+    assert response.status_code == 200 and response.text.count('class="hit"') == 3
+    # only the lower bound: nothing of the 14th is found from the 15th on, the moment of the 15th is
+    response = await web.get("/search", params={"q": "đi chợ", "from": "2026-10-15", "to": ""})
+    assert response.status_code == 200 and "Không tìm thấy khoảnh khắc nào." in response.text
+    text = (await web.get("/search", params={"q": "empty room", "from": "2026-10-15", "to": ""})).text
+    assert f"m-{ids['other']}" in text and text.count('class="hit"') == 1 and 'name="from" value="2026-10-15"' in text
+    # only the upper bound
+    text = (await web.get("/search", params={"q": "đi chợ", "from": "", "to": "2026-10-14"})).text
+    assert text.count('class="hit"') == 3 and 'name="to" value="2026-10-14"' in text
+    assert "Không tìm thấy khoảnh khắc nào." in (await web.get("/search", params={"q": "đi chợ", "to": "2026-10-13"})).text
+
+
+async def test_an_unreadable_date_is_still_refused(web):
+    for params in ({"from": "hôm qua"}, {"to": "15/10/2026"}, {"from": "", "to": "mai"}):
+        assert (await web.get("/search", params={"q": "x", **params})).status_code == 422

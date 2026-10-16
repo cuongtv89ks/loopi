@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Annotated
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BeforeValidator
 
 from .. import search
 from ..days import day_bounds_utc
@@ -15,6 +17,14 @@ KIND_LABELS = {"visual": "Hình ảnh", "speech": "Lời nói", "marker": "Đán
 SEARCH_LIMIT = 30
 
 router = APIRouter()
+
+
+def _blank_is_none(value):
+    """A browser submits an empty date field as ``from=``: no limit. Anything else non-blank must be a date."""
+    return (value.strip() or None) if isinstance(value, str) else value
+
+
+OptionalDate = Annotated[dt.date | None, BeforeValidator(_blank_is_none)]
 
 
 def hit_view(hit: search.Hit, zone) -> dict:
@@ -46,8 +56,8 @@ def range_utc(first: dt.date | None, last: dt.date | None, zone) -> tuple[dt.dat
 async def search_page(
     request: Request,
     q: str = Query(default="", max_length=2000),
-    first: dt.date | None = Query(default=None, alias="from"),
-    last: dt.date | None = Query(default=None, alias="to"),
+    first: Annotated[OptionalDate, Query(alias="from")] = None,
+    last: Annotated[OptionalDate, Query(alias="to")] = None,
 ):
     state = request.app.state
     zone = state.settings.zone
