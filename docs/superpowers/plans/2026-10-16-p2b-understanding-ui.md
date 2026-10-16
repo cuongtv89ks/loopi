@@ -474,6 +474,11 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-16; they amend the steps above):**
+- **R-I2 (part):** `days.py` also provides `hm(ts, zone) -> str` (local "HH:MM"), used by Tasks 4 and 5 instead of their private `_hm` copies.
+- **R-M3 (part):** the D20 row and §9.5 text you add to the spec must also say that the nightly deletion runs only after the owner turns it on in Cài đặt (mặc định tắt).
+- **R-M2:** commit trailers as in globals.md (name your own model); the plan's snippets show the controller's Opus line.
+
 ---
 
 ### Task 2: Text-model plumbing — short keep-alive and a context window for text models, shared answer helpers
@@ -909,6 +914,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-16; they amend the steps above):**
+- **R-I2 (part):** `llm.py` also provides `marker_line(at: str, note: str | None) -> str` building exactly the line `"<time> the user pressed the mark button[: note]"` (the string Task 5's test asserts), used by Tasks 4 and 5 instead of building it twice.
 
 ---
 
@@ -2198,6 +2206,11 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-16; they amend the steps above):**
+- **R-I1:** in the planner tests' `_old()` helper set `moment.created_at` from the clock the planner is given (`NINE - dt.timedelta(days=days_ago)`), not the database clock (`now()`), so the tests stay green as the real date moves on.
+- **R-I2:** use `moments.marker_note(meta)` (P2a, `pipeline/moments.py`) for the marker note, `days.hm` for "HH:MM" and `llm.marker_line` for the marker line — no private copies.
+- **R-M1:** `summarise_chapters` skips a chapter whose `summary_error_at` is within the last 6 hours on its first attempt (same cooldown the planner applies to older days), with a test — so a chapter whose answer is always invalid does not cost 4 model calls every hour.
+
 ---
 
 ### Task 5: The day recap, its commitments and the recap planner (23:30, and again when the day changed)
@@ -2931,6 +2944,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-16; they amend the steps above):**
+- **R-I2:** use `moments.marker_note`, `days.hm` and `llm.marker_line` (Tasks 1–2) instead of private copies.
+- **R-I4:** `rewrite_recap` first deletes the day's failed `write_recap` jobs (`DELETE FROM procrastinate_jobs WHERE queueing_lock = %s AND status = 'failed'`, events cascade) and clears the day's recap error, then defers the new run; extend `test_rewriting_the_recap_marks_it_stale_and_asks_for_a_new_one`: a failed job + the POST → no failure banner and `plan_recaps` can plan the day again.
 
 ---
 
@@ -5391,6 +5408,9 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-16; they amend the steps above):**
+- **R-I2:** use `moments.marker_note` for the marker note instead of re-implementing it.
+
 ---
 
 ### Task 9: Cài đặt — providers, retention days and reprocessing a day
@@ -5955,6 +5975,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-16; they amend the steps above):**
+- **R-M6:** rename the local variable `retention` in `save_retention` so it does not shadow the imported module.
 
 ---
 
@@ -6568,6 +6591,11 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-16; they amend the steps above):**
+- **R-I3:** one rule for "which files belong to an item": `media.item_files(kind, raw_path, view_path) -> list[str]` (raw path; `view_path` for video; `media.audio_view_path` for audio) next to `remove_files`; `forget` uses it (Task 11's retention uses it too).
+- **R-M15:** an item path that cannot be resolved inside the media root is logged (warning naming the item), never skipped silently.
+- **R-M3 (part):** deleting the day's recap on forget is a deliberate deviation from §9.5 (ruling R24): the recap is regenerated from what remains.
+
 ---
 
 ### Task 11: Retention at 03:00 (D20) — off until the owner turns it on
@@ -7062,6 +7090,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-16; they amend the steps above):**
+- **R-I3:** use `media.item_files` (Task 10) instead of a private `_paths`.
 
 ---
 
@@ -7806,6 +7837,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-16; they amend the steps above):**
+- **R-M4:** tests must not read the ambient `ANTHROPIC_API_KEY`: add an autouse fixture in `brain/tests/conftest.py` that runs `monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)` (add conftest.py to the task's files and `git add`).
 
 ---
 
