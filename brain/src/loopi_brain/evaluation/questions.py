@@ -6,11 +6,13 @@ from a labelling search that shows more than the live one: hybrid search with lo
 or every moment of the chosen days in time order — so the truth does not depend on what retrieval finds today.
 
 A correct moment is kept with what it came from (keyframe, recording and time, marker item): reprocessing a day
-gives its moments new ids, and the runner still recognises them (``matches``).
+gives its moments new ids, and once the picked moment is gone the runner still recognises its successor
+(``matches``). While the picked moment exists only that moment is correct.
 """
 from __future__ import annotations
 
 import datetime as dt
+from zoneinfo import ZoneInfo
 
 from psycopg_pool import AsyncConnectionPool
 
@@ -27,8 +29,9 @@ LABEL_CANDIDATES = 100
 LABEL_MAX_DISTANCE = 1.0  # every moment whose meaning is not opposite to the question's
 LABEL_MIN_SIMILARITY = 0.1
 BROWSE_LIMIT = 200
-# A speech region transcribed again starts a little earlier or later: its moment still answers the question if it
-# comes from the same recording and starts within the answer's span, give or take this much.
+# A speech region transcribed again starts a little earlier or later: once the picked moment is gone, its successor
+# still answers the question if it comes from the same recording and starts within the answer's span, give or take
+# this much.
 SPEECH_SLACK = dt.timedelta(seconds=2)
 
 
@@ -82,14 +85,16 @@ async def list_questions(pool: AsyncConnectionPool) -> list[dict]:
 
 
 async def get_question(pool: AsyncConnectionPool, question_id: str) -> dict | None:
-    """A question with its correct moments in time order (each with the text of its moment while it exists)."""
+    """A question with its correct moments in time order. Each has ``live`` (its moment still exists) and, while it
+    does, the ``text`` of that moment."""
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT * FROM eval_question WHERE id = %s", (question_id,))
         question = await cur.fetchone()
         if question is None:
             return None
         cur = await conn.execute(
-            "SELECT a.*, m.text FROM eval_answer a LEFT JOIN moment m ON m.id = a.moment_id"
+            "SELECT a.*, m.text, (m.id IS NOT NULL) AS live FROM eval_answer a"
+            " LEFT JOIN moment m ON m.id = a.moment_id"
             " WHERE a.question_id = %s ORDER BY a.ts_start, a.moment_id",
             (question_id,),
         )
@@ -123,7 +128,8 @@ async def remove_answer(pool: AsyncConnectionPool, question_id: str, moment_id: 
 
 
 async def label_search(
-    pool: AsyncConnectionPool, router: Router | None, query: str, first: dt.date | None, last: dt.date | None, zone
+    pool: AsyncConnectionPool, router: Router | None, query: str, first: dt.date | None, last: dt.date | None,
+    zone: ZoneInfo,
 ) -> list[Hit]:
     """What the owner picks correct moments from: with words, the hybrid search with looser thresholds and up to
     LABEL_LIMIT results; without words but with days, every moment of those days in time order (BROWSE_LIMIT)."""
@@ -149,10 +155,13 @@ async def label_search(
 
 
 def matches(answer: dict, hit: Hit) -> bool:
-    """Is ``hit`` the correct moment ``answer`` — the same moment, or the one its source has after a reprocess?"""
+    """Is ``hit`` the correct moment ``answer``? The same moment always is. While the picked moment still exists
+    (``answer["live"]``) nothing else is: a neighbouring speech region is another moment. Once it is gone (its day
+    was reprocessed), the moment its source has now is: same keyframe, same marker item, or speech of the same
+    recording starting within the answer's span give or take SPEECH_SLACK."""
     if hit.id == answer["moment_id"]:
         return True
-    if hit.kind != answer["kind"]:
+    if answer["live"] or hit.kind != answer["kind"]:
         return False
     if answer["kind"] == "visual":
         return answer["keyframe_id"] is not None and hit.keyframe_id == answer["keyframe_id"]
@@ -177,7 +186,8 @@ def ranks(answers: list[dict], hits: list[Hit]) -> list[int]:
 
 
 async def answered(pool: AsyncConnectionPool) -> list[dict]:
-    """The questions that have at least one correct moment, each with its answers (what the runner scores).
+    """The questions that have at least one correct moment, each with its answers (what the runner scores; each
+    answer says whether its moment still exists: ``live``).
 
     The two reads are not one snapshot: a question whose last correct moment the owner removes in between has none
     by the second read and is "not labelled yet" — left out, not an error."""
@@ -187,7 +197,10 @@ async def answered(pool: AsyncConnectionPool) -> list[dict]:
             " WHERE EXISTS (SELECT 1 FROM eval_answer a WHERE a.question_id = q.id) ORDER BY q.created_at, q.id"
         )
         rows = await cur.fetchall()
-        cur = await conn.execute("SELECT * FROM eval_answer ORDER BY ts_start")
+        cur = await conn.execute(
+            "SELECT a.*, EXISTS (SELECT 1 FROM moment m WHERE m.id = a.moment_id) AS live"
+            " FROM eval_answer a ORDER BY a.ts_start"
+        )
         answers = await cur.fetchall()
     by_question: dict[str, list[dict]] = {}
     for answer in answers:

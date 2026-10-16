@@ -58,10 +58,14 @@ async def test_a_correct_moment_keeps_what_it_came_from(pool, pki_settings, dev)
     assert [(a["moment_id"], a["kind"], a["item_id"], a["keyframe_id"], a["text"]) for a in answers] == [
         (visual, "visual", video, kf, "A person cooks"), (speech, "speech", audio, None, "Mai đi chợ")]
     assert answers[1]["ts_end"] - answers[1]["ts_start"] == dt.timedelta(seconds=4)
+    assert [a["live"] for a in answers] == [True, True]  # the picked moments exist
+    assert [a["live"] for a in (await questions.answered(pool))[0]["answers"]] == [True, True]
     assert (await questions.counts(pool)) == {"questions": 1, "answered": 1}
     async with pool.connection() as conn:  # the day is reprocessed: the moments go, the answers stay
         await conn.execute("DELETE FROM moment")
-    assert [a["text"] for a in (await questions.get_question(pool, qid))["answers"]] == [None, None]
+    gone = (await questions.get_question(pool, qid))["answers"]
+    assert [(a["text"], a["live"]) for a in gone] == [(None, False), (None, False)]
+    assert [a["live"] for a in (await questions.answered(pool))[0]["answers"]] == [False, False]
     assert await questions.remove_answer(pool, qid, visual) and not await questions.remove_answer(pool, qid, visual)
     assert [q["id"] for q in await questions.answered(pool)] == [qid]
 
@@ -94,7 +98,7 @@ async def test_a_question_whose_last_correct_moment_goes_between_the_two_reads_i
     gone_moment = await insert_moment(pool, d, kind="marker", ts=NINE)
     kept_moment = await insert_moment(pool, d, kind="marker", ts=NINE)
     gone = await questions.create_question(pool, "Ai nấu ăn?", None, None)
-    kept = await questions.create_question(pool, "Mai đi đâu?", None, None)
+    kept = await questions.create_question(pool, "Khi nào?", None, None)
     assert await questions.add_answer(pool, gone, gone_moment) and await questions.add_answer(pool, kept, kept_moment)
 
     async def the_owner_removes_the_last_correct_moment():
@@ -107,19 +111,35 @@ async def test_a_question_whose_last_correct_moment_goes_between_the_two_reads_i
 
 
 def test_an_answer_is_recognised_after_its_day_is_reprocessed():
-    speech = {"moment_id": "M1", "kind": "speech", "item_id": "I1", "keyframe_id": None,
+    speech = {"moment_id": "M1", "kind": "speech", "item_id": "I1", "keyframe_id": None, "live": False,
               "ts_start": NINE + dt.timedelta(seconds=5), "ts_end": NINE + dt.timedelta(seconds=9)}
-    picture = {"moment_id": "M2", "kind": "visual", "item_id": "V1", "keyframe_id": "K1", "ts_start": NINE, "ts_end": NINE}
-    marker = {"moment_id": "M3", "kind": "marker", "item_id": "K9", "keyframe_id": None, "ts_start": NINE, "ts_end": NINE}
+    picture = {"moment_id": "M2", "kind": "visual", "item_id": "V1", "keyframe_id": "K1", "live": False,
+               "ts_start": NINE, "ts_end": NINE}
+    marker = {"moment_id": "M3", "kind": "marker", "item_id": "K9", "keyframe_id": None, "live": False,
+              "ts_start": NINE, "ts_end": NINE}
     assert questions.matches(speech, _hit("M1", "speech", NINE))  # the same moment
     assert questions.matches(speech, _hit("N1", "speech", NINE + dt.timedelta(seconds=4), item_id="I1"))
     assert questions.matches(speech, _hit("N1", "speech", NINE + dt.timedelta(seconds=11), item_id="I1"))
+    assert questions.matches(speech, _hit("N1", "speech", NINE + dt.timedelta(seconds=3), item_id="I1"))  # 5 s - 2 s
+    assert not questions.matches(speech, _hit("N1", "speech", NINE + dt.timedelta(seconds=2.9), item_id="I1"))
     assert not questions.matches(speech, _hit("N1", "speech", NINE + dt.timedelta(seconds=12), item_id="I1"))
     assert not questions.matches(speech, _hit("N2", "speech", NINE + dt.timedelta(seconds=6), item_id="I2"))
     assert questions.matches(picture, _hit("N3", "visual", NINE, item_id="V1", keyframe_id="K1"))
     assert not questions.matches(picture, _hit("N4", "visual", NINE, item_id="V1", keyframe_id="K2"))
     assert questions.matches(marker, _hit("N5", "marker", NINE, item_id="K9"))
     assert not questions.matches(marker, _hit("N6", "speech", NINE, item_id="K9"))
+    # While the picked moment still exists only its own id is correct: its neighbours are other moments.
+    live = {**speech, "live": True}
+    assert questions.matches(live, _hit("M1", "speech", NINE + dt.timedelta(seconds=5), item_id="I1"))
+    assert not questions.matches(live, _hit("N1", "speech", NINE + dt.timedelta(seconds=10), item_id="I1"))
+    assert not questions.matches(live, _hit("N1", "speech", NINE + dt.timedelta(seconds=5), item_id="I1"))
+    assert questions.matches(speech, _hit("N1", "speech", NINE + dt.timedelta(seconds=10), item_id="I1"))  # gone
+    assert questions.matches({**picture, "live": True}, _hit("M2", "visual", NINE, keyframe_id="K1"))
+    assert not questions.matches({**picture, "live": True}, _hit("N3", "visual", NINE, keyframe_id="K1"))
+    assert questions.matches({**marker, "live": True}, _hit("M3", "marker", NINE, item_id="K9"))
+    assert not questions.matches({**marker, "live": True}, _hit("N5", "marker", NINE, item_id="K9"))
+    assert questions.ranks([live], [_hit("N1", "speech", NINE + dt.timedelta(seconds=10), item_id="I1"),
+                                    _hit("M1", "speech", NINE + dt.timedelta(seconds=5), item_id="I1")]) == [2]
     hits = [_hit("X", "visual", NINE), _hit("N1", "speech", NINE + dt.timedelta(seconds=5), item_id="I1"),
             _hit("Y", "speech", NINE), _hit("N3", "visual", NINE, keyframe_id="K1")]
     assert questions.ranks([speech, picture, marker], hits) == [2, 4]
