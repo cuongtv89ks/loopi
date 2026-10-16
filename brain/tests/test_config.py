@@ -42,6 +42,20 @@ def test_asr_gain_ceiling_from_env(monkeypatch):
             Settings()
 
 
+def test_the_text_model_thread_count_is_unset_unless_given(monkeypatch):
+    import pydantic
+    import pytest
+
+    assert Settings(database_url="postgresql://x").llm_num_thread is None  # Ollama decides (all cores)
+    monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("LOOPI_LLM_NUM_THREAD", "2")
+    assert Settings().llm_num_thread == 2
+    for bad in ("0", "-1", "two"):
+        monkeypatch.setenv("LOOPI_LLM_NUM_THREAD", bad)
+        with pytest.raises(pydantic.ValidationError, match="llm_num_thread"):
+            Settings()
+
+
 def test_text_model_defaults_and_limits(monkeypatch):
     import pydantic
     import pytest

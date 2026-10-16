@@ -41,10 +41,12 @@ class OllamaProvider:
         text_keep_alive: str = "1m",
         num_ctx: int | None = None,
         text_timeout: float | None = None,
+        num_thread: int | None = None,
     ):
         """``text_models`` (the big text models) stay loaded only ``text_keep_alive`` after a request, get a
-        ``num_ctx`` context window and wait up to ``text_timeout`` seconds for an answer; every other model stays
-        ``keep_alive``, with Ollama's default context and the client's timeout."""
+        ``num_ctx`` context window, run on ``num_thread`` threads when it is set, and wait up to ``text_timeout``
+        seconds for an answer; every other model stays ``keep_alive``, with Ollama's default context and thread
+        count and the client's timeout."""
         self._base = base_url.rstrip("/")
         self._keep_alive = keep_alive
         self._client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
@@ -52,6 +54,7 @@ class OllamaProvider:
         self._text_keep_alive = text_keep_alive
         self._num_ctx = num_ctx
         self._text_timeout = text_timeout
+        self._num_thread = num_thread
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -109,6 +112,8 @@ class OllamaProvider:
             options["num_predict"] = max_tokens  # a looping model stops instead of filling the context
         if text_model and self._num_ctx is not None:
             options["num_ctx"] = self._num_ctx  # Ollama silently drops the start of a longer prompt
+        if text_model and self._num_thread is not None:
+            options["num_thread"] = self._num_thread  # leaves cores to live work (Whisper, captions)
         payload: dict = {
             "model": model,
             "messages": msgs,

@@ -330,18 +330,35 @@ async def test_text_models_leave_memory_soon_and_get_a_context_window():
     assert vision_timeout["read"] == 5.0  # the client's own timeout
 
 
+async def test_a_thread_count_is_sent_for_text_models_only_and_only_when_set():
+    fake = FakeOllama()
+    provider = OllamaProvider("http://models.test:11434", client=fake.client(), text_models=frozenset({"qwen3:8b"}),
+                              num_thread=2)
+    await provider.chat("qwen3:8b", [{"role": "user", "content": "x"}])
+    _ = [p async for p in provider.stream_chat("qwen3:8b", [{"role": "user", "content": "x"}])]
+    await provider.chat("minicpm-v4.6:1b", [{"role": "user", "content": "x"}], images=[b"img"])
+    (_, text), (_, streamed), (_, vision) = fake.requests
+    assert text["options"]["num_thread"] == 2 and streamed["options"]["num_thread"] == 2
+    assert "num_thread" not in vision["options"]  # captions keep Ollama's own choice
+    fake = FakeOllama()
+    unset = OllamaProvider("http://models.test:11434", client=fake.client(), text_models=frozenset({"qwen3:8b"}))
+    await unset.chat("qwen3:8b", [{"role": "user", "content": "x"}])
+    assert "num_thread" not in fake.requests[0][1]["options"]
+
+
 async def test_build_router_gives_every_text_task_model_the_text_options():
     assert DEFAULT_CONFIG.ollama_text_models() == {"qwen3:4b", "qwen3:8b"}
     fake = FakeOllama()
     settings = Settings(database_url="postgresql://unused", ollama_url="http://models.test:11434",
-                        ollama_text_keep_alive="2m", llm_num_ctx=4096, llm_timeout_s=600)
+                        ollama_text_keep_alive="2m", llm_num_ctx=4096, llm_timeout_s=600, llm_num_thread=3)
     router = build_router(DEFAULT_CONFIG, settings, fake.client())
     for task in ("chapter_summary", "recap", "chat"):
         await router.chat(task, [{"role": "user", "content": "x"}])
     await router.chat("caption", [{"role": "user", "content": "x"}], images=[b"img"])
-    assert [(b["model"], b["keep_alive"], b["options"].get("num_ctx")) for _, b in fake.requests] == [
-        ("qwen3:4b", "2m", 4096), ("qwen3:8b", "2m", 4096), ("qwen3:8b", "2m", 4096),
-        ("minicpm-v4.6:1b", "30m", None),
+    assert [(b["model"], b["keep_alive"], b["options"].get("num_ctx"), b["options"].get("num_thread"))
+            for _, b in fake.requests] == [
+        ("qwen3:4b", "2m", 4096, 3), ("qwen3:8b", "2m", 4096, 3), ("qwen3:8b", "2m", 4096, 3),
+        ("minicpm-v4.6:1b", "30m", None, None),
     ]
     assert [t["read"] for _, t in fake.timeouts] == [600.0, 600.0, 600.0, 5.0]
 

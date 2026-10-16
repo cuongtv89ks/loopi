@@ -79,6 +79,11 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   ≈ 1.3 GB; `qwen3:8b` with its 8192-token context ≈ 6–6.5 GB and `qwen3:4b` ≈ 3.5 GB, so a recap or a chat raises
   Ollama from ≈ 4.2 GB to ≈ 9.4–10 GB; text models unload 1 minute after their last request. A text request may
   take up to 15 minutes on the CPU (`LOOPI_LLM_TIMEOUT_S`, 900 s).
+- CPU: by default Ollama runs a text model on all physical cores. If the recording → caption/transcript latency on
+  "Xử lý" goes above 15 minutes while chapters and recaps run, add `LOOPI_LLM_NUM_THREAD: "2"` (threads per
+  text-model request; captions and embeddings keep Ollama's default) to the `environment:` of both `api` and `worker`
+  in `deploy/docker-compose.yml`, then `docker compose -p deploy up -d --force-recreate --no-deps api worker`.
+  Recaps and chapters then take longer; unset, Ollama decides.
 - Optional Anthropic text provider: set `ANTHROPIC_API_KEY` in `deploy/.env` and route a text task to `anthropic` in
   `deploy/providers.yaml` (examples there). Only text goes to the cloud provider (including captions and transcripts
   derived from your recordings); images and audio are never sent. Without the key those routes are skipped.

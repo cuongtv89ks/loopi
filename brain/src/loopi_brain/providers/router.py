@@ -152,6 +152,7 @@ def build_router(config: ProvidersConfig, settings: Settings, client: httpx.Asyn
         text_keep_alive=settings.ollama_text_keep_alive,
         num_ctx=settings.llm_num_ctx,
         text_timeout=settings.llm_timeout_s,
+        num_thread=settings.llm_num_thread,
     )
     providers: dict[str, Provider] = {"ollama": ollama}
     if settings.anthropic_api_key is not None:

@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     ollama_text_keep_alive: str = "1m"
     llm_num_ctx: int = Field(default=8192, ge=2048, le=131072)
     llm_timeout_s: float = Field(default=900.0, ge=60.0, le=3600.0)
+    # Unset: Ollama picks the thread count (all physical cores). Set (e.g. 2): text-model requests use that many
+    # threads and leave the other cores to Whisper and captions, if live latency suffers while chapters and recaps run.
+    llm_num_thread: int | None = Field(default=None, ge=1, le=256)
     # Search (spec §10.4): a moment is relevant when its embedding is this close to the question's (cosine
     # distance), or when its text matches the question's words this well (pg_trgm word similarity). P2c tunes both.
     search_max_distance: float = Field(default=0.6, gt=0.0, le=2.0)
