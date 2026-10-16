@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     asr_languages: str = "vi,ko,en"
     whisper_cpu_threads: int = 4
     asr_max_gain_db: float = Field(default=30.0, ge=0.0, le=60.0)  # level gain before VAD/Whisper (spec D19)
-    asr_vad_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)  # Silero's speech probability for a region
+    asr_vad_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)  # Silero's speech probability a frame needs
     # Comma-separated names from ASR_RULES that are switched on (none by default).
     asr_rules: str = ""
     # Understanding (P2b): text models (chapters, recap, chat) leave memory a minute after answering (the host is

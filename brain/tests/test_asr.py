@@ -367,10 +367,28 @@ def test_a_switched_on_rule_drops_what_whisper_writes_on_noise(rule, region):
         RegionResult("en", 0.3, [seg("Can you pass me the salt please")]),  # unsure, but a whole sentence
         RegionResult("vi", 0.2, [seg("Ừ")]),  # a household language
         RegionResult("ko", 0.9, [seg("MBC 뉴스 보고 있었어요")]),  # talking about the news is no sign-off
+        # Real speech that merely contains a sign-off: the outro covers well under 80 % of the segment.
+        RegionResult("vi", 0.9, [seg("Mai mình đi chợ nhé, hãy đăng ký kênh để ủng hộ mình")]),
+        RegionResult("vi", 0.9, [seg("Mọi người hãy đăng ký kênh của con để ủng hộ con nhé")]),
     ],
 )
 def test_every_rule_keeps_real_speech(region):
     assert asr.kept_segments(region, frozenset(asr.RULES)) == region.segments
+
+
+def test_the_outro_rule_drops_a_segment_only_when_the_sign_off_is_most_of_it():
+    sign_off = "Hãy đăng ký kênh để ủng hộ mình nhé"
+    assert asr.is_outro(sign_off) and asr.is_outro(sign_off + "!")
+    assert not asr.is_outro("Mai mình đi chợ nhé, " + sign_off.lower())
+    assert not asr.is_outro("")
+
+
+def test_an_unknown_rule_name_is_an_error():
+    region = RegionResult("vi", 0.9, [seg("Mai mình đi chợ")])
+    with pytest.raises(ValueError, match="unknown ASR rules: typo"):
+        asr.kept_segments(region, frozenset({"outro", "typo"}))
+    with pytest.raises(ValueError, match="unknown ASR rules"):
+        asr.kept_segments(RegionResult("vi", 0.9, []), frozenset({"typo"}))
 
 
 def test_the_p2a_filters_still_apply_before_the_rules():

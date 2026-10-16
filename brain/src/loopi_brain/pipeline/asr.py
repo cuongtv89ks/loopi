@@ -61,11 +61,16 @@ HALLUCINATION_COVERAGE = 0.8
 # Rules that can be switched on (LOOPI_ASR_RULES; none by default, spec §13: only on the golden set's numbers).
 # Each one drops more of what Whisper writes on silence, TV or room noise, at the risk of dropping real speech.
 RULES = ASR_RULES
-# "outro": a whole segment that is a video's or a newscast's sign-off, worded in ways the phrase list above does not
-# cover ("Hãy subscribe cho kênh … video …", "Hãy đăng ký kênh để ủng hộ mình nhé", "MBC 뉴스 …입니다"). Matched on
-# the text in lower case with punctuation as spaces.
+# "outro": a segment that is a video's or a newscast's sign-off, worded in ways the phrase list above does not cover
+# ("Hãy subscribe cho kênh … video …", "Hãy đăng ký kênh để ủng hộ mình nhé", "MBC 뉴스 …입니다"). The patterns read
+# the text in lower case with punctuation as spaces; like P2a's phrases, a segment is dropped only when the matched
+# spans make up HALLUCINATION_COVERAGE of it, never because real speech merely contains a sign-off ("Mai mình đi
+# chợ nhé, hãy đăng ký kênh để ủng hộ mình"). The optional closing particles belong to the sign-off.
 OUTRO_PATTERNS = (
-    re.compile(r"\bhãy (?:like (?:và )?)?(?:subscribe|đăng k[ýí]) (?:cho )?kênh\b.*\b(?:video|ủng hộ)\b"),
+    re.compile(
+        r"\bhãy (?:like (?:và )?)?(?:subscribe|đăng k[ýí]) (?:cho )?kênh\b.*\b(?:video|ủng hộ)\b"
+        r"(?: (?:mình|nhé|nha|nhá|ạ))*"
+    ),
     re.compile(r"^mbc 뉴스 \w+입니다$"),
 )
 # "lone_phrase": a speech region whose every segment is one of these (lower case, no spaces or punctuation): what
@@ -116,7 +121,16 @@ def _spaced(text: str) -> str:
 
 
 def is_outro(text: str) -> bool:
-    return any(pattern.search(_spaced(text)) for pattern in OUTRO_PATTERNS)
+    """True when the outro patterns cover at least HALLUCINATION_COVERAGE of the segment (letters and digits only,
+    as in ``is_hallucination``)."""
+    spaced = _spaced(text)
+    covered = [False] * len(spaced)
+    for pattern in OUTRO_PATTERNS:
+        for match in pattern.finditer(spaced):
+            covered[match.start(): match.end()] = [True] * (match.end() - match.start())
+    total = len(spaced.replace(" ", ""))
+    hit = sum(1 for char, mark in zip(spaced, covered) if mark and char != " ")
+    return total > 0 and hit >= HALLUCINATION_COVERAGE * total
 
 
 _HALLUCINATIONS = tuple(sorted({_normalise(p) for p in HALLUCINATIONS}, key=len, reverse=True))
@@ -160,7 +174,10 @@ def keep_segment(seg: SegmentResult) -> bool:
 
 def kept_segments(result: RegionResult, rules: frozenset[str] = frozenset()) -> list[SegmentResult]:
     """The segments of one speech region worth storing: each one that passes ``keep_segment``, then the rules
-    switched on in ``rules`` (names from RULES)."""
+    switched on in ``rules`` (names from RULES; an unknown name is a ValueError)."""
+    unknown = sorted(rules - set(RULES))
+    if unknown:
+        raise ValueError(f"unknown ASR rules: {', '.join(unknown)} (known: {', '.join(RULES)})")
     kept = [s for s in result.segments if keep_segment(s)]
     if "outro" in rules:
         kept = [s for s in kept if not is_outro(s.text)]
@@ -309,6 +326,7 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
         await finish_item(pool, item_id, "skipped")
         return 0
     settings = ctx.settings
+    rules = settings.asr_rule_set
     results = await anyio.to_thread.run_sync(
         transcribe_file, path, ctx.transcriber, settings.asr_max_gain_db, settings.asr_vad_threshold
     )
@@ -322,7 +340,7 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
         # Re-running replaces the item's transcript (moments go with their segments: ON DELETE CASCADE).
         await conn.execute("DELETE FROM transcript_segment WHERE item_id = %s", (item_id,))
         for region, result in results:
-            kept = kept_segments(result, settings.asr_rule_set)
+            kept = kept_segments(result, rules)
             if not kept:
                 continue
             segment_ids = []
