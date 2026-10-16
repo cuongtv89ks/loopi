@@ -77,3 +77,11 @@ Part B fix: dispatched (BASE 2e68443)
 Part B fix re-review (sonnet): M1 (code), M2, M3, M4, M7 ADDRESSED, no new breakage; brain 340 passed + 1 skipped, 98 %. Part B complete (2a5c2c3..fdf72ce on feat/phase2).
 Out-of-scope (deferred): test_media/test_frames timeout tests have the same vacuous "no temp file" assertion as M7 had.
 Task 5: owner 2026-10-15 22:0x — keep smoke7 tonight for the P2a deploy; flash smoke8 tomorrow (Steps 4–7 pending).
+Task 5 Step 4: owner flashed smoke8 (2026-10-16 morning, HOST_MODE=1 flash-dev.sh); new device 01M50Z46G805BAEEB2QJ46VE1Y paired 08:42:27 KST (T0 ≈ 08:41); LED solid; /data/config/loopi.toml has audio_gain_db = 20.0 (imported by the new agent), /usr/bin/loopi-agent contains the D19 config string; mixer at power-on 0/16 + AGC on (unchanged, as designed).
+Task 5 Step 6 (first segment, 29 s partial): mean −42.8 dB, max −2.7 dB (old device typical: −55 / −30).
+Task 5 Step 6: smoke8 device 01M50Z46G805BAEEB2QJ46VE1Y, 6 full 59 s segments 08:43–08:49 KST: mean −30.5, −31.2, −34.0, −30.7, −34.1, −33.7 dB; max 0.0, −6.4, −9.3, −7.1, −8.2, −6.8 dB. Same time yesterday (old device, 08:40–09:10, n=28): median mean −55.6, median max −31.4 → ≈ +23 dB (room busier: owner testing the mic). Limiter holds (max ≤ 0.0 dB incl. Opus overshoot). Verdict: PASS.
+Task 5: the P2a pipeline already transcribes the new device's speech (14 segments in 7 min, real Vietnamese lines) and shows the open hallucination issue: "Hãy subscribe cho kênh La La School để không bỏ lỡ những video hấp dẫn" (outro variant with another channel name, or real kids' TV) and "Thank you." ×2 (finding for P2c: generalise the outro pattern).
+Task 5 Step 7 (owner 2026-10-16 "1, 2, và check tiếp P2"): old smoke7 device 01M4X6BPHRZH3ZNJRAV12AA0T1 revoked through the web route (its 4 089 items kept); feat/audio-gain fast-forwarded into feat/phase1 (7021705..363e402, not pushed).
+Task 5: complete (image smoke8 sha256 611668b9…, level check PASS).
+Plan complete: Tasks 1–5 done; Part A (7021705..75d44f7) and Part B (2a5c2c3..fdf72ce) final reviews clean after one fix wave each.
+- Ruling: keep loopi-dev-smoke8.img in /home/soul/loopi/os/out (moved out of the worktree before it is removed) for re-flashes during the remaining P1 hardware tests — cost if wrong: 400 MB of disk.
