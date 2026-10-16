@@ -166,6 +166,16 @@ async def test_audio_that_retention_removed_says_so(web, pool, pki_settings, dev
     assert "Đã hết hạn" in row and "<audio" not in row
 
 
+@pytest.mark.parametrize("day", ["0001-01-01", "9999-12-31"])
+async def test_a_day_the_calendar_cannot_hold_is_a_422(web, day):
+    assert (await web.get("/", params={"day": day})).status_code == 422
+
+
+async def test_the_days_next_to_the_calendar_edges_still_open(web):
+    assert (await web.get("/", params={"day": "0001-01-02"})).status_code == 200
+    assert (await web.get("/", params={"day": "9999-12-30"})).status_code == 200
+
+
 async def test_rewriting_the_recap_marks_it_stale_and_asks_for_a_new_one(web, pool, pki_settings, dev):
     from loopi_brain.pipeline import recap
 
@@ -254,6 +264,25 @@ async def test_thumbnails_are_small_cached_and_never_leave_the_media_root(web, p
         await conn.execute("UPDATE keyframe SET path = '../secret.jpg' WHERE id = %s", (kf,))
     assert (await web.get(f"/thumb/{kf}.jpg")).status_code == 404
     assert not (pki_settings.media_root.parent / "thumbs").exists()
+
+
+@pytest.mark.parametrize("damage", ["garbage", "truncated"])
+async def test_a_keyframe_that_is_not_a_readable_jpeg_has_no_thumbnail_and_is_logged(
+    web, pool, pki_settings, dev, caplog, damage
+):
+    import logging
+
+    video = await insert_item(pool, dev["device_id"], kind="video", started_at=NINE)
+    kf = await insert_keyframe(pool, pki_settings, video, dev["device_id"], NINE)
+    rel = (await fetch_one(pool, "SELECT path FROM keyframe WHERE id = %s", (kf,)))["path"]
+    src = pki_settings.media_root / rel
+    src.write_bytes(b"not a picture" if damage == "garbage" else src.read_bytes()[:2000])
+    with caplog.at_level(logging.WARNING, logger="loopi_brain.web.day_routes"):
+        r = await web.get(f"/thumb/{kf}.jpg")
+    assert r.status_code == 404
+    assert f"keyframe {kf}: no thumbnail" in caplog.text
+    thumbs_dir = pki_settings.media_root / "thumbs"
+    assert not thumbs_dir.exists() or not any(p.is_file() for p in thumbs_dir.rglob("*"))  # no file left half-made
 
 
 async def test_a_thumbnail_made_after_its_keyframe_was_forgotten_is_removed_and_not_served(

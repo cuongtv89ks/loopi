@@ -162,7 +162,8 @@ async def test_a_forget_clears_the_errors_that_may_quote_what_it_forgets_and_the
     pool, pki_settings, dev, jobs_open
 ):
     morning = await _morning(pool, pki_settings, dev["device_id"])
-    quote = "AnswerInvalid: Unterminated string; got '{\"main_events\": [\"Hẹn đi khám răng'"  # written before the fix
+    # An error text as parse_answer wrote it before it stopped quoting the model's answer.
+    quote = "AnswerInvalid: Unterminated string; got '{\"main_events\": [\"Hẹn đi khám răng'"
     await _failed_recap(pool, DAY, quote)
     other_day = DAY - dt.timedelta(days=1)
     kept_job = await _failed_recap(pool, other_day, "ProviderError: x")

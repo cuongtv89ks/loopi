@@ -11,7 +11,7 @@ from helpers import FakeOllama
 from loopi_brain.app import create_app
 from loopi_brain.config import Settings
 from loopi_brain.pipeline import chapters, recap
-from loopi_brain.providers.anthropic import AnthropicProvider, strict_schema
+from loopi_brain.providers.anthropic import ERROR_TAIL, AnthropicProvider, strict_schema
 from loopi_brain.providers.base import PrivacyBlocked, ProviderError, ProviderUnavailable, is_cloud
 from loopi_brain.providers import router as router_module
 from loopi_brain.providers.config import DEFAULT_CONFIG, ProvidersConfig, TaskRoute
@@ -438,6 +438,18 @@ async def test_the_key_is_scrubbed_from_an_api_message_that_echoes_it():
     with pytest.raises(ProviderError) as info:
         _ = [p async for p in provider.stream_chat("m", [{"role": "user", "content": "x"}])]
     assert KEY not in str(info.value) and "bad" in str(info.value)
+
+
+async def test_a_key_cut_by_the_error_tail_is_still_scrubbed():
+    """The tail of a long API message keeps only its end: a key echoed where the cut falls must not leave its end."""
+    def echo(request):
+        return httpx.Response(400, json={"type": "error", "error": {
+            "type": "invalid_request_error", "message": KEY + "x" * (ERROR_TAIL - 10)}})
+
+    provider = AnthropicProvider(KEY, client=httpx.AsyncClient(transport=httpx.MockTransport(echo)))
+    with pytest.raises(ProviderError) as info:
+        await provider.chat("m", [{"role": "user", "content": "x"}])
+    assert KEY[-10:] not in str(info.value) and "***" in str(info.value)
 
 
 def test_a_key_with_stray_whitespace_is_trimmed_not_rejected(monkeypatch):

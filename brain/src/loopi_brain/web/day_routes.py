@@ -144,6 +144,11 @@ async def day_page(request: Request, day: dt.date | None = Query(default=None)):
     zone = request.app.state.settings.zone
     today = local_now(zone).date()
     day = day or today
+    try:
+        day_bounds_utc(day, zone)
+        prev_day, next_day = day - dt.timedelta(days=1), day + dt.timedelta(days=1)
+    except OverflowError as exc:  # the first and last days of the calendar have no UTC bounds or no neighbour
+        raise HTTPException(status_code=422, detail=f"day {day} is out of range") from exc
     return TEMPLATES.TemplateResponse(
         request,
         "day.html",
@@ -152,8 +157,8 @@ async def day_page(request: Request, day: dt.date | None = Query(default=None)):
             "day": day,
             "title": day_title(day),
             "is_today": day == today,
-            "prev_day": day - dt.timedelta(days=1),
-            "next_day": day + dt.timedelta(days=1),
+            "prev_day": prev_day,
+            "next_day": next_day,
         },
     )
 
@@ -177,7 +182,11 @@ async def thumbnail(request: Request, keyframe_id: str):
     if not src.is_file():
         raise HTTPException(status_code=404, detail="keyframe file missing")
     if not dst.is_file():
-        await anyio.to_thread.run_sync(thumbs.make_thumb, src, dst)
+        try:
+            await anyio.to_thread.run_sync(thumbs.make_thumb, src, dst)
+        except OSError as exc:  # not a readable picture (PIL.UnidentifiedImageError is one), or the disk refused it
+            log.warning("keyframe %s: no thumbnail: %s", keyframe_id, exc)
+            raise HTTPException(status_code=404, detail="keyframe unreadable") from exc
         if not await keyframe_exists(request.app.state.pool, keyframe_id):  # forgotten while the thumbnail was made
             media.remove_files(settings.media_root, [str(thumbs.thumb_rel(rel))])
             raise HTTPException(status_code=404, detail="unknown keyframe")
@@ -189,7 +198,9 @@ async def rewrite_recap(request: Request, day: dt.date):
     """"Tạo lại recap": drop the day's failed recap runs and their error, mark the current recap out of date and
     ask for a new one now (``recap.request_rewrite``)."""
     if await recap_rules.request_rewrite(request.app.state.pool, day) is None:
-        return HTMLResponse("<span>Chưa gửi được yêu cầu viết lại recap; recap sẽ được viết lại theo lịch.</span>")
+        return HTMLResponse(
+            "<span>Chưa gửi được yêu cầu viết lại recap; recap sẽ được viết lại theo lịch.</span>"
+        )
     return HTMLResponse("<span>Đã yêu cầu viết lại recap. Tải lại trang sau vài phút để xem.</span>")
 
 

@@ -114,16 +114,17 @@ def _validation_problems(exc: ValidationError) -> str:
 
 def load_providers(path: Path | None) -> ProvidersConfig:
     """Read and validate ``path``; no path means the built-in defaults (all local). Errors name the problem and its
-    place, never a value from the file: they reach the Cài đặt and Xử lý pages."""
+    place, never a value from the file: they reach the Cài đặt and Xử lý pages, and no YAML or pydantic error (which
+    quote the file) is chained to them, so a traceback does not print one either."""
     if path is None:
         return DEFAULT_CONFIG
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise ProvidersConfigError(f"cannot read {path}: {exc}") from exc
+        raise ProvidersConfigError(f"cannot read {path}: {exc}") from None
     except yaml.YAMLError as exc:
-        raise ProvidersConfigError(f"cannot parse {path}: {_yaml_problem(exc)}") from exc
+        raise ProvidersConfigError(f"cannot parse {path}: {_yaml_problem(exc)}") from None
     try:
         return ProvidersConfig.model_validate(data)
     except ValidationError as exc:
-        raise ProvidersConfigError(f"invalid {path}: {_validation_problems(exc)}") from exc
+        raise ProvidersConfigError(f"invalid {path}: {_validation_problems(exc)}") from None

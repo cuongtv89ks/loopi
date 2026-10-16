@@ -37,7 +37,7 @@
   <div id="hx-error" class="err" role="alert"></div>
   <main>{% block content %}{% endblock %}</main>
   <script>
-    const HX_ERRORS = {403: "Yêu cầu không hợp lệ", 404: "Không tìm thấy thiết bị",
+    const HX_ERRORS = {403: "Yêu cầu không hợp lệ", 404: "Không tìm thấy, hãy tải lại trang",
                        409: "Job không còn ở trạng thái lỗi, hãy tải lại trang",
                        422: "Giá trị không hợp lệ, hãy kiểm tra lại"};
     document.body.addEventListener("htmx:responseError", (e) => {

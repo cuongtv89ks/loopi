@@ -105,7 +105,8 @@ async def test_devices_page_uses_vietnamese_for_flags_and_missing_values(client,
 async def test_page_has_vietnamese_htmx_error_handler(client):
     text = (await client.get("/devices")).text
     assert 'id="hx-error"' in text and "htmx:responseError" in text
-    assert "Không tìm thấy thiết bị" in text and "Có lỗi, thử lại" in text
+    assert "Không tìm thấy, hãy tải lại trang" in text and "Có lỗi, thử lại" in text
+    assert "Không tìm thấy thiết bị" not in text  # the same text serves commitments, jobs and devices
 
 
 async def test_healthz_is_unauthenticated_and_ok(client):

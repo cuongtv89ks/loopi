@@ -1,5 +1,6 @@
 import base64
 import json
+import traceback
 
 import httpx
 import pytest
@@ -94,6 +95,9 @@ def test_a_config_error_says_where_and_why_but_never_quotes_the_file(tmp_path, t
     with pytest.raises(ProvidersConfigError) as caught:
         load_providers(path)
     assert shown in str(caught.value) and "SECRET" not in str(caught.value)
+    # A worker that fails at start prints the traceback: no YAML or pydantic error (which quote values) is chained.
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    assert "SECRET" not in "".join(traceback.format_exception(caught.value))
 
 
 async def test_ollama_chat_sends_schema_images_and_no_thinking():

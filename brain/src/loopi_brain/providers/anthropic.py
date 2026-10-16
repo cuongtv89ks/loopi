@@ -107,7 +107,8 @@ class AnthropicProvider:
             detail = (response.json().get("error") or {}).get("message") or response.text
         except (ValueError, AttributeError):
             detail = response.text
-        message = self._scrub(f"anthropic {path} HTTP {response.status_code}: {str(detail)[-ERROR_TAIL:]}")
+        # Scrubbed before it is cut: a cut through an echoed key would leave a piece of it that no longer matches.
+        message = f"anthropic {path} HTTP {response.status_code}: {self._scrub(str(detail))[-ERROR_TAIL:]}"
         return ProviderUnavailable(message) if response.status_code in TEMPORARY else ProviderError(message)
 
     def _transport_failure(self, exc: httpx.TransportError) -> ProviderError:
