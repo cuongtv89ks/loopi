@@ -23,6 +23,8 @@ services:
       LOOPI_TZ: ${LOOPI_TZ:-Asia/Seoul}
       LOOPI_OLLAMA_URL: http://models:11434
       LOOPI_PROVIDERS_FILE: /etc/loopi/providers.yaml
+      # The owner's golden set (spec D21): copies of the chosen recordings and keyframes, in the data dir, never in git.
+      LOOPI_EVAL_DIR: /srv/loopi/eval
       # Optional (spec §9.3): text tasks may use Anthropic only when this is set AND providers.yaml routes them there.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
@@ -52,6 +54,7 @@ services:
       LOOPI_OLLAMA_URL: http://models:11434
       LOOPI_PROVIDERS_FILE: /etc/loopi/providers.yaml
       LOOPI_MODEL_DIR: /srv/loopi/models
+      LOOPI_EVAL_DIR: /srv/loopi/eval  # evaluation runs read the golden copies the api wrote
       LOOPI_ASR_MAX_GAIN_DB: ${LOOPI_ASR_MAX_GAIN_DB:-30}
       # Two slots for live work (video, captions, ASR, markers, embeddings) and one more, used by at most one
       # chapter/recap job at a time (job lock "llm"; those jobs also have the lowest priority).

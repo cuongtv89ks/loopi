@@ -1,7 +1,11 @@
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
 import yaml
+
+from loopi_brain import acceptance
 
 DEPLOY = Path(__file__).resolve().parents[2] / "deploy"
 COMPOSE = yaml.safe_load((DEPLOY / "docker-compose.yml").read_text())
@@ -102,3 +106,76 @@ def test_the_anthropic_key_is_optional_and_comes_only_from_the_env_file():
         while route:
             assert route["provider"] != "anthropic", f"{task} routes to anthropic; keep the examples commented out"
             route = route.get("fallback")
+
+
+def test_the_golden_set_lives_in_the_data_dir_for_the_page_and_the_runner():
+    # Spec D21: the api writes the owner's golden copies, the worker's evaluation runs read them; both under the
+    # mounted data dir (not in git, not in an image), at the same path.
+    for name in ("api", "worker"):
+        service = SERVICES[name]
+        assert service["environment"]["LOOPI_EVAL_DIR"] == "/srv/loopi/eval"
+        assert "${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi" in service["volumes"]
+    # The rules and the VAD threshold are not passed through: an empty variable would override a default the
+    # golden set's numbers chose (spec §13), so they change only in the brain's code.
+    assert not {"LOOPI_ASR_RULES", "LOOPI_ASR_VAD_THRESHOLD"} & set(SERVICES["worker"]["environment"])
+    readme = (DEPLOY / "README.md").read_text()
+    assert "## Evaluation and acceptance (P2c)" in readme and "loopi-brain eval run" in readme
+    assert "loopi-brain acceptance" in readme and "for s in api worker models db; do" in readme
+    assert "loopi-brain eval compare" in readme and "loopi-brain eval rules-impact" in readme
+
+
+FAKE_DOCKER = """\
+#!/bin/bash
+# Stands in for docker: the cgroup files of a container and its start time, nothing else.
+case "$1 $2 $3 $4 $5" in
+  "compose -p deploy exec -T")
+    service="$6"
+    case "$7 $8" in
+      "cat /sys/fs/cgroup/cpu.stat") printf 'usage_usec %s\\nuser_usec 1\\nsystem_usec 2\\n' "$((FAKE_USAGE + ${#service}))" ;;
+      "cat /sys/fs/cgroup/memory.peak") echo "$((1000 * ${#service}))" ;;
+      *) exit 64 ;;
+    esac ;;
+  "inspect -f {{.State.StartedAt}} deploy-"*"-1 ") echo 2026-10-15T14:51:34.148257075Z ;;
+  *) exit 64 ;;
+esac
+"""
+FAKE_DATE = """\
+#!/bin/bash
+case "$*" in
+  "-u +%FT%TZ") echo "$FAKE_NOW" ;;
+  "+%F") echo "${FAKE_NOW%%T*}" ;;
+  *) exit 64 ;;
+esac
+"""
+
+
+def test_the_readme_cpu_loop_writes_the_lines_that_acceptance_reads(tmp_path):
+    # Task 14 feeds the file this loop writes to `loopi-brain acceptance`: run the README's own block, twice, 24 h
+    # apart, with a stand-in for docker (PATH holds only the stand-ins, so no real docker is reachable).
+    readme = (DEPLOY / "README.md").read_text()
+    section = readme.split("## Evaluation and acceptance (P2c)", 1)[1]
+    block = re.search(r"```bash\n(.*?)```", section, re.DOTALL).group(1)
+    bin_dir, home = tmp_path / "bin", tmp_path / "home"
+    bin_dir.mkdir()
+    (home / "loopi-backups").mkdir(parents=True)
+    for name, body in (("docker", FAKE_DOCKER), ("date", FAKE_DATE)):
+        (bin_dir / name).write_text(body)
+        (bin_dir / name).chmod(0o755)
+    (bin_dir / "grep").symlink_to(shutil.which("grep"))
+    for now, usage in (("2026-10-16T09:00:00Z", 1_000_000), ("2026-10-17T09:05:00Z", 87_400_000)):
+        env = {"PATH": str(bin_dir), "HOME": str(home), "FAKE_NOW": now, "FAKE_USAGE": str(usage)}
+        if now.startswith("2026-10-17"):
+            env["window"] = "2026-10-16"  # the second sample goes to the file of the day the window started
+        done = subprocess.run([shutil.which("bash"), "-c", block], env=env, capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr
+    files = sorted(path.name for path in (home / "loopi-backups").iterdir())
+    assert files == ["p2-cpu-samples-2026-10-16.txt"]  # one dated file for the whole window
+    text = (home / "loopi-backups" / files[0]).read_text()
+    samples, peaks = acceptance.parse_cpu(text)
+    assert len(text.splitlines()) == 16 == len(samples) + 8  # every line is one acceptance understands
+    assert sorted({s.service for s in samples}) == ["api", "db", "models", "worker"]
+    assert peaks == {"api": 3000, "worker": 6000, "models": 6000, "db": 2000}
+    cpu = acceptance.cpu_per_day(samples)
+    assert not any(row["restarted"] for row in cpu.values())
+    assert round(cpu["models"]["hours"], 2) == 24.08
+    assert round(cpu["models"]["cpu_s"], 3) == 86.4

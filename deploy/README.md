@@ -91,3 +91,49 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   A cloud fallback (e.g. `recap: ollama → anthropic`) is used whenever the local step fails, not only when Ollama is
   down: also when the local model errors or runs past `LOOPI_LLM_TIMEOUT_S` (15 minutes by default) under load, so
   on a busy CPU that task's text (for a recap: the day's transcripts and captions) goes to Anthropic.
+
+## Evaluation and acceptance (P2c)
+
+- **Đánh giá** (`/eval`): you label the golden set (spec §13, D21) — about 20 recordings (listen at a level you can
+  hear, correct the current transcript into what was really said, or tick "Không có lời nói" for silence, TV or
+  noise), 30 keyframes (score the caption 1–5, tick "sai số người", "bịa đồ vật", "sai hoạt động") and 25 questions
+  (write the question, then pick its correct moments with the page's wider search, or browse a day's moments). It can
+  be done in several sittings (2–3 h in all); recordings are proposed only while their raw audio is kept (7 days,
+  D20) and only from `LOOPI_EVAL_AUDIO_SINCE` on (default 2026-10-16 08:41 KST, when the device's +20 dB gain went
+  live). The no-speech clips that count are the ones where Whisper wrote something (the "Có chữ nhưng có thể chỉ là
+  tiếng ồn" group): at least 6. Pick 1–3 correct moments per question; a question counts when one of them is in the
+  first 5 results (hit@5, D22).
+- The golden set is **never in git**: the database holds the labels and questions, `$LOOPI_DATA_DIR/eval` the copies
+  (`audio/<id>.opus` as recorded, `audio/<id>.view.opus` to listen to, `keyframes/<id>.jpg`). Retention never deletes
+  them; "Quên khoảng thời gian" deletes the samples of its range with their copies. A `pg_dump` holds the labels but
+  not the copies: back up `$LOOPI_DATA_DIR/eval` with the database if you want to keep the set.
+- A run: the "Chạy đánh giá" button, or `docker compose -p deploy exec -T api loopi-brain eval run` (it waits and
+  prints the numbers; `--vad-threshold 0.35` or `--max-gain-db 24` try other ASR settings for that run only;
+  `loopi-brain eval show [run id]` prints a finished one). The worker transcribes every golden clip again, one per job
+  and after every waiting live job, then scores WER (Vietnamese, English) and CER (Korean) for every hallucination rule
+  set, the invented text on the no-speech clips, what each rule drops from real speech, the caption scores per model
+  and hit@5 through the search (with a small grid of search thresholds), each with its sample size and a 95 %
+  interval. Runs keep numbers only; run them outside 08:00–22:00 (they take Whisper's CPU between live recordings).
+  `loopi-brain eval compare <run> <run>` shows two runs side by side (two runs of one configuration give the noise
+  floor), `loopi-brain eval rules-impact --days 7` counts what each rule would drop from the live transcripts.
+- The hallucination rules (`outro`, `lone_phrase`, `short_foreign`) are off until the golden set's numbers say
+  otherwise; switching one on is a change of the brain's default (`LOOPI_ASR_RULES`), committed with those numbers.
+- `docker compose -p deploy exec -T api loopi-brain acceptance --days 7 --cpu-samples - < ~/loopi-backups/p2-cpu-samples-<date>.txt`
+  prints the spec §14 P2 numbers as Markdown: latency 08:00–22:00, a recap each evening, WER/CER with the 30 % rule,
+  recall@5 and CPU time per day. It prints no transcript, caption or question. The CPU samples are, per container, a
+  `usage_usec` line and a `memory.peak` line, taken at the start of a window and again at least 24 h later with no
+  restart and no evaluation run in between, all into one fresh file named after the day the window starts
+  (`deploy/` as the working directory; for the second sample set `window=` to that day first, so it appends to the
+  same file):
+
+  ```bash
+  window=${window:-$(date +%F)}
+  out=~/loopi-backups/p2-cpu-samples-$window.txt
+  for s in api worker models db; do
+    echo "$s $(date -u +%FT%TZ) $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/cpu.stat | grep usage_usec)" \
+         "started=$(docker inspect -f '{{.State.StartedAt}}' deploy-$s-1)"
+  done >> "$out"
+  for s in api worker models db; do
+    echo "$s memory.peak $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/memory.peak)"
+  done >> "$out"
+  ```
