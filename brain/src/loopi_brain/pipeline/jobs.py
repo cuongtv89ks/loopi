@@ -17,6 +17,7 @@ TASK_MODULES = [
     "loopi_brain.pipeline.caption",
     "loopi_brain.pipeline.asr",
     "loopi_brain.pipeline.chapters",
+    "loopi_brain.pipeline.recap",
 ]
 
 ANALYZE_VIDEO = "analyze_video"
@@ -29,11 +30,15 @@ RETRY_STALLED = "retry_stalled_jobs"
 REMOVE_OLD_JOBS = "remove_old_jobs"
 PLAN_CHAPTERS = "plan_chapters"
 BUILD_CHAPTERS = "build_chapters"
+PLAN_RECAPS = "plan_recaps"
+WRITE_RECAP = "write_recap"
 PIPELINE_TASKS = (ANALYZE_VIDEO, CAPTION_KEYFRAME, TRANSCRIBE_AUDIO, INDEX_MARKER, EMBED_MOMENTS)
 # Runs that start again by themselves (the dispatcher asks for embedding runs; the scheduler starts
 # each periodic tick; the hourly planner asks for each day's chapters again), so a failed one is never
 # retried and only the newest failed one is kept.
-AUTO_RERUN_TASKS = (EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS, PLAN_CHAPTERS, BUILD_CHAPTERS)
+AUTO_RERUN_TASKS = (
+    EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS, PLAN_CHAPTERS, BUILD_CHAPTERS, PLAN_RECAPS,
+)
 # The text models run one job at a time (chapters, recaps): each one takes most of the CPU. They also wait behind
 # every live job (video, captions, ASR, markers, embeddings: priority 0) for a free worker slot, so recordings keep
 # their 15-minute latency target while chapters and recaps are being written (spec §14 P2).

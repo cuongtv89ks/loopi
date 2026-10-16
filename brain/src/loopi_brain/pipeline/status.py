@@ -28,6 +28,8 @@ TASK_LABELS = {
     jobs.REMOVE_OLD_JOBS: "Dọn job cũ",
     jobs.PLAN_CHAPTERS: "Lên lịch chia chương",
     jobs.BUILD_CHAPTERS: "Chia chương",
+    jobs.PLAN_RECAPS: "Lên lịch recap",
+    jobs.WRITE_RECAP: "Viết recap",
 }
 _LATENCY = (
     "SELECT count(*) AS n, avg(s) AS avg, percentile_cont(0.95) WITHIN GROUP (ORDER BY s) AS p95 FROM ({}) t"
