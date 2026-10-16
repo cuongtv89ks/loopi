@@ -190,3 +190,13 @@ Audio-level Part B final review + fix wave (606faa2, fdf72ce: bitexact copies, n
 Task 11: owner 2026-10-15 22:0x — "okie tạm thời dùng bản smoke7 trước để chạy phase 2z. mai tôi sẽ sử dụng smoke8" = go-ahead for Task 11 now with the device on smoke7 (24 h soak passed; P1 hardware tests move to smoke8 tomorrow).
 Task 11 Step 1: live checkout clean on feat/phase1 @ 7021705, already an ancestor of feat/phase2 (no merge needed).
 Task 11 Step 2: pg_dump → ~/loopi-backups/p1-2026-10-15-2215.dump (291 KB); deploy/.env copied to the worktree (600, git-ignored, not printed).
+Task 11 Step 5 (24 h window, 2026-10-16 04:28 → 2026-10-17 04:28 KST): second sample taken; no container restarted. Worker 25 082 CPU-s (6.97 CPU-h/day), models 8 756 CPU-s (2.43 CPU-h/day); memory peaks unchanged (reached in the backlog); host 12.4 GiB available, swap 4.6 GiB used (2.3 GiB idle worker pages).
+Task 11 Step 6: window keyframes 131 for 23.7 h video (inside 100–300); captions avg 16.7 s / p95 28.8 s (n=131); ASR RTF 0.067 (n=1 426), transcribe 1.60 h wall; live latency 08–22 video→caption 0.6 / 1.0 min (n=127), audio→transcript 0.3 / 1.7 min (n=831); 0 dead letters, 0 todo/doing jobs.
+Task 11 Step 7: skipped — keyframes per day inside the budget.
+Task 11 Step 8: docs/measurements/2026-10-p2a-pipeline.md, numbers only.
+- Ruling: no caption or transcript samples in the report (owner's private data; no question to the owner needed when nothing is quoted) — cost if wrong: the owner adds samples later.
+- Ruling: §9.6 budgets read as job run time (captions 0.61 h, ASR 1.60 h: met); cgroup CPU-seconds reported beside them — cost if wrong: the spec meant CPU-h and both are over (2.43 / 6.97).
+- Ruling: worker-kill recovery not timed on the live P2a stack (a deliberate SIGKILL of the live worker for a ≤ 10 min bound already known from the code); carried to P2c acceptance — cost if wrong: the bound is measured one phase later.
+- Ruling: Step 9's HANDOFF row folds into the one HANDOFF rewrite at the P2b deploy (P2b Task 14 Step 9), as ruled for P1c — cost if wrong: HANDOFF stays stale until that deploy.
+The live stack (compose project `deploy`) now runs from the worktree `/home/soul/loopi-p2/deploy`: it builds from there and bind-mounts `Caddyfile` and `providers.yaml` from there. **Before the worktree is ever removed** (e.g. by `finishing-a-development-branch`), redeploy from the main checkout on a branch that contains P2: `cd /home/soul/loopi && git checkout <branch with P2> && cd deploy && docker compose -p deploy up -d --build`, then `COMPOSE_PROJECT_NAME=deploy ./smoke.sh`.
+Task 11: complete. P2a plan complete.
