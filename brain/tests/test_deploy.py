@@ -126,10 +126,12 @@ def test_the_golden_set_lives_in_the_data_dir_for_the_page_and_the_runner():
 
 FAKE_DOCKER = """\
 #!/bin/bash
-# Stands in for docker: the cgroup files of a container and its start time, nothing else.
+# Stands in for docker: the cgroup files of a container and its start time, nothing else. Like `docker compose exec
+# -T`, an exec reads its standard input to the end: a loop that does not close it swallows the rest of its script.
 case "$1 $2 $3 $4 $5" in
   "compose -p deploy exec -T")
     service="$6"
+    cat >/dev/null
     case "$7 $8" in
       "cat /sys/fs/cgroup/cpu.stat") printf 'usage_usec %s\\nuser_usec 1\\nsystem_usec 2\\n' "$((FAKE_USAGE + ${#service}))" ;;
       "cat /sys/fs/cgroup/memory.peak") echo "$((1000 * ${#service}))" ;;
@@ -157,16 +159,19 @@ def test_the_readme_cpu_loop_writes_the_lines_that_acceptance_reads(tmp_path):
     block = re.search(r"```bash\n(.*?)```", section, re.DOTALL).group(1)
     bin_dir, home = tmp_path / "bin", tmp_path / "home"
     bin_dir.mkdir()
-    (home / "loopi-backups").mkdir(parents=True)
+    home.mkdir()  # no ~/loopi-backups yet: the block makes it, or its first `>>` fails
     for name, body in (("docker", FAKE_DOCKER), ("date", FAKE_DATE)):
         (bin_dir / name).write_text(body)
         (bin_dir / name).chmod(0o755)
-    (bin_dir / "grep").symlink_to(shutil.which("grep"))
+    for tool in ("grep", "mkdir", "cat"):  # the only real programs the block and the stand-ins use
+        (bin_dir / tool).symlink_to(shutil.which(tool))
     for now, usage in (("2026-10-16T09:00:00Z", 1_000_000), ("2026-10-17T09:05:00Z", 87_400_000)):
         env = {"PATH": str(bin_dir), "HOME": str(home), "FAKE_NOW": now, "FAKE_USAGE": str(usage)}
         if now.startswith("2026-10-17"):
             env["window"] = "2026-10-16"  # the second sample goes to the file of the day the window started
-        done = subprocess.run([shutil.which("bash"), "-c", block], env=env, capture_output=True, text=True)
+        # The block is the script on bash's standard input (an ssh session, a pasted block): every `docker compose
+        # exec` must be told `</dev/null`, or the first one swallows the rest of the block.
+        done = subprocess.run([shutil.which("bash"), "-s"], input=block, env=env, capture_output=True, text=True)
         assert done.returncode == 0, done.stderr
     files = sorted(path.name for path in (home / "loopi-backups").iterdir())
     assert files == ["p2-cpu-samples-2026-10-16.txt"]  # one dated file for the whole window

@@ -106,7 +106,8 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - The golden set is **never in git**: the database holds the labels and questions, `$LOOPI_DATA_DIR/eval` the copies
   (`audio/<id>.opus` as recorded, `audio/<id>.view.opus` to listen to, `keyframes/<id>.jpg`). Retention never deletes
   them; "Quên khoảng thời gian" deletes the samples of its range with their copies. A `pg_dump` holds the labels but
-  not the copies: back up `$LOOPI_DATA_DIR/eval` with the database if you want to keep the set.
+  not the copies: back up `$LOOPI_DATA_DIR/eval` with the database if you want to keep the set. To restore, put the
+  database back **before** the copies: the 03:00 sweep deletes every copy whose row it does not find.
 - A run: the "Chạy đánh giá" button, or `docker compose -p deploy exec -T api loopi-brain eval run` (it waits and
   prints the numbers; `--vad-threshold 0.35` or `--max-gain-db 24` try other ASR settings for that run only;
   `loopi-brain eval show [run id]` prints a finished one). The worker transcribes every golden clip again, one per job
@@ -118,7 +119,7 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   floor), `loopi-brain eval rules-impact --days 7` counts what each rule would drop from the live transcripts.
 - The hallucination rules (`outro`, `lone_phrase`, `short_foreign`) are off until the golden set's numbers say
   otherwise; switching one on is a change of the brain's default (`LOOPI_ASR_RULES`), committed with those numbers.
-- `docker compose -p deploy exec -T api loopi-brain acceptance --days 7 --cpu-samples - < ~/loopi-backups/p2-cpu-samples-<date>.txt`
+- `docker compose -p deploy exec -T api loopi-brain acceptance --days 7 --cpu-samples - < ~/loopi-backups/p2-cpu-samples-<window start>.txt`
   prints the spec §14 P2 numbers as Markdown: latency 08:00–22:00, a recap each evening, WER/CER with the 30 % rule,
   recall@5 and CPU time per day. It prints no transcript, caption or question. The CPU samples are, per container, a
   `usage_usec` line and a `memory.peak` line, taken at the start of a window and again at least 24 h later with no
@@ -127,13 +128,14 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   same file):
 
   ```bash
+  mkdir -p ~/loopi-backups
   window=${window:-$(date +%F)}
   out=~/loopi-backups/p2-cpu-samples-$window.txt
   for s in api worker models db; do
-    echo "$s $(date -u +%FT%TZ) $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/cpu.stat | grep usage_usec)" \
+    echo "$s $(date -u +%FT%TZ) $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/cpu.stat </dev/null | grep usage_usec)" \
          "started=$(docker inspect -f '{{.State.StartedAt}}' deploy-$s-1)"
   done >> "$out"
   for s in api worker models db; do
-    echo "$s memory.peak $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/memory.peak)"
+    echo "$s memory.peak $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/memory.peak </dev/null)"
   done >> "$out"
   ```

@@ -6166,11 +6166,11 @@ out=~/loopi-backups/p2-cpu-samples-$(date +%F).txt
 [ -e "$out" ] && { echo "$out exists: one window per file"; exit 1; }
 sample() {
   for s in api worker models db; do
-    echo "$s $(date -u +%FT%TZ) $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/cpu.stat | grep usage_usec)" \
+    echo "$s $(date -u +%FT%TZ) $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/cpu.stat </dev/null | grep usage_usec)" \
          "started=$(docker inspect -f '{{.State.StartedAt}}' deploy-$s-1)"
   done | tee -a "$out"
   for s in api worker models db; do
-    echo "$s memory.peak $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/memory.peak)"
+    echo "$s memory.peak $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/memory.peak </dev/null)"
   done | tee -a "$out"
 }
 sample

@@ -334,7 +334,7 @@ tasks:
 ### 9.5 Chính sách lưu trữ (mặc định, chỉnh được)
 - Video thô giữ 7 ngày. Keyframe, transcript, caption, chương, recap và vlog giữ vĩnh viễn.
 - Audio thô giữ 7 ngày như video (D20). Số ngày giữ của cả hai chỉnh được trong trang Cài đặt; việc xoá hằng đêm chỉ chạy sau khi người dùng bật trong Cài đặt (mặc định tắt), và file thô chỉ bị xoá khi đoạn đó đã phân tích xong.
-- **"Quên khoảng thời gian"**: xoá hẳn item, keyframe, transcript, moment (kể cả embedding), đồng thời đánh dấu chương, recap và vlog của khoảng đó cần sinh lại.
+- **"Quên khoảng thời gian"**: xoá hẳn item, keyframe, transcript, moment (kể cả embedding) và các mẫu đánh giá lấy từ khoảng đó cùng bản sao của chúng (D21), đồng thời đánh dấu chương, recap và vlog của khoảng đó cần sinh lại.
 
 ### 9.6 Ước tính sức chịu (nghiệm thu ở P2)
 - 100–300 keyframe mới mỗi ngày × 5–15s/keyframe, tổng dưới 1h CPU.
@@ -423,8 +423,8 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 - **Đánh giá chất lượng AI (golden set do người dùng gán nhãn trên trang Đánh giá; dữ liệu nằm ngoài git, D21):**
   - 30 keyframe có nhãn (caption chấm thủ công)
   - 20 đoạn audio vi/ko/en kèm transcript chuẩn (WER/CER)
-  - 25 câu hỏi kèm moment đúng (recall@5)
-  - Chạy bằng `loopi-brain eval run` hoặc nút trên trang Đánh giá: nhận dạng lại từng đoạn audio bằng đường ASR hiện tại (chuẩn hoá mức âm thanh, VAD, Whisper, bộ lọc), tính WER/CER theo ngôn ngữ, tỉ lệ bịa câu trên các đoạn không có lời nói, điểm caption theo model và recall@5 qua tìm kiếm hybrid. Mỗi lần chạy lưu cấu hình và các con số; chỉ các con số được đưa vào repo
+  - 25 câu hỏi kèm moment đúng (hit@5, D22)
+  - Chạy bằng `loopi-brain eval run` hoặc nút trên trang Đánh giá: nhận dạng lại từng đoạn audio bằng đường ASR hiện tại (chuẩn hoá mức âm thanh, VAD, Whisper, bộ lọc), tính WER/CER theo ngôn ngữ, tỉ lệ bịa câu trên các đoạn không có lời nói, điểm caption theo model và hit@5 (D22) qua tìm kiếm hybrid. Mỗi lần chạy lưu cấu hình và các con số; chỉ các con số được đưa vào repo
 
 ---
 
