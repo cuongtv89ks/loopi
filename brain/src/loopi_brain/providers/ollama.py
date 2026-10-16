@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import httpx
@@ -65,14 +67,7 @@ class OllamaProvider:
         except httpx.TransportError as exc:  # read/write timeout, dropped connection: this request failed
             raise ProviderError(f"ollama {path}: {type(exc).__name__}: {exc}") from exc
         if response.status_code >= 400:
-            try:
-                detail = response.json().get("error") or response.text
-            except ValueError:
-                detail = response.text
-            message = f"ollama {path} HTTP {response.status_code}: {str(detail)[-ERROR_TAIL:]}"
-            if response.status_code == 404:  # model not pulled: configuration, shown on the status page
-                raise ProviderUnavailable(message)
-            raise ProviderError(message)
+            raise _http_error(path, response)
         try:
             data = response.json()
         except ValueError as exc:
@@ -97,6 +92,14 @@ class OllamaProvider:
         temperature: float = 0.0,
         max_tokens: int | None = None,
     ) -> str:
+        payload = self._chat_payload(model, messages, images, json_schema, temperature, max_tokens)
+        data = await self._request("POST", "/api/chat", payload, timeout=self._timeout_for(model))
+        content = (data.get("message") or {}).get("content")
+        if not isinstance(content, str):
+            raise ProviderError("ollama /api/chat: response has no message content")
+        return content
+
+    def _chat_payload(self, model, messages, images, json_schema, temperature, max_tokens) -> dict:
         msgs = [dict(m) for m in messages]
         if images:
             msgs[-1]["images"] = [base64.b64encode(img).decode("ascii") for img in images]
@@ -116,11 +119,41 @@ class OllamaProvider:
         }
         if json_schema is not None:
             payload["format"] = json_schema
-        data = await self._request("POST", "/api/chat", payload, timeout=self._timeout_for(model))
-        content = (data.get("message") or {}).get("content")
-        if not isinstance(content, str):
-            raise ProviderError("ollama /api/chat: response has no message content")
-        return content
+        return payload
+
+    async def stream_chat(
+        self, model: str, messages: list[dict], *, temperature: float = 0.0, max_tokens: int | None = None
+    ) -> AsyncIterator[str]:
+        """Yield the answer's text as Ollama writes it (``stream: true``: one JSON object per line)."""
+        payload = self._chat_payload(model, messages, None, None, temperature, max_tokens)
+        payload["stream"] = True
+        timeout = self._timeout_for(model)
+        kwargs: dict = {"timeout": timeout} if timeout is not None else {}
+        try:
+            async with self._client.stream("POST", f"{self._base}/api/chat", json=payload, **kwargs) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    raise _http_error("/api/chat", response)
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except ValueError as exc:
+                        raise ProviderError("ollama /api/chat: a streamed line is not JSON") from exc
+                    if not isinstance(data, dict):
+                        raise ProviderError(f"ollama /api/chat: unexpected stream line {line[:ERROR_TAIL]}")
+                    if data.get("error"):
+                        raise ProviderError(f"ollama /api/chat: {str(data['error'])[-ERROR_TAIL:]}")
+                    piece = (data.get("message") or {}).get("content")
+                    if isinstance(piece, str) and piece:
+                        yield piece
+                    if data.get("done"):
+                        return
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise ProviderUnavailable(f"ollama /api/chat: {type(exc).__name__}: {exc}") from exc
+        except httpx.TransportError as exc:
+            raise ProviderError(f"ollama /api/chat: {type(exc).__name__}: {exc}") from exc
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
         data = await self._request(
@@ -147,3 +180,14 @@ class OllamaProvider:
         )
         if data.get("status") != "success":
             raise ProviderError(f"ollama pull {model}: {data}")
+
+
+def _http_error(path: str, response: httpx.Response) -> ProviderError:
+    try:
+        detail = response.json().get("error") or response.text
+    except ValueError:
+        detail = response.text
+    message = f"ollama {path} HTTP {response.status_code}: {str(detail)[-ERROR_TAIL:]}"
+    if response.status_code == 404:  # model not pulled: configuration, shown on the status page
+        return ProviderUnavailable(message)
+    return ProviderError(message)

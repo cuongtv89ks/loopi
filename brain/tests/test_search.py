@@ -205,3 +205,42 @@ async def test_empty_date_fields_of_the_form_mean_no_limit(web, pool, dev):
 async def test_an_unreadable_date_is_still_refused(web):
     for params in ({"from": "hôm qua"}, {"to": "15/10/2026"}, {"from": "", "to": "mai"}):
         assert (await web.get("/search", params={"q": "x", **params})).status_code == 422
+
+
+def test_a_broken_or_missing_providers_file_means_no_router(pki_settings, tmp_path, caplog):
+    client = FakeOllama().client()
+    bad = tmp_path / "providers.yaml"
+    bad.write_text("tasks: {}\n")
+    assert search.request_router(pki_settings.model_copy(update={"providers_file": bad}), client) is None
+    assert "search and chat run without models" in caplog.text
+    missing = pki_settings.model_copy(update={"providers_file": tmp_path / "missing.yaml"})
+    assert search.request_router(missing, client) is None
+    assert search.request_router(pki_settings, client) is not None  # no file: the built-in, all-local defaults
+
+
+async def test_the_search_page_still_finds_words_when_providers_yaml_is_broken(pool, pki_settings, jobs_open, dev,
+                                                                               ollama, tmp_path):
+    await _memories(pool, dev["device_id"])
+    bad = tmp_path / "providers.yaml"
+    bad.write_text("tasks: {}\n")
+    app = create_app(pki_settings.model_copy(update={"providers_file": bad}), pool=pool,
+                     http_client=ollama.client(), llm_client=ollama.client())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://brain.test") as c:
+        text = (await c.get("/search", params={"q": "đi chợ"})).text
+    assert "Đang chỉ tìm theo chữ" in text and text.count('class="hit"') == 2 and ollama.requests == []
+
+
+async def test_a_marker_is_listed_with_its_note_or_a_label(web, pool, dev):
+    device_id = dev["device_id"]
+    noted = await insert_item(pool, device_id, kind="marker", started_at=NINE, seconds=0,
+                              meta={"note": "  Nhớ gọi cho <bố>  "})
+    bare = await insert_item(pool, device_id, kind="marker", started_at=NINE + dt.timedelta(minutes=1), seconds=0)
+    first = await insert_moment(pool, device_id, kind="marker", ts=NINE, axis=0, text="Marked moment", item_id=noted)
+    second = await insert_moment(pool, device_id, kind="marker", ts=NINE + dt.timedelta(minutes=1), axis=0,
+                                 text="Marked moment", item_id=bare)
+    text = (await web.get("/search", params={"q": "Marked moment"})).text
+    cards = {moment: chunk for chunk in text.split('<li class="hit"') for moment in (first, second)
+             if f"#m-{moment}" in chunk}
+    assert len(cards) == 2
+    assert "<p>Nhớ gọi cho &lt;bố&gt;</p>" in cards[first] and "· Đánh dấu" in cards[first]  # the note, stripped, escaped
+    assert "<p>Đánh dấu</p>" in cards[second] and "Marked moment" not in cards[second]  # the device button: no note

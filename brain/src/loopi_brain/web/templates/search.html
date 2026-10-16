@@ -1,6 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Tìm kiếm & Chat</h1>
+<form id="chat-form" class="card">
+  <input id="chat-q" name="q" required maxlength="500" size="50" placeholder="Hỏi về ký ức, ví dụ: Hôm qua mình hẹn làm gì?">
+  <button>Hỏi</button>
+  <div id="chat" hidden>
+    <p id="chat-status" class="muted" role="status"></p>
+    <p id="chat-filter" class="muted"></p>
+    <div id="chat-answer"></div>
+    <div id="chat-sources"></div>
+  </div>
+</form>
 <form method="get" action="/search" class="card">
   <input type="search" name="q" value="{{ q }}" placeholder="Tìm trong ký ức…" required maxlength="500" size="40">
   <label>Từ ngày <input type="date" name="from" value="{{ first or '' }}"></label>
@@ -13,4 +23,50 @@
   <ul class="hits">{% for h in hits %}{% include "_hit.html" %}{% endfor %}</ul>
   {% else %}<p>Không tìm thấy khoảnh khắc nào.</p>{% endif %}
 {% endif %}
+<script>
+  // The answer streams as Server-Sent Events over a POST (fetch, so the HX-Request CSRF header can be sent).
+  // Sources and the final answer arrive as HTML the server has already escaped; tokens are plain text.
+  const chatForm = document.getElementById("chat-form");
+  chatForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const box = document.getElementById("chat"), status = document.getElementById("chat-status");
+    const filter = document.getElementById("chat-filter"), answer = document.getElementById("chat-answer");
+    const sources = document.getElementById("chat-sources"), button = chatForm.querySelector("button");
+    box.hidden = false; filter.textContent = ""; answer.textContent = ""; sources.innerHTML = "";
+    status.textContent = "Đang gửi câu hỏi…"; button.disabled = true;
+    const handle = (name, data) => {
+      if (name === "status" || name === "error") status.textContent = data.text;
+      else if (name === "filter") filter.textContent = data.text;
+      else if (name === "sources") sources.innerHTML = data.html;
+      else if (name === "token") answer.textContent += data.text;
+      else if (name === "answer") { answer.innerHTML = data.html; status.textContent = ""; }
+    };
+    try {
+      const res = await fetch("/chat", {method: "POST", headers: {"HX-Request": "true"},
+                                        body: new URLSearchParams({q: document.getElementById("chat-q").value})});
+      if (!res.ok) throw new Error(res.status);
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = "";
+      for (;;) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        buffer += value;
+        for (let cut = buffer.indexOf("\n\n"); cut >= 0; cut = buffer.indexOf("\n\n")) {
+          const block = buffer.slice(0, cut);
+          buffer = buffer.slice(cut + 2);
+          let name = "message", data = "";
+          for (const line of block.split("\n")) {
+            if (line.startsWith("event: ")) name = line.slice(7);
+            else if (line.startsWith("data: ")) data += line.slice(6);
+          }
+          handle(name, JSON.parse(data || "{}"));
+        }
+      }
+    } catch (err) {
+      status.textContent = "Có lỗi, thử lại";
+    } finally {
+      button.disabled = false;
+    }
+  });
+</script>
 {% endblock %}

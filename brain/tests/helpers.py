@@ -113,7 +113,8 @@ class FakeOllama:
     Set ``down = True`` to simulate a stopped model server (every request raises ConnectError), or
     ``error = 500`` to make chat and embed requests fail with that HTTP status. ``reply``, if set, is called
     with each /api/chat request body and returns the answer (a str, or a dict sent as JSON); by default
-    every chat answers with ``caption``.
+    every chat answers with ``caption``. A chat with ``stream: true`` gets the answer in pieces of 8 characters,
+    one JSON line each; ``stream_fail_after = n`` breaks such a stream with an error line after n pieces.
     """
 
     def __init__(self, caption: dict | str | None = None, models: list[str] | None = None, dims: int = 1024):
@@ -123,6 +124,7 @@ class FakeOllama:
         self.models = list(DEFAULT_OLLAMA_MODELS if models is None else models)
         self.dims = dims
         self.reply = None
+        self.stream_fail_after: int | None = None
         self.requests: list[tuple[str, dict]] = []
         self.timeouts: list[tuple[str, dict | None]] = []
 
@@ -145,6 +147,8 @@ class FakeOllama:
         if path == "/api/chat":
             answer = self.caption if self.reply is None else self.reply(body)
             content = answer if isinstance(answer, str) else json.dumps(answer)
+            if body.get("stream"):
+                return httpx.Response(200, content=self._stream(body["model"], content))
             return httpx.Response(
                 200, json={"model": body["model"], "message": {"role": "assistant", "content": content}, "done": True}
             )
@@ -161,6 +165,20 @@ class FakeOllama:
             self.models.append(body["model"])
             return httpx.Response(200, json={"status": "success"})
         return httpx.Response(404, json={"error": "not found"})
+
+    def _stream(self, model: str, content: str) -> bytes:
+        import json
+
+        pieces = [content[i:i + 8] for i in range(0, len(content), 8)]
+        lines = []
+        for n, piece in enumerate(pieces):
+            if self.stream_fail_after is not None and n == self.stream_fail_after:
+                lines.append({"error": "model runner has unexpectedly stopped"})
+                break
+            lines.append({"model": model, "message": {"role": "assistant", "content": piece}, "done": False})
+        else:
+            lines.append({"model": model, "message": {"role": "assistant", "content": ""}, "done": True})
+        return "".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines).encode()
 
     def client(self):
         import httpx

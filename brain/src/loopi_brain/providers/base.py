@@ -1,6 +1,7 @@
 """Provider interface and the errors every provider raises."""
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Protocol
 
 EMBED_DIM = 1024
@@ -34,3 +35,7 @@ class Provider(Protocol):
     ) -> str: ...
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]: ...
+
+    def stream_chat(
+        self, model: str, messages: list[dict], *, temperature: float, max_tokens: int | None
+    ) -> AsyncIterator[str]: ...

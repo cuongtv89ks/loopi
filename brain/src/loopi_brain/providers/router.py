@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import httpx
@@ -71,6 +72,33 @@ class Router:
                 error = exc
                 continue
             return ChatResult(text, model_version(step))
+        assert error is not None
+        raise error
+
+    async def stream_chat(
+        self, task: str, messages: list[dict], temperature: float = 0.0, max_tokens: int | None = None
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Yield (piece of text, model_version) as the answer is written. A route that fails before its first piece
+        falls back to the next one; a failure after that is raised (part of an answer has been shown)."""
+        error: ProviderError | None = None
+        for step in self._usable(task, images=False):
+            stream = self.providers[step.provider].stream_chat(
+                step.model, messages, temperature=temperature, max_tokens=max_tokens
+            )
+            try:
+                first = await anext(stream)
+            except StopAsyncIteration:
+                return  # an empty answer
+            except ProviderError as exc:
+                log.warning("task %s: %s failed: %s", task, model_version(step), exc)
+                error = exc
+                await stream.aclose()
+                continue
+            version = model_version(step)
+            yield first, version
+            async for piece in stream:
+                yield piece, version
+            return
         assert error is not None
         raise error
 

@@ -1,17 +1,24 @@
-"""The "Tìm kiếm & Chat" page (spec §10.4, §10.6): plain hybrid search here; cited chat answers in Task 8."""
+"""The "Tìm kiếm & Chat" page (spec §10.4, §10.6): plain hybrid search, and answers with citations streamed
+as Server-Sent Events."""
 from __future__ import annotations
 
 import datetime as dt
+import json
+import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, Query, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
+from markupsafe import Markup, escape
 from pydantic import BeforeValidator
 
-from .. import search
+from .. import chat, search
 from ..days import day_bounds_utc
 from ..pipeline import moments as moment_rules
-from .routes import MARKER_LABEL, TEMPLATES
+from .routes import MARKER_LABEL, TEMPLATES, require_htmx
+
+log = logging.getLogger(__name__)
+NO_CITATION = "Câu trả lời không trích nguồn nào, có thể không chính xác."
 
 KIND_LABELS = {"visual": "Hình ảnh", "speech": "Lời nói", "marker": "Đánh dấu"}
 SEARCH_LIMIT = 30
@@ -81,3 +88,49 @@ async def search_page(
             "semantic": result.semantic if result else True,
         },
     )
+
+
+def render_answer(text: str, sources: list[dict]) -> Markup:
+    """The answer as HTML: text escaped, each valid [n] a link to source n, invalid numbers dropped, and a warning
+    when nothing is cited."""
+    parts: list[str] = []
+    position = 0
+    for match in chat.CITATION.finditer(text):
+        parts.append(str(escape(text[position:match.start()])))
+        for n in chat.cited(match.group(0), len(sources)):
+            parts.append(f'<a class="cite" href="{escape(sources[n - 1]["link"])}">[{n}]</a>')
+        position = match.end()
+    parts.append(str(escape(text[position:])))
+    html = "<p>" + "".join(parts).replace("\n", "<br>") + "</p>"
+    if sources and not chat.cited(text, len(sources)):
+        html += f'<p class="muted">{NO_CITATION}</p>'
+    return Markup(html)
+
+
+def sse(event: str, payload: dict) -> str:
+    """One Server-Sent Event; the payload is JSON, so it never contains a raw newline."""
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@router.post("/chat", dependencies=[Depends(require_htmx)])
+async def chat_answer(request: Request, q: str = Form(..., max_length=2000)):
+    state = request.app.state
+    zone = state.settings.zone
+    router_ = search.request_router(state.settings, state.llm)
+
+    async def events():
+        sources: list[dict] = []
+        try:
+            async for event, payload in chat.chat_events(state.pool, router_, q, state.settings):
+                if event == "sources":
+                    sources = [hit_view(hit, zone) for hit in payload["hits"]]
+                    payload = {"html": TEMPLATES.get_template("_sources.html").render(hits=sources)}
+                elif event == "answer":
+                    payload = {"html": str(render_answer(payload["text"], [] if payload["not_found"] else sources))}
+                yield sse(event, payload)
+        except Exception:
+            log.exception("chat answer failed")
+            yield sse("error", {"text": "Có lỗi khi trả lời, thử lại."})
+            yield sse("done", {})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
