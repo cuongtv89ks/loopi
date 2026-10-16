@@ -62,11 +62,11 @@ async def test_timeline_shows_keyframes_speech_and_markers_by_local_hour(web, po
     marker = await insert_item(pool, device_id, kind="marker", started_at=UTC_9AM_SEOUL + dt.timedelta(minutes=7),
                                seconds=0, meta={"note": "chìa khoá"})
     assert await moments.index_marker(make_ctx(pool, pki_settings), marker)
-    text = (await web.get("/", params={"day": DAY})).text
+    text = (await web.get("/hours", params={"day": DAY})).text
     assert "<h2>09:00</h2>" in text
     assert f'id="kf-{kf}"' in text and 'loading="lazy"' in text
     row = await fetch_one(pool, "SELECT path FROM keyframe WHERE id = %s", (kf,))
-    assert f'src="/media/{row["path"]}"' in text
+    assert f'href="/media/{row["path"]}"><img src="/thumb/{kf}.jpg"' in text  # a thumbnail, linked to the keyframe
     assert f"{DEFAULT_CAPTION['scene']} — {DEFAULT_CAPTION['activity']}" in text
     assert f'id="kf-{waiting}"' in text and "Đang chờ mô tả…" in text
     assert '<span class="lang">VI</span> Mai mình đi chợ &lt;b&gt;nhé&lt;/b&gt;' in text
@@ -78,7 +78,7 @@ async def test_a_marker_without_a_note_reads_danh_dau_on_the_timeline(web, pool,
     # The device uploads every button press as an empty JSON object.
     marker = await insert_item(pool, dev["device_id"], kind="marker", started_at=UTC_9AM_SEOUL, seconds=0, meta={})
     assert await moments.index_marker(make_ctx(pool, pki_settings), marker)
-    text = (await web.get("/", params={"day": DAY})).text
+    text = (await web.get("/hours", params={"day": DAY})).text
     assert '<p class="marker"><time>09:30:00</time> ★ Đánh dấu</p>' in text
     assert moments.MARKER_TEXT not in text  # the English text is only what gets embedded
 
@@ -87,7 +87,7 @@ async def test_analysed_items_are_not_marked_pending(web, pool, dev):
     item_id = await insert_item(pool, dev["device_id"], kind="audio", started_at=UTC_9AM_SEOUL)
     async with pool.connection() as conn:
         await conn.execute("UPDATE item SET analysis_state = 'done' WHERE id = %s", (item_id,))
-    text = (await web.get("/", params={"day": DAY})).text
+    text = (await web.get("/hours", params={"day": DAY})).text
     assert f'id="item-{item_id}"' in text and "Đang phân tích…" not in text
 
 
@@ -100,7 +100,7 @@ async def test_a_keyframe_whose_caption_job_failed_is_not_waiting(web, pool, pki
     assert await dispatch.defer_keyframe(pool, queued) is not None  # a caption job that is still queued
     pipeline = (await web.get("/pipeline")).text
     assert "Khung hình chờ mô tả: 1" in pipeline  # only the queued one
-    timeline = (await web.get("/", params={"day": DAY})).text
+    timeline = (await web.get("/hours", params={"day": DAY})).text
     assert timeline.count("Lỗi mô tả") == 1 and timeline.count("Đang chờ mô tả…") == 1
     failed_figure = timeline.split(f'id="kf-{broken}"')[1].split("</figure>")[0]
     assert "Lỗi mô tả" in failed_figure and "Đang chờ mô tả…" not in failed_figure
@@ -139,7 +139,7 @@ async def test_pipeline_page_shows_backlog_latency_models_and_dead_letters(web, 
     tick_row = text.split(f'id="job-{tick_id}"')[1].split("</tr>")[0]
     assert "Điều phối xử lý" in tick_row and "hx-post" not in tick_row
     broken_day = (now - dt.timedelta(hours=3)).astimezone(pki_settings.zone).date().isoformat()
-    timeline = (await web.get("/", params={"day": broken_day})).text
+    timeline = (await web.get("/hours", params={"day": broken_day})).text
     assert f'id="item-{broken}"' in timeline and "Lỗi phân tích" in timeline
 
 

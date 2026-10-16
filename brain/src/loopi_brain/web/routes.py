@@ -54,6 +54,7 @@ async def _day_by_hour(pool, day: dt.date, zone: ZoneInfo) -> dict[int, dict[str
     async with pool.connection() as conn:
         cur = await conn.execute(
             "SELECT i.id, i.kind, i.started_at, i.ended_at, i.status, i.view_path, i.meta, i.analysis_state,"
+            " i.raw_deleted_at,"
             " j.status IS NOT DISTINCT FROM 'failed' AS analysis_failed"
             " FROM item i LEFT JOIN procrastinate_jobs j ON j.id = i.analysis_job_id"
             " WHERE i.started_at >= %s AND i.started_at < %s ORDER BY i.started_at",
@@ -97,8 +98,9 @@ def _ca_fingerprint(request: Request) -> str:
     return pki.fingerprint(pki.ca_cert_pem(request.app.state.settings.pki_dir))
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/hours", response_class=HTMLResponse)
 async def timeline(request: Request, day: dt.date | None = Query(default=None)):
+    """"Chi tiết theo giờ": every keyframe, speech line, marker and segment of a day, by local hour (P2a)."""
     zone = request.app.state.settings.zone
     day = day or dt.datetime.now(zone).date()
     hours = await _day_by_hour(request.app.state.pool, day, zone)

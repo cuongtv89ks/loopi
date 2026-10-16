@@ -29,15 +29,15 @@ async def test_timeline_uses_local_day_boundaries(client, pool, pki_settings):
     dev = await paired_device(pool, pki_settings)
     late = dt.datetime(2026, 10, 14, 23, 30, tzinfo=dt.UTC)  # 08:30 on Oct 15 in Seoul
     await _insert_item(pool, dev["device_id"], "01JA2B3C4D5E6F7G8H9J0KMNPS", late)
-    on_15 = await client.get("/", params={"day": "2026-10-15"})
-    on_14 = await client.get("/", params={"day": "2026-10-14"})
+    on_15 = await client.get("/hours", params={"day": "2026-10-15"})
+    on_14 = await client.get("/hours", params={"day": "2026-10-14"})
     assert on_15.status_code == 200
     assert "01JA2B3C4D5E6F7G8H9J0KMNPS" in on_15.text and "08:30:00" in on_15.text
     assert "01JA2B3C4D5E6F7G8H9J0KMNPS" not in on_14.text
 
 
 async def test_timeline_rejects_bad_day(client):
-    assert (await client.get("/", params={"day": "yesterday"})).status_code == 422
+    assert (await client.get("/hours", params={"day": "yesterday"})).status_code == 422
 
 
 async def test_devices_page_shows_online_device(client, pool, pki_settings):

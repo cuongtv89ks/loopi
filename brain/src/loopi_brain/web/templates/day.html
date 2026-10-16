@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% macro moments(g) %}
+  {% if g.frames %}
+  <div class="frames">
+  {% for m in g.frames %}
+    <figure id="m-{{ m.id }}"><a href="/media/{{ m.keyframe_path }}"><img src="/thumb/{{ m.keyframe_id }}.jpg" loading="lazy" alt="{{ m.text }}"></a>
+      <figcaption><time>{{ m.time }}</time> {{ m.text }}</figcaption></figure>
+  {% endfor %}
+  </div>
+  {% endif %}
+  {% if g.more_frames %}
+  <details><summary>Tất cả khung hình ({{ g.frames|length + g.more_frames|length }})</summary>
+  <div class="frames">
+  {% for m in g.more_frames %}
+    <figure id="m-{{ m.id }}"><a href="/media/{{ m.keyframe_path }}"><img src="/thumb/{{ m.keyframe_id }}.jpg" loading="lazy" alt="{{ m.text }}"></a>
+      <figcaption><time>{{ m.time }}</time> {{ m.text }}</figcaption></figure>
+  {% endfor %}
+  </div>
+  </details>
+  {% endif %}
+  {% for m in g.markers %}
+  <p class="marker" id="m-{{ m.id }}"><time>{{ m.time }}</time> ★ {{ m.label }}</p>
+  {% endfor %}
+  {% if g.speech %}
+  <details><summary>Lời nói ({{ g.speech|length }})</summary>
+  {% for m in g.speech %}
+    <p class="speech" id="m-{{ m.id }}"><time>{{ m.time }}</time> <span class="lang">{{ (m.lang or "?")|upper }}</span> {{ m.text }}
+      {% if m.audio %}<audio controls preload="none" src="{{ m.audio }}"></audio>{% elif m.expired %}<span class="muted">(âm thanh đã hết hạn)</span>{% endif %}</p>
+  {% endfor %}
+  </details>
+  {% endif %}
+{% endmacro %}
+{% block content %}
+<nav class="days">
+  <a href="/?day={{ prev_day }}">← {{ prev_day }}</a>
+  <a href="/?day={{ next_day }}">{{ next_day }} →</a>
+  <form class="inline" method="get" action="/"><input type="date" name="day" value="{{ day }}"><button>Xem</button></form>
+  <a href="/hours?day={{ day }}">Chi tiết theo giờ</a>
+</nav>
+<h1>{% if is_today %}Hôm nay · {% endif %}{{ title }}</h1>
+<section class="card" id="recap">
+  <h2>Recap</h2>
+  {% if recap %}
+    {% if recap.stale %}<p class="muted">Recap này đã cũ và sẽ được viết lại.</p>{% endif %}
+    {{ recap_html }}
+    <p class="muted">Viết lúc {{ recap_at }} · {{ recap.model_version }}</p>
+  {% elif has_data %}<p>Chưa có recap. Recap được viết lúc 23:30, hoặc khi mọi chương của ngày đã xong.</p>
+  {% else %}<p>Không có dữ liệu cho ngày này.</p>{% endif %}
+  {% if recap_failed %}<p class="err">Viết recap lỗi{% if recap_failed.error %}: {{ recap_failed.error }}{% endif %}.
+    Bấm "Tạo lại recap", hoặc "Xử lý lại" ở trang <a href="/pipeline">Xử lý</a>.</p>{% endif %}
+  {% if has_data %}<button hx-post="/day/{{ day }}/recap" hx-target="#recap-request">Tạo lại recap</button>
+  <span id="recap-request"></span>{% endif %}
+</section>
+{% if commitments %}
+<section class="card" id="commitments">
+  <h2>Việc cần làm hoặc đã hứa</h2>
+  {% for c in commitments %}{% include "_commitment.html" %}{% endfor %}
+</section>
+{% endif %}
+{% if earlier_open %}
+<section class="card" id="earlier-commitments">
+  <h2>Việc còn mở từ những ngày trước</h2>
+  {% for c in earlier_open %}<div class="muted">{{ c.day.strftime("%d/%m") }}</div>{% include "_commitment.html" %}{% endfor %}
+</section>
+{% endif %}
+{% for s in sections %}
+{% if s.kind == "chapter" %}
+<section class="chapter" id="ch-{{ s.id }}">
+  <h2><time>{{ s.start }}–{{ s.end }}</time> {{ s.title or "Đang tóm tắt…" }}</h2>
+  {% if s.summary %}<p>{{ s.summary }}{% if s.outdated %} <span class="muted">(đang cập nhật)</span>{% endif %}</p>{% endif %}
+  {{ moments(s) }}
+</section>
+{% else %}
+<section class="chapter loose" id="loose-{{ s.id }}">
+  <h2><time>{{ s.start }}</time> Chưa chia chương ({{ s.count }} khoảnh khắc)</h2>
+  <p class="muted">Các chương được chia mỗi giờ.</p>
+  {{ moments(s) }}
+</section>
+{% endif %}
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,8 @@
+<div class="commitment {{ c.status }}" id="c-{{ c.id }}">
+  <span>{{ c.text }}</span>
+  {% if c.source_time %}<a href="/?day={{ c.day }}#m-{{ c.source_moment_id }}">{{ c.source_time }}</a>{% endif %}
+  <span class="muted">{{ STATUS_LABELS[c.status] }}</span>
+  {% if c.status != "done" %}<button hx-post="/commitments/{{ c.id }}/done" hx-target="#c-{{ c.id }}" hx-swap="outerHTML">Xong</button>{% endif %}
+  {% if c.status != "dismissed" %}<button hx-post="/commitments/{{ c.id }}/dismissed" hx-target="#c-{{ c.id }}" hx-swap="outerHTML">Bỏ qua</button>{% endif %}
+  {% if c.status != "open" %}<button hx-post="/commitments/{{ c.id }}/open" hx-target="#c-{{ c.id }}" hx-swap="outerHTML">Mở lại</button>{% endif %}
+</div>

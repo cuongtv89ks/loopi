@@ -50,6 +50,16 @@ async def run_ffmpeg(args: list[str], timeout: float) -> bytes:
         raise
 
 
+def inside(media_root: Path, rel: str | PurePosixPath) -> Path:
+    """``media_root / rel`` resolved; ValueError for an absolute path or one that leaves the media root (a path
+    read from the database is still checked before a file is read, written or deleted)."""
+    root = media_root.resolve()
+    path = (root / rel).resolve()
+    if path == root or not path.is_relative_to(root):
+        raise ValueError(f"path outside the media root: {rel}")
+    return path
+
+
 def _view_rel(raw_rel: PurePosixPath, suffix: str) -> PurePosixPath:
     """``raw/<device>/YYYY/MM/DD/<id>.<ext>`` -> ``view/<device>/YYYY/MM/DD/<id><suffix>``."""
     return PurePosixPath("view", *raw_rel.parts[1:]).with_suffix(suffix)

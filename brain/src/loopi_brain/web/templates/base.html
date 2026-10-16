@@ -15,6 +15,11 @@
     .frames { display: flex; flex-wrap: wrap; gap: 8px; }
     .frames figure { margin: 0; width: 224px; }
     .frames img { width: 224px; height: auto; border-radius: 4px; }
+    .chapter h2 { font-size: 1.1rem; border-bottom: 1px solid #8884; }
+    .chapter h2 time, .speech time, .marker time { font-variant-numeric: tabular-nums; color: #888; }
+    .commitment { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
+    .commitment.done span:first-child, .commitment.dismissed span:first-child { text-decoration: line-through; color: #888; }
+    form.inline { display: inline; }
     .frames figcaption, .muted { font-size: 0.85rem; color: #888; }
     .lang { font-size: 0.75rem; border: 1px solid #8886; border-radius: 4px; padding: 0 4px; }
     table { border-collapse: collapse; width: 100%; }
@@ -26,7 +31,7 @@
   </style>
 </head>
 <body>
-  <header><nav><a href="/">Dòng thời gian</a><a href="/pipeline">Xử lý</a><a href="/devices">Thiết bị</a></nav></header>
+  <header><nav><a href="/">Hôm nay</a><a href="/pipeline">Xử lý</a><a href="/devices">Thiết bị</a></nav></header>
   <div id="hx-error" class="err" role="alert"></div>
   <main>{% block content %}{% endblock %}</main>
   <script>
@@ -42,6 +47,15 @@
     document.body.addEventListener("htmx:beforeRequest", () => {
       document.getElementById("hx-error").textContent = "";
     });
+    // A link to one moment (a chat citation) opens the folded section that holds it.
+    function revealHash() {
+      const target = location.hash && document.getElementById(location.hash.slice(1));
+      if (!target) return;
+      for (let d = target.closest("details"); d; d = d.parentElement.closest("details")) d.open = true;
+      target.scrollIntoView();
+    }
+    window.addEventListener("hashchange", revealHash);
+    revealHash();
   </script>
 </body>
 </html>

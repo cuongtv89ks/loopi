@@ -209,6 +209,6 @@ async def test_a_ten_minute_segment_is_normalised_whole(web, pool, pki_settings,
 
 async def test_the_timeline_plays_audio_through_the_normalising_route(web, pool, pki_settings, dev):
     item_id, _raw = await _audio(pool, pki_settings, dev["device_id"])
-    text = (await web.get("/", params={"day": DAY})).text
+    text = (await web.get("/hours", params={"day": DAY})).text
     assert f'<audio controls preload="none" src="/audio/{item_id}.opus"></audio>' in text
     assert "/media/raw/" not in text, "the raw file is not linked"
