@@ -1,5 +1,7 @@
 import datetime as dt
 import logging
+import traceback
+from pathlib import Path
 
 import httpx
 import pytest
@@ -135,6 +137,47 @@ async def test_a_clip_needs_a_kept_finished_recording_and_a_valid_label(pool, pk
     assert len(await fetch_all(pool, "SELECT id FROM eval_audio")) == 1
 
 
+@pytest.mark.parametrize(
+    ("lang", "no_speech", "reference"),
+    [
+        pytest.param("ja", False, "x", id="other-language"), pytest.param(None, False, "x", id="no-language"),
+        pytest.param("", False, "x", id="empty-language"),  # a language of the household is needed
+        pytest.param("vi", False, "", id="no-reference"), pytest.param("vi", False, " \t\n ", id="blank-reference"),
+        pytest.param("vi", True, "", id="speechless-with-language"),  # no speech: no language, no reference
+        pytest.param("vi", True, "x", id="speechless-with-both"), pytest.param(None, True, "x", id="speechless-with-text"),
+        pytest.param("vi", False, "x" * (golden.REFERENCE_MAX + 1), id="too-long"),  # and not an unbounded one
+    ],
+)
+def test_a_label_the_table_would_refuse_cannot_be_built(lang, no_speech, reference):
+    with pytest.raises(ValueError) as refused:
+        golden.AudioLabel(lang, no_speech, reference)
+    assert reference.strip() == "" or reference not in str(refused.value)  # the reason never repeats the text
+
+
+def test_a_label_the_table_accepts_can_be_built():
+    assert golden.AudioLabel("vi", False, "x" * golden.REFERENCE_MAX).lang == "vi"
+    assert golden.AudioLabel("en", False, "Thank you.").reference == "Thank you."
+    assert golden.AudioLabel(None, True, "") == golden.audio_label("ko", True, "ignored")
+
+
+async def test_a_database_refusal_never_carries_the_reference_into_an_error(pool, pki_settings, dev):
+    # Defence in depth: AudioLabel refuses a bad label itself, but psycopg's message for a CHECK violation holds
+    # PostgreSQL's "Failing row contains (...)" with the reference, which a log or a page must never get.
+    item = await _spoken(pool, pki_settings, dev["device_id"], NINE, "vi", "x")
+    secret = "bí mật không được lọt ra"
+    sample = await golden.add_audio(pool, pki_settings, item, VI)
+    bad = golden.AudioLabel(None, True, "")
+    object.__setattr__(bad, "reference", secret)  # a no-speech clip with a reference: the table's CHECK refuses it
+    other = await _spoken(pool, pki_settings, dev["device_id"], NINE + _hours(1), "vi", "y")
+    for refused in (golden.add_audio(pool, pki_settings, other, bad), golden.update_audio(pool, sample, bad)):
+        with pytest.raises(GoldenError, match="^the label could not be saved$") as caught:
+            await refused
+        assert caught.value.__cause__ is None and caught.value.__suppress_context__
+        assert secret not in "".join(traceback.format_exception(caught.value))
+    assert [r["id"] for r in await fetch_all(pool, "SELECT id FROM eval_audio")] == [sample]  # nothing was stored
+    assert (await golden.audio_samples(pool))[0]["reference"] == VI.reference  # and nothing changed
+
+
 async def test_a_recording_whose_file_is_missing_leaves_no_sample(pool, pki_settings, dev, caplog):
     item = await _spoken(pool, pki_settings, dev["device_id"], NINE, "vi", "x")
     raw = (await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item,)))["raw_path"]
@@ -218,17 +261,74 @@ async def test_an_uncaptioned_keyframe_is_not_a_sample(pool, pki_settings, dev):
 
 
 async def test_the_sweep_deletes_copies_without_a_sample(pool, pki_settings, dev):
-    assert await golden.sweep(pool, pki_settings.eval_dir) == 0  # no eval dir yet
+    assert await golden.sweep(pool, pki_settings.eval_dir) == (0, [])  # no eval dir yet
     item = await _spoken(pool, pki_settings, dev["device_id"], NINE, "vi", "x")
     sample = await golden.add_audio(pool, pki_settings, item, VI)
     stray = [pki_settings.eval_dir / "audio" / "01STRAY.opus", pki_settings.eval_dir / "audio" / "01STRAY.ab12.part",
              pki_settings.eval_dir / "keyframes" / "01GONE.jpg"]
-    for path in stray:
+    # A half-made copy is taken only once its row is gone: while the row exists the copy may be being written.
+    half_made = pki_settings.eval_dir / "audio" / f"{sample}.ab12.part"
+    for path in (*stray, half_made):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"x")
-    assert await golden.sweep(pool, pki_settings.eval_dir) == 3
-    assert not any(p.exists() for p in stray)
+    assert await golden.sweep(pool, pki_settings.eval_dir) == (3, [])
+    assert not any(p.exists() for p in stray) and half_made.is_file()
     assert all((pki_settings.eval_dir / rel).is_file() for rel in golden.audio_paths(sample))
+    await golden.delete_audio(pool, pki_settings, sample)
+    half_made.write_bytes(b"x")  # the row is gone now: its half-made copy goes with the next sweep
+    assert await golden.sweep(pool, pki_settings.eval_dir) == (1, []) and not half_made.exists()
+
+
+def _stuck(monkeypatch, *prefixes: str) -> None:
+    """Copies whose name starts with one of ``prefixes`` cannot be deleted (a read-only folder, say)."""
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self.name.startswith(prefixes):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+
+
+async def test_the_sweep_says_which_copies_it_could_not_delete(pool, pki_settings, dev, monkeypatch, caplog):
+    for name in ("audio/01STUCK.opus", "audio/01GONE.opus", "keyframes/01STUCK.jpg"):
+        (pki_settings.eval_dir / name).parent.mkdir(parents=True, exist_ok=True)
+        (pki_settings.eval_dir / name).write_bytes(b"x")
+    _stuck(monkeypatch, "01STUCK")
+    with caplog.at_level(logging.INFO):
+        assert await golden.sweep(pool, pki_settings.eval_dir) == (1, ["audio/01STUCK.opus", "keyframes/01STUCK.jpg"])
+    assert "1 copies without a sample deleted, 2 could not be" in caplog.text
+    monkeypatch.undo()
+    assert await golden.sweep(pool, pki_settings.eval_dir) == (2, [])  # the next night's sweep finishes it
+
+
+async def test_a_forget_counts_the_golden_copies_it_could_not_delete(pool, pki_settings, dev, monkeypatch):
+    item = await _spoken(pool, pki_settings, dev["device_id"], NINE, "vi", "x")
+    clip = await golden.add_audio(pool, pki_settings, item, VI)
+    _stuck(monkeypatch, clip)  # both copies of the clip
+    counts = await forget.forget_range(pool, pki_settings, NINE - dt.timedelta(minutes=1), NINE + _hours(1))
+    assert counts.golden == 1 and counts.files_failed == 2  # the owner is told something stays
+    assert all((pki_settings.eval_dir / rel).is_file() for rel in golden.audio_paths(clip))
+    assert await fetch_all(pool, "SELECT id FROM eval_audio") == []  # the row is gone: the sweep takes the copies
+    monkeypatch.undo()
+    assert await golden.sweep(pool, pki_settings.eval_dir) == (2, [])
+    again = await forget.forget_range(pool, pki_settings, NINE - dt.timedelta(minutes=1), NINE + _hours(1))
+    assert again.files_failed == 0
+
+
+async def test_the_nightly_sweep_warns_about_copies_it_could_not_delete(pool, pki_settings, dev, monkeypatch, caplog):
+    stuck = pki_settings.eval_dir / "audio" / "01STUCK.opus"
+    stuck.parent.mkdir(parents=True, exist_ok=True)
+    stuck.write_bytes(b"x")
+    _stuck(monkeypatch, "01STUCK")
+    context.set_context(make_ctx(pool, pki_settings))
+    try:
+        with caplog.at_level(logging.WARNING):
+            await retention.apply_retention_job(timestamp=THREE_IN_SEOUL)
+    finally:
+        context.set_context(None)
+    assert "1 golden copies could not be deleted; the next night's sweep tries again" in caplog.text
 
 
 async def test_forgetting_a_range_takes_its_golden_samples_and_their_copies(pool, pki_settings, dev):
@@ -334,6 +434,7 @@ async def test_a_failing_sweep_stops_neither_a_forget_nor_retention(pool, pki_se
     with caplog.at_level(logging.ERROR):
         counts = await forget.forget_range(pool, pki_settings, NINE - dt.timedelta(minutes=1), NINE + _hours(1))
     assert counts.golden == 1 and counts.items == 1 and "could not sweep the golden copies" in caplog.text
+    assert counts.files_failed == 1  # how many copies stay is unknown: the owner is told at least one may
     calls = []
 
     async def apply(pool, settings, now=None):

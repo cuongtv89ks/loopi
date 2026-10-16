@@ -232,7 +232,9 @@ async def apply_retention_job(timestamp: int | None = None) -> None:
     if due(timestamp, ctx.settings.zone):
         await retry_forgotten_files(ctx.pool, ctx.settings)
         try:
-            await golden.sweep(ctx.pool, ctx.settings.eval_dir)
+            _, left = await golden.sweep(ctx.pool, ctx.settings.eval_dir)
+            if left:
+                log.warning("%d golden copies could not be deleted; the next night's sweep tries again", len(left))
         except Exception:  # never stops retention
             log.exception("could not sweep the golden copies")
         await apply_retention(ctx.pool, ctx.settings)

@@ -60,7 +60,7 @@ class ForgetCounts:
     recaps: int = 0
     golden: int = 0  # golden clips, keyframes and correct moments of questions
     files: int = 0
-    files_failed: int = 0
+    files_failed: int = 0  # media files and golden copies that could not be deleted (the 03:00 run retries them)
 
 
 class _MoreDays(Exception):
@@ -275,11 +275,14 @@ async def forget_range(pool: AsyncConnectionPool, settings: Settings, start: dt.
     except Exception:  # the audit row still lists every path: the nightly run deletes them
         log.exception("deleting the media files failed; they stay listed on the audit row %s", log_id)
         deleted, failed = 0, files
+    golden_left = 0
     try:  # the golden copies of the forgotten samples; anything left is swept again at 03:00
-        await golden.sweep(pool, settings.eval_dir)
+        _, left = await golden.sweep(pool, settings.eval_dir)
+        golden_left = len(left)
     except Exception:
         log.exception("could not sweep the golden copies after the forget %s; the 03:00 run tries again", log_id)
-    counts = ForgetCounts(**{**asdict(counts), "files": deleted, "files_failed": len(failed)})
+        golden_left = 1  # how many copies stay is unknown: say that at least one may
+    counts = ForgetCounts(**{**asdict(counts), "files": deleted, "files_failed": len(failed) + golden_left})
     keep = await anyio.to_thread.run_sync(retryable, settings.media_root, failed, owners)
     try:
         async with pool.connection() as conn:

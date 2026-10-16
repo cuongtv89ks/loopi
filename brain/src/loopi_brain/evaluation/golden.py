@@ -55,14 +55,34 @@ KEYFRAME_DIR = "keyframes"
 
 
 class GoldenError(Exception):
-    """A sample cannot be made: its recording or keyframe is gone, expired, not analysed, or already a sample."""
+    """A sample cannot be made or changed: its recording or keyframe is gone, expired, not analysed, or already a
+    sample; or the table refused it. The message is fixed text: never a reference, a caption or PostgreSQL's
+    "Failing row contains (...)"."""
+
+
+LABEL_REFUSED = "the label could not be saved"
 
 
 @dataclass(frozen=True)
 class AudioLabel:
+    """What the owner says of a clip. It holds what the table's ``eval_audio_label`` CHECK accepts (and nothing a
+    database error could repeat): no speech means no language and no reference, speech a language of the household
+    and a reference of at most REFERENCE_MAX characters. ValueError, with a fixed message, otherwise."""
+
     lang: str | None
     no_speech: bool
     reference: str
+
+    def __post_init__(self) -> None:
+        if self.no_speech:
+            if self.lang is not None or self.reference:
+                raise ValueError("a clip without speech has no language and no reference")
+        elif self.lang not in LANGUAGES:
+            raise ValueError(f"the language must be one of {', '.join(LANGUAGES)}")
+        elif not self.reference.strip():
+            raise ValueError("a clip with speech needs its reference transcript")
+        if len(self.reference) > REFERENCE_MAX:
+            raise ValueError(f"a reference is at most {REFERENCE_MAX} characters")
 
 
 def clean_text(text: str, limit: int = REFERENCE_MAX) -> str:
@@ -229,6 +249,8 @@ async def add_audio(
             )
     except psycopg.errors.UniqueViolation as exc:
         raise GoldenError("this recording is already a golden clip") from exc
+    except psycopg.IntegrityError:  # its message would hold the failing row, the reference included
+        raise GoldenError(LABEL_REFUSED) from None
     try:
         src = media.inside(settings.media_root, item["raw_path"])
         await anyio.to_thread.run_sync(_copy, src, settings.eval_dir / copy)
@@ -248,12 +270,16 @@ async def add_audio(
 
 
 async def update_audio(pool: AsyncConnectionPool, sample_id: str, label: AudioLabel) -> bool:
-    async with pool.connection() as conn:
-        cur = await conn.execute(
-            "UPDATE eval_audio SET lang = %s, no_speech = %s, reference = %s, updated_at = now() WHERE id = %s",
-            (label.lang, label.no_speech, label.reference, sample_id),
-        )
-        return cur.rowcount == 1
+    """Replace a clip's label; False when there is no such clip. GoldenError when the table refuses the label."""
+    try:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE eval_audio SET lang = %s, no_speech = %s, reference = %s, updated_at = now() WHERE id = %s",
+                (label.lang, label.no_speech, label.reference, sample_id),
+            )
+            return cur.rowcount == 1
+    except psycopg.IntegrityError:  # its message would hold the failing row, the reference included
+        raise GoldenError(LABEL_REFUSED) from None
 
 
 async def audio_samples(pool: AsyncConnectionPool) -> list[dict]:
@@ -455,12 +481,14 @@ def _files(eval_dir: Path) -> list[tuple[str, str, str]]:
     return out
 
 
-async def sweep(pool: AsyncConnectionPool, eval_dir: Path) -> int:
-    """Delete every copy whose sample has no row (forgotten, deleted, or a copy a crash left half made); return how
-    many went. Runs after "Quên khoảng thời gian" and every night at 03:00."""
+async def sweep(pool: AsyncConnectionPool, eval_dir: Path) -> tuple[int, list[str]]:
+    """Delete every copy whose sample has no row (forgotten or deleted); return (how many went, the copies that
+    could not be deleted, relative to the eval dir: they hold sample ids only). A half-made copy (``<id>.<random>.part``,
+    left by a crash) goes only once its row is gone: while the row exists the copy may still be being written.
+    Runs after "Quên khoảng thời gian" (which reports the failures) and every night at 03:00 (which retries them)."""
     files = await anyio.to_thread.run_sync(_files, eval_dir)
     if not files:
-        return 0
+        return 0, []
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT id FROM eval_audio")
         kept = {(AUDIO_DIR, r["id"]) for r in await cur.fetchall()}
@@ -470,4 +498,4 @@ async def sweep(pool: AsyncConnectionPool, eval_dir: Path) -> int:
     deleted, failed = await anyio.to_thread.run_sync(media.remove_files, eval_dir, stale)
     if stale:
         log.info("golden set: %d copies without a sample deleted, %d could not be", deleted, len(failed))
-    return deleted
+    return deleted, failed
