@@ -163,12 +163,18 @@ async def test_reprocessing_chapters_forces_new_summaries_now(pool, pki_settings
 
 async def test_reprocessing_the_recap_marks_it_stale_and_asks_now(pool, pki_settings, jobs_open):
     await insert_chapter(pool, DAY, NINE, NINE)
+    failed = await recap_rules.defer_recap(pool, DAY)
     async with pool.connection() as conn:
         await conn.execute("INSERT INTO day_recap (day, markdown, model_version) VALUES (%s, 'x', 'x')", (DAY,))
+        await conn.execute("UPDATE procrastinate_jobs SET status = 'failed', attempts = 4 WHERE id = %s", (failed,))
+        await conn.execute("INSERT INTO day_job_error (task, day, error) VALUES ('write_recap', %s, 'boom')", (DAY,))
     result = await reprocess.reprocess_day(pool, DAY, pki_settings.zone, {"recap"})
     assert result == reprocess.ReprocessResult(recap=True)  # chapters are not touched
     assert (await fetch_one(pool, "SELECT closed FROM chapter"))["closed"] is True
-    assert "recap:2026-10-14" in await jobs_by_lock(pool)
+    # Like "Tạo lại recap": the failed run and its error go (no stale banner, the planner is not kept away).
+    [job] = (await jobs_by_lock(pool))["recap:2026-10-14"]
+    assert job["id"] != failed and job["status"] == "todo"
+    assert await fetch_all(pool, "SELECT * FROM day_job_error") == []
 
 
 async def test_reprocessing_needs_a_day_and_a_choice(web, pool, pki_settings):
@@ -215,7 +221,7 @@ async def test_a_failing_recap_request_is_logged_and_the_reset_stands(web, pool,
         raise RuntimeError("queue down")
 
     monkeypatch.setattr(recap_rules, "defer_recap", queue_down)
-    with caplog.at_level(logging.ERROR, logger="loopi_brain.reprocess"):
+    with caplog.at_level(logging.ERROR, logger="loopi_brain.pipeline.recap"):
         r = await web.post("/settings/reprocess", data={"day": "2026-10-14", "what": ["recap"]}, headers=HX)
     assert r.status_code == 200 and "recap sẽ được viết lại" in r.text
     assert (await fetch_one(pool, "SELECT stale FROM day_recap"))["stale"] is True  # the planner writes it anyway

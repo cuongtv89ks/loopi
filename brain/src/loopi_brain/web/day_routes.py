@@ -12,10 +12,9 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 from .. import media, thumbs
 from ..days import day_bounds_utc, local_now
-from ..pipeline import jobs
 from ..pipeline import moments as moment_rules
 from ..pipeline import recap as recap_rules
-from ..pipeline.state import clear_day_error, keyframe_exists
+from ..pipeline.state import keyframe_exists
 from .markdown import render_markdown
 from .routes import MARKER_LABEL, TEMPLATES, require_htmx
 
@@ -31,11 +30,6 @@ router = APIRouter()
 
 def day_title(day: dt.date) -> str:
     return f"{WEEKDAYS[day.weekday()]}, {day:%d/%m/%Y}"
-
-
-def _recap_lock(day: dt.date) -> str:
-    """The queueing lock of the day's ``write_recap`` jobs (as ``recap.defer_recap`` sets it)."""
-    return f"recap:{day.isoformat()}"
 
 
 def _moment_view(row: dict, zone) -> dict:
@@ -96,7 +90,7 @@ async def day_view(pool, day: dt.date, zone, today: dt.date | None = None) -> di
             "SELECT e.error FROM procrastinate_jobs j"
             " LEFT JOIN day_job_error e ON e.task = j.task_name AND e.day = %s"
             " WHERE j.queueing_lock = %s AND j.status = 'failed' ORDER BY j.id DESC LIMIT 1",
-            (day, _recap_lock(day)),
+            (day, recap_rules.recap_lock(day)),
         )
         recap_failed = await cur.fetchone()
     # Chapters and the moments outside any chapter (not built yet, or arrived since), in time order.
@@ -193,16 +187,9 @@ async def thumbnail(request: Request, keyframe_id: str):
 @router.post("/day/{day}/recap", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 async def rewrite_recap(request: Request, day: dt.date):
     """"Tạo lại recap": drop the day's failed recap runs and their error, mark the current recap out of date and
-    ask for a new one now (a failed job left behind would keep the banner up and keep the planner away)."""
-    pool = request.app.state.pool
-    async with pool.connection() as conn:
-        await conn.execute(
-            "DELETE FROM procrastinate_jobs WHERE queueing_lock = %s AND status = 'failed'", (_recap_lock(day),)
-        )  # its events go with it (cascade)
-    await clear_day_error(pool, jobs.WRITE_RECAP, day)
-    async with pool.connection() as conn:
-        await conn.execute("UPDATE day_recap SET stale = true WHERE day = %s", (day,))
-    await recap_rules.defer_recap(pool, day)  # never .defer directly: priority -10 and lock llm are set there
+    ask for a new one now (``recap.request_rewrite``)."""
+    if await recap_rules.request_rewrite(request.app.state.pool, day) is None:
+        return HTMLResponse("<span>Chưa gửi được yêu cầu viết lại recap; recap sẽ được viết lại theo lịch.</span>")
     return HTMLResponse("<span>Đã yêu cầu viết lại recap. Tải lại trang sau vài phút để xem.</span>")
 
 

@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 
 from procrastinate import JobContext
+from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, field_validator
 
@@ -285,13 +286,43 @@ async def write_recap(ctx: PipelineContext, day: dt.date, attempt: int = 0) -> b
     return True
 
 
+def recap_lock(day: dt.date) -> str:
+    """The queueing lock of the day's ``write_recap`` jobs."""
+    return f"recap:{day.isoformat()}"
+
+
 async def defer_recap(pool: AsyncConnectionPool, day: dt.date) -> int:
     """Ask for the recap of ``day`` (one waiting request per day)."""
     async with pool.connection() as conn, conn.transaction():
         return await jobs.enqueue(
             conn, jobs.WRITE_RECAP, queue="understand", lock=jobs.LLM_LOCK, priority=jobs.LLM_PRIORITY,
-            queueing_lock=f"recap:{day.isoformat()}", day=day.isoformat(),
+            queueing_lock=recap_lock(day), day=day.isoformat(),
         )
+
+
+async def drop_failed_recaps(conn: AsyncConnection, days: list[dt.date]) -> None:
+    """In the caller's transaction: delete the failed recap runs of ``days`` (their events go with them, cascade) and
+    their stored error. A failed run left behind keeps the "Viết recap lỗi" banner up and the planner away."""
+    await conn.execute(
+        "DELETE FROM procrastinate_jobs WHERE status = 'failed' AND queueing_lock = ANY(%s)",
+        ([recap_lock(day) for day in days],),
+    )
+    await conn.execute("DELETE FROM day_job_error WHERE task = %s AND day = ANY(%s)", (jobs.WRITE_RECAP, days))
+
+
+async def request_rewrite(pool: AsyncConnectionPool, day: dt.date) -> int | None:
+    """Ask for a new recap of ``day`` now ("Tạo lại recap", reprocessing the recap): drop the day's failed recap runs
+    and their error, mark its recap out of date, then queue the request. Returns its job id, or None when it could
+    not be queued: the reset is committed by then, the error is logged, and the planner writes the out-of-date recap
+    by its own rules (an earlier day once settled, today at 23:30)."""
+    async with pool.connection() as conn, conn.transaction():
+        await drop_failed_recaps(conn, [day])
+        await conn.execute("UPDATE day_recap SET stale = true WHERE day = %s", (day,))
+    try:
+        return await defer_recap(pool, day)  # never .defer directly: priority -10 and lock llm are set there
+    except Exception:
+        log.exception("could not ask for the recap of %s", day)
+        return None
 
 
 async def plan_recaps(pool: AsyncConnectionPool, router: Router, zone, now: dt.datetime | None = None) -> list[dt.date]:

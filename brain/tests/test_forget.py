@@ -18,6 +18,7 @@ from helpers import (
     insert_keyframe,
     insert_moment,
     jobs_by_lock,
+    make_ctx,
     new_ulid,
     paired_device,
     write_jpeg,
@@ -27,6 +28,7 @@ from loopi_brain import forget, media
 from loopi_brain.app import create_app
 from loopi_brain.days import day_bounds_utc
 from loopi_brain.pipeline import chapters as chapter_rules
+from loopi_brain.pipeline import recap as recap_rules
 from loopi_brain.pipeline.state import forgotten, lock_day
 
 HX = {"HX-Request": "true"}
@@ -145,6 +147,47 @@ async def test_forgetting_removes_the_rows_files_and_derived_text_of_the_range(p
     assert audit["counts"]["files"] == 7 and "khám" not in str(audit["counts"])  # counts only, no content
     assert audit["pending_files"] == []  # every file went
     assert "chapters:2026-10-14" in await jobs_by_lock(pool)
+
+
+async def _failed_recap(pool, day: dt.date, error: str) -> int:
+    """A dead-lettered recap run of ``day`` with its stored error text."""
+    job_id = await recap_rules.defer_recap(pool, day)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE procrastinate_jobs SET status = 'failed', attempts = 4 WHERE id = %s", (job_id,))
+        await conn.execute("INSERT INTO day_job_error (task, day, error) VALUES ('write_recap', %s, %s)", (day, error))
+    return job_id
+
+
+async def test_a_forget_clears_the_errors_that_may_quote_what_it_forgets_and_the_day_is_recapped_again(
+    pool, pki_settings, dev, jobs_open
+):
+    morning = await _morning(pool, pki_settings, dev["device_id"])
+    quote = "AnswerInvalid: Unterminated string; got '{\"main_events\": [\"Hẹn đi khám răng'"  # written before the fix
+    await _failed_recap(pool, DAY, quote)
+    other_day = DAY - dt.timedelta(days=1)
+    kept_job = await _failed_recap(pool, other_day, "ProviderError: x")
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO day_job_error (task, day, error) VALUES ('build_chapters', %s, %s)",
+                           (DAY, f"ChapterSummaryFailed: 1 chapter summaries failed; last: {quote}"))
+        await conn.execute("UPDATE chapter SET summary_error = %s, summary_error_at = now() WHERE id = %s",
+                           (quote, morning["inside"]))
+    router = make_ctx(pool, pki_settings).router
+    next_morning = dt.datetime(2026, 10, 15, 8, 0, tzinfo=pki_settings.zone)
+    assert await recap_rules.plan_recaps(pool, router, pki_settings.zone, next_morning) == []  # the failed run blocks
+
+    await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)
+    inside = await fetch_one(pool, "SELECT summary_error, summary_error_at FROM chapter WHERE id = %s",
+                             (morning["inside"],))
+    assert inside == {"summary_error": None, "summary_error_at": None}
+    assert [(r["task"], r["day"]) for r in await fetch_all(pool, "SELECT task, day FROM day_job_error")] == [
+        ("write_recap", other_day)]  # another day keeps its error and its failed run
+    failed = await fetch_all(pool, "SELECT id, queueing_lock FROM procrastinate_jobs WHERE status = 'failed'")
+    assert failed == [{"id": kept_job, "queueing_lock": f"recap:{other_day}"}]
+    assert "khám" not in str(await fetch_all(pool, "SELECT error FROM day_job_error"))
+    # Once the rebuilt chapters have settled again, the planner asks for the forgotten day's recap by itself.
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE chapter SET closed = true")
+    assert await recap_rules.plan_recaps(pool, router, pki_settings.zone, next_morning) == [DAY]
 
 
 async def test_a_recording_that_straddles_the_edge_goes_whole_one_that_only_touches_it_stays(pool, pki_settings, dev):

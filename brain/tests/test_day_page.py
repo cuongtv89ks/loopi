@@ -202,6 +202,26 @@ async def test_rewriting_the_recap_marks_it_stale_and_asks_for_a_new_one(web, po
     assert await recap.plan_recaps(pool, router, pki_settings.zone, morning) == [DAY]
 
 
+async def test_a_rewrite_request_that_cannot_be_queued_is_logged_and_the_page_says_so(
+    web, pool, pki_settings, dev, monkeypatch, caplog
+):
+    import logging
+
+    from loopi_brain.pipeline import recap
+
+    await _day(pool, pki_settings, dev["device_id"])
+
+    async def queue_down(pool, day):
+        raise RuntimeError("queue down")
+
+    monkeypatch.setattr(recap, "defer_recap", queue_down)
+    with caplog.at_level(logging.ERROR, logger="loopi_brain.pipeline.recap"):
+        r = await web.post("/day/2026-10-14/recap", headers=HX)
+    assert r.status_code == 200 and "Chưa gửi được yêu cầu viết lại recap" in r.text
+    assert (await fetch_one(pool, "SELECT stale FROM day_recap"))["stale"] is True  # the planner rewrites it anyway
+    assert "could not ask for the recap of 2026-10-14" in caplog.text and "queue down" in caplog.text
+
+
 async def test_commitment_buttons_change_its_status(web, pool, pki_settings, dev):
     await _day(pool, pki_settings, dev["device_id"])
     assert (await web.post("/commitments/C1/done")).status_code == 403

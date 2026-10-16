@@ -3,9 +3,11 @@
 In one transaction: the recordings (items) that touch the range, with their keyframes, transcript segments
 and moments (embeddings included), every other moment of the range, the commitments sourced in it, and the
 recaps of the days it touches; the chapters of those days are reopened and the ones that overlap what goes lose
-their title and summary (they quoted it). A recording is deleted whole even when only part of it lies in the
-range, so "what goes" is the range widened to those recordings (the span): chapters, recaps and the audit row
-follow the span, not just the range, and may reach into the neighbouring day.
+their title, summary and summary error (they quoted it); the days' stored job errors and failed recap runs go too
+(an error may quote a model's answer; a failed run would keep the planner from writing the recap again). A
+recording is deleted whole even when only part of it lies in the range, so "what goes" is the range widened to
+those recordings (the span): chapters, recaps and the audit row follow the span, not just the range, and may reach
+into the neighbouring day.
 
 The transaction takes every touched day's lock (``state.lock_day``) before anything else, in day order, so a
 summary or recap being stored waits for it — and then sees the new audit row and stores nothing (deliberate
@@ -32,6 +34,7 @@ from . import devices, media, thumbs
 from .config import Settings
 from .days import local_day
 from .pipeline import chapters as chapter_rules
+from .pipeline import recap as recap_rules
 from .pipeline.state import lock_day
 
 log = logging.getLogger(__name__)
@@ -212,11 +215,16 @@ async def _delete_rows(
         await conn.execute("DELETE FROM item WHERE id = ANY(%s)", (item_ids,))
         await conn.execute(
             "UPDATE chapter SET title = NULL, summary = NULL, summary_signature = NULL, model_version = NULL,"
-            " updated_at = now() WHERE day = ANY(%s) AND ts_start < %s AND ts_end >= %s",
+            " summary_error = NULL, summary_error_at = NULL, updated_at = now()"
+            " WHERE day = ANY(%s) AND ts_start < %s AND ts_end >= %s",
             (affected, span[1], span[0]),
         )
         await conn.execute("UPDATE chapter SET closed = false WHERE day = ANY(%s)", (affected,))
         await conn.execute("DELETE FROM day_recap WHERE day = ANY(%s)", (affected,))
+        # Error texts of these days may quote what goes (written before model answers stopped being quoted), and a
+        # failed recap run left behind would keep the planner from writing the deleted recaps again.
+        await recap_rules.drop_failed_recaps(conn, affected)
+        await conn.execute("DELETE FROM day_job_error WHERE day = ANY(%s)", (affected,))
         counts = ForgetCounts(items=len(item_ids), keyframes=len(targets["keyframes"]), transcript_segments=segments,
                               moments=len(moment_ids), **derived)
         files, owners = _files(targets)

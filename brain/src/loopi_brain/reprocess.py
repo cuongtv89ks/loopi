@@ -8,7 +8,6 @@ settled (or at once, when the recap itself is chosen).
 from __future__ import annotations
 
 import datetime as dt
-import logging
 from dataclasses import dataclass
 
 from psycopg_pool import AsyncConnectionPool
@@ -17,8 +16,6 @@ from .days import day_bounds_utc
 from .pipeline import chapters as chapter_rules
 from .pipeline import recap as recap_rules
 from .pipeline.state import lock_day
-
-log = logging.getLogger(__name__)
 
 CHOICES = ("captions", "transcripts", "chapters", "recap")
 
@@ -86,9 +83,6 @@ async def reprocess_day(pool: AsyncConnectionPool, day: dt.date, zone, what: set
         stale = cur.rowcount > 0
     if "chapters" in what:
         await chapter_rules.defer_build(pool, day, zone)
-    if "recap" in what:
-        try:
-            await recap_rules.defer_recap(pool, day)
-        except Exception:  # the reset is committed; the planner writes a stale recap once the day has settled
-            log.exception("could not ask for the recap of %s", day)
+    if "recap" in what:  # as "Tạo lại recap": a failed run and its error go too; a request that fails is logged
+        await recap_rules.request_rewrite(pool, day)
     return ReprocessResult(keyframes, audio_items, expired, reopened, stale)
