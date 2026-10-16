@@ -15,7 +15,8 @@
   <p>ANTHROPIC_API_KEY: {{ "đã đặt" if providers.key_set else "chưa đặt" }}{% if providers.key_missing %}
      <span class="err">— providers.yaml dùng anthropic nhưng chưa có key, nên các tuyến đó bị bỏ qua.</span>{% endif %}</p>
   {% if providers.cloud_text %}<p>Gửi text lên cloud (Anthropic) khi dùng tuyến đó: {{ providers.cloud_text|join(", ") }}
-     — transcript, mô tả khung hình và tóm tắt của ngày, không bao giờ ảnh hay âm thanh.</p>{% endif %}
+     — transcript, mô tả khung hình và tóm tắt của ngày, không bao giờ ảnh hay âm thanh. Tuyến dự phòng lên cloud
+     được dùng cả khi model local lỗi hoặc chạy quá {{ providers.timeout_minutes }} phút, không chỉ khi Ollama tắt.</p>{% endif %}
   {% if not health.error %}
     {% if not health.reachable %}<p class="err">Không kết nối được Ollama ({{ health.url }}).</p>
     {% elif health.missing %}<p class="err">Thiếu model: {{ health.missing|join(", ") }}.</p>

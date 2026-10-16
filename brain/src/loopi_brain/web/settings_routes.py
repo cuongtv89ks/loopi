@@ -42,7 +42,8 @@ def providers_view(settings) -> dict:
     cloud_text = [TASK_LABELS[task] for task in TASKS
                   if key_set and any(step.provider == "anthropic" for step in config.tasks[task].chain())]
     return {"error": None, "tasks": tasks, "privacy": config.privacy, "key_set": key_set,
-            "key_missing": "anthropic" in config.providers_used() and not key_set, "cloud_text": cloud_text}
+            "key_missing": "anthropic" in config.providers_used() and not key_set, "cloud_text": cloud_text,
+            "timeout_minutes": max(1, round(settings.llm_timeout_s / 60))}
 
 
 async def settings_context(request: Request) -> dict:

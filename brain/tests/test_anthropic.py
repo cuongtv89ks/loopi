@@ -248,6 +248,9 @@ async def test_the_settings_page_says_whether_the_key_is_set_and_never_shows_it(
         assert ("bị bỏ qua" in text) == (expected == "chưa đặt")
         # With a key, the page says which tasks may send text to the cloud.
         assert ("Gửi text lên cloud (Anthropic) khi dùng tuyến đó: Recap cuối ngày" in text) == (expected == "đã đặt")
+        # A cloud fallback is not only for an Ollama outage: a local model that fails or runs out of time uses it too.
+        assert ("được dùng cả khi model local lỗi hoặc chạy quá 15 phút, không chỉ khi Ollama tắt" in text) == (
+            expected == "đã đặt")
 
 
 async def test_malformed_answers_and_transport_failures_are_errors_that_never_carry_the_key():

@@ -87,3 +87,6 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - Optional Anthropic text provider: set `ANTHROPIC_API_KEY` in `deploy/.env` and route a text task to `anthropic` in
   `deploy/providers.yaml` (examples there). Only text goes to the cloud provider (including captions and transcripts
   derived from your recordings); images and audio are never sent. Without the key those routes are skipped.
+  A cloud fallback (e.g. `recap: ollama → anthropic`) is used whenever the local step fails, not only when Ollama is
+  down: also when the local model errors or runs past `LOOPI_LLM_TIMEOUT_S` (15 minutes by default) under load, so
+  on a busy CPU that task's text (for a recap: the day's transcripts and captions) goes to Anthropic.
