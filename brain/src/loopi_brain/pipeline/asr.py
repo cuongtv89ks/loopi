@@ -18,7 +18,7 @@ import anyio
 import numpy as np
 
 from .. import audio_level, devices
-from ..config import Settings
+from ..config import ASR_RULES, Settings
 from . import dispatch, jobs
 from .context import PipelineContext, get_context
 from .jobs import job_app
@@ -31,6 +31,7 @@ MIN_REGION_S = 0.5
 # Whisper detects one language per region from its start, so regions stay short enough for a
 # Vietnamese–Korean conversation to change language between them.
 MAX_REGION_S = 20.0
+VAD_THRESHOLD = 0.5  # Silero's default speech probability; LOOPI_ASR_VAD_THRESHOLD
 WHISPER_SIZE = "large-v3-turbo"
 WHISPER_COMPUTE = "int8"
 # Whisper invents these on silence, music or TV noise. A segment is dropped only when such phrases
@@ -57,6 +58,24 @@ HALLUCINATION_FRAGMENTS = (
     "hẹn gặp lại",
 )
 HALLUCINATION_COVERAGE = 0.8
+# Rules that can be switched on (LOOPI_ASR_RULES; none by default, spec §13: only on the golden set's numbers).
+# Each one drops more of what Whisper writes on silence, TV or room noise, at the risk of dropping real speech.
+RULES = ASR_RULES
+# "outro": a whole segment that is a video's or a newscast's sign-off, worded in ways the phrase list above does not
+# cover ("Hãy subscribe cho kênh … video …", "Hãy đăng ký kênh để ủng hộ mình nhé", "MBC 뉴스 …입니다"). Matched on
+# the text in lower case with punctuation as spaces.
+OUTRO_PATTERNS = (
+    re.compile(r"\bhãy (?:like (?:và )?)?(?:subscribe|đăng k[ýí]) (?:cho )?kênh\b.*\b(?:video|ủng hộ)\b"),
+    re.compile(r"^mbc 뉴스 \w+입니다$"),
+)
+# "lone_phrase": a speech region whose every segment is one of these (lower case, no spaces or punctuation): what
+# Whisper wrote most often on a quiet home's normalised noise (P2a: "Thank you." 26 times in one night, "Yeah.").
+LONE_PHRASES = frozenset({"thankyou", "thankyouverymuch", "thanks", "yeah", "amen", "mmhmm", "bye", "you"})
+# "short_foreign": a short region in a language the household rarely speaks, chosen with low confidence (on noise
+# Whisper often picks English with avg_logprob ≈ -0.85 and no_speech_prob 0.0, which the P2a filter keeps).
+FOREIGN_LANGUAGES = frozenset({"en"})
+FOREIGN_MAX_PROB = 0.5
+FOREIGN_MAX_WORDS = 3
 
 
 @dataclass(frozen=True)
@@ -89,6 +108,15 @@ class Transcriber(Protocol):
 def _normalise(text: str) -> str:
     text = unicodedata.normalize("NFC", text).lower()
     return re.sub(r"[\W_]+", "", text)
+
+
+def _spaced(text: str) -> str:
+    """Lower case, NFC, punctuation as spaces, whitespace collapsed (what the outro patterns read)."""
+    return " ".join(re.sub(r"[\W_]+", " ", unicodedata.normalize("NFC", text).lower()).split())
+
+
+def is_outro(text: str) -> bool:
+    return any(pattern.search(_spaced(text)) for pattern in OUTRO_PATTERNS)
 
 
 _HALLUCINATIONS = tuple(sorted({_normalise(p) for p in HALLUCINATIONS}, key=len, reverse=True))
@@ -128,6 +156,21 @@ def keep_segment(seg: SegmentResult) -> bool:
     if seg.compression_ratio > 2.4:
         return False
     return not is_hallucination(seg.text)
+
+
+def kept_segments(result: RegionResult, rules: frozenset[str] = frozenset()) -> list[SegmentResult]:
+    """The segments of one speech region worth storing: each one that passes ``keep_segment``, then the rules
+    switched on in ``rules`` (names from RULES)."""
+    kept = [s for s in result.segments if keep_segment(s)]
+    if "outro" in rules:
+        kept = [s for s in kept if not is_outro(s.text)]
+    if kept and "lone_phrase" in rules and all(_normalise(s.text) in LONE_PHRASES for s in kept):
+        return []
+    if (kept and "short_foreign" in rules and result.lang in FOREIGN_LANGUAGES
+            and result.lang_prob < FOREIGN_MAX_PROB
+            and sum(len(s.text.split()) for s in kept) <= FOREIGN_MAX_WORDS):
+        return []
+    return kept
 
 
 def _cap(chunks: list[tuple[float, float]]) -> list[Region]:
@@ -180,11 +223,14 @@ def normalise(audio: np.ndarray, max_gain_db: float = audio_level.MAX_GAIN_DB) -
     return np.clip(audio * np.float32(gain), -1.0, 1.0)
 
 
-def speech_regions(audio: np.ndarray) -> list[Region]:
-    """Where someone speaks, by the Silero VAD model bundled with faster-whisper (no download)."""
+def speech_regions(audio: np.ndarray, threshold: float = VAD_THRESHOLD) -> list[Region]:
+    """Where someone speaks, by the Silero VAD model bundled with faster-whisper (no download); ``threshold`` is the
+    speech probability a frame needs."""
     from faster_whisper.vad import VadOptions, get_speech_timestamps
 
-    raw = get_speech_timestamps(audio, VadOptions(min_silence_duration_ms=500, speech_pad_ms=200), SAMPLE_RATE)
+    raw = get_speech_timestamps(
+        audio, VadOptions(threshold=threshold, min_silence_duration_ms=500, speech_pad_ms=200), SAMPLE_RATE
+    )
     return merge_regions(raw)
 
 
@@ -234,13 +280,16 @@ class WhisperTranscriber:
 
 
 def transcribe_file(
-    path: Path, transcriber: Transcriber, max_gain_db: float = audio_level.MAX_GAIN_DB
+    path: Path,
+    transcriber: Transcriber,
+    max_gain_db: float = audio_level.MAX_GAIN_DB,
+    vad_threshold: float = VAD_THRESHOLD,
 ) -> list[tuple[Region, RegionResult]]:
     """Blocking: decode, normalise the level, find speech, transcribe each region. Segment times stay
-    region-relative."""
+    region-relative. The live stage and the evaluation runner both go this way."""
     audio = normalise(load_audio(path), max_gain_db)
     results = []
-    for region in speech_regions(audio):
+    for region in speech_regions(audio, vad_threshold):
         chunk = audio[int(region.start * SAMPLE_RATE): int(region.end * SAMPLE_RATE)]
         results.append((region, transcriber.transcribe(chunk)))
     return results
@@ -259,7 +308,10 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
     if not path.is_file():
         await finish_item(pool, item_id, "skipped")
         return 0
-    results = await anyio.to_thread.run_sync(transcribe_file, path, ctx.transcriber, ctx.settings.asr_max_gain_db)
+    settings = ctx.settings
+    results = await anyio.to_thread.run_sync(
+        transcribe_file, path, ctx.transcriber, settings.asr_max_gain_db, settings.asr_vad_threshold
+    )
     version = ctx.router.model_version("asr")
     start: dt.datetime = item["started_at"]
     moments = 0
@@ -270,7 +322,7 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
         # Re-running replaces the item's transcript (moments go with their segments: ON DELETE CASCADE).
         await conn.execute("DELETE FROM transcript_segment WHERE item_id = %s", (item_id,))
         for region, result in results:
-            kept = [s for s in result.segments if keep_segment(s)]
+            kept = kept_segments(result, settings.asr_rule_set)
             if not kept:
                 continue
             segment_ids = []
@@ -279,11 +331,12 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
                 segment_ids.append(segment_id)
                 await conn.execute(
                     "INSERT INTO transcript_segment (id, item_id, device_id, start_ts, end_ts, lang, text,"
-                    " avg_logprob, no_speech_prob, model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    " avg_logprob, no_speech_prob, lang_prob, model_version)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (segment_id, item_id, item["device_id"],
                      start + dt.timedelta(seconds=region.start + seg.start),
                      start + dt.timedelta(seconds=region.start + seg.end),
-                     result.lang, seg.text.strip(), seg.avg_logprob, seg.no_speech_prob, version),
+                     result.lang, seg.text.strip(), seg.avg_logprob, seg.no_speech_prob, result.lang_prob, version),
                 )
             await conn.execute(
                 "INSERT INTO moment (id, device_id, ts_start, ts_end, kind, text, lang, item_id,"

@@ -78,3 +78,24 @@ def test_text_model_defaults_and_limits(monkeypatch):
     monkeypatch.setenv("LOOPI_LLM_TIMEOUT_S", "10")
     with pytest.raises(pydantic.ValidationError, match="llm_timeout_s"):
         Settings()
+
+
+def test_asr_rules_and_vad_threshold(monkeypatch):
+    import pydantic
+    import pytest
+
+    s = Settings(database_url="postgresql://x")
+    assert (s.asr_rule_set, s.asr_vad_threshold) == (frozenset(), 0.5)  # the P2a behaviour until the numbers say so
+    monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("LOOPI_ASR_RULES", " outro, lone_phrase ,")
+    monkeypatch.setenv("LOOPI_ASR_VAD_THRESHOLD", "0.35")
+    s = Settings()
+    assert s.asr_rule_set == frozenset({"outro", "lone_phrase"}) and s.asr_vad_threshold == 0.35
+    monkeypatch.setenv("LOOPI_ASR_RULES", "outro,typo")
+    with pytest.raises(pydantic.ValidationError, match="unknown ASR rules: typo"):
+        Settings()
+    monkeypatch.setenv("LOOPI_ASR_RULES", "")
+    for bad in ("0", "1", "-0.1"):
+        monkeypatch.setenv("LOOPI_ASR_VAD_THRESHOLD", bad)
+        with pytest.raises(pydantic.ValidationError, match="asr_vad_threshold"):
+            Settings()

@@ -53,7 +53,7 @@ async def test_a_real_worker_runs_every_stage(pool, pki_settings, dev, jobs_open
     await _with_file(pool, pki_settings, audio, lambda p: make_opus(p, seconds=5))
     marker = await insert_item(pool, device_id, kind="marker", started_at=T0 + dt.timedelta(minutes=3), seconds=0,
                                meta={"note": "chìa khoá"})
-    monkeypatch.setattr(asr, "speech_regions", lambda _audio: [Region(1.0, 3.0)])
+    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _threshold: [Region(1.0, 3.0)])
     speech = RegionResult("vi", 0.9, [SegmentResult(0.0, 2.0, "Chìa khoá ở trên bàn", -0.2, 0.02, 1.1)])
     ctx = make_ctx(pool, pki_settings, ollama=FakeOllama(), transcriber=FakeTranscriber(speech))
 

@@ -155,7 +155,7 @@ async def _vad_input(pool, settings, device_id, source, monkeypatch, seconds=4):
     path = make_opus(settings.media_root / row["raw_path"], source, seconds)
     seen = []
 
-    def regions(audio):
+    def regions(audio, _threshold):
         seen.append(audio)
         return [Region(0.0, 2.0)]
 
@@ -202,7 +202,8 @@ async def test_room_noise_stays_without_speech_after_normalisation(pool, pki_set
 
 async def test_speech_regions_become_segments_and_moments(pool, pki_settings, dev, jobs_open, monkeypatch):
     item_id = await _audio_item(pool, pki_settings, dev["device_id"])
-    monkeypatch.setattr(asr, "speech_regions", lambda _audio: [Region(0.5, 2.5), Region(3.0, 4.5), Region(4.6, 4.9)])
+    monkeypatch.setattr(asr, "speech_regions",
+                        lambda _audio, _threshold: [Region(0.5, 2.5), Region(3.0, 4.5), Region(4.6, 4.9)])
     fake = FakeTranscriber(
         RegionResult("vi", 0.9, [seg("Mai mình đi chợ", 0.0, 1.0), seg("nhớ mua trứng nhé", 1.0, 2.0)]),
         RegionResult("ko", 0.8, [seg("네 알겠어요", 0.2, 1.4)]),
@@ -234,7 +235,7 @@ async def test_speech_regions_become_segments_and_moments(pool, pki_settings, de
 
 async def test_hallucinated_text_on_noise_leaves_no_transcript(pool, pki_settings, dev, jobs_open, monkeypatch):
     item_id = await _audio_item(pool, pki_settings, dev["device_id"])
-    monkeypatch.setattr(asr, "speech_regions", lambda _audio: [Region(0.0, 4.0)])
+    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _threshold: [Region(0.0, 4.0)])
     tv_noise = RegionResult("vi", 0.5, [
         seg("Hẹn gặp lại các bạn trong những video tiếp theo", 0.0, 2.0),
         seg("Thanks for watching", 2.0, 3.0),
@@ -257,7 +258,7 @@ async def test_real_silence_is_done_without_calling_whisper(pool, pki_settings, 
 
 async def test_item_deleted_during_transcription_stores_nothing(pool, pki_settings, dev, jobs_open, monkeypatch):
     item_id = await _audio_item(pool, pki_settings, dev["device_id"])
-    monkeypatch.setattr(asr, "speech_regions", lambda _audio: [Region(0.0, 2.0)])
+    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _threshold: [Region(0.0, 2.0)])
 
     class DeletingTranscriber(FakeTranscriber):
         def transcribe(self, chunk):  # runs in the worker thread, like Whisper
@@ -337,3 +338,77 @@ def test_real_whisper_model_transcribes_a_chunk(tmp_path):
     result = whisper.transcribe(tone)
     assert result.lang in {"vi", "ko", "en"} and 0.0 <= result.lang_prob <= 1.0
     assert all(isinstance(s, SegmentResult) for s in result.segments)
+
+
+@pytest.mark.parametrize(
+    ("rule", "region"),
+    [
+        ("outro", RegionResult("vi", 0.9, [seg("Hãy đăng ký kênh để ủng hộ mình nhé")])),
+        ("outro", RegionResult("vi", 0.9, [seg("Hãy subscribe cho kênh ABC để xem những video mới nhất")])),
+        ("outro", RegionResult("ko", 0.9, [seg("MBC 뉴스 홍길동입니다.")])),
+        ("lone_phrase", RegionResult("en", 0.9, [seg("Thank you.")])),
+        ("lone_phrase", RegionResult("en", 0.9, [seg("Yeah."), seg("Mm-hmm.", 2.0, 3.0)])),
+        ("short_foreign", RegionResult("en", 0.3, [seg("Okay, let's go.")])),
+    ],
+)
+def test_a_switched_on_rule_drops_what_whisper_writes_on_noise(rule, region):
+    assert asr.kept_segments(region) == region.segments, "the P2a filters alone keep it"
+    assert asr.kept_segments(region, frozenset({rule})) == []
+    assert asr.kept_segments(region, frozenset(asr.RULES)) == []
+
+
+@pytest.mark.parametrize(
+    "region",
+    [
+        RegionResult("vi", 0.9, [seg("Anh đã đăng ký kênh K+ chưa?")]),
+        RegionResult("vi", 0.9, [seg("Con hãy đăng ký kênh này giúp mẹ")]),  # no video, no "ủng hộ": a request
+        RegionResult("en", 0.9, [seg("Yeah."), seg("I'll call you tomorrow.", 2.0, 4.0)]),  # not alone
+        RegionResult("en", 0.9, [seg("Okay, let's go.")]),  # English, but Whisper is sure of it
+        RegionResult("en", 0.3, [seg("Can you pass me the salt please")]),  # unsure, but a whole sentence
+        RegionResult("vi", 0.2, [seg("Ừ")]),  # a household language
+        RegionResult("ko", 0.9, [seg("MBC 뉴스 보고 있었어요")]),  # talking about the news is no sign-off
+    ],
+)
+def test_every_rule_keeps_real_speech(region):
+    assert asr.kept_segments(region, frozenset(asr.RULES)) == region.segments
+
+
+def test_the_p2a_filters_still_apply_before_the_rules():
+    region = RegionResult("vi", 0.9, [seg("Cảm ơn các bạn đã theo dõi"), seg("Mai đi chợ", 2.0, 3.0)])
+    assert asr.kept_segments(region) == [region.segments[1]]
+
+
+def test_the_vad_threshold_reaches_silero(monkeypatch):
+    import faster_whisper.vad
+
+    seen = []
+    monkeypatch.setattr(faster_whisper.vad, "get_speech_timestamps",
+                        lambda audio, options, rate: seen.append(options) or [])
+    assert asr.speech_regions(np.zeros(SR, dtype=np.float32), 0.35) == []
+    assert asr.speech_regions(np.zeros(SR, dtype=np.float32)) == []
+    assert [o.threshold for o in seen] == [0.35, 0.5]
+    assert (seen[0].min_silence_duration_ms, seen[0].speech_pad_ms) == (500, 200)
+
+
+async def test_the_rules_and_vad_threshold_come_from_settings_and_the_language_probability_is_kept(
+    pool, pki_settings, dev, jobs_open, monkeypatch
+):
+    thresholds = []
+
+    def regions(_audio, threshold):
+        thresholds.append(threshold)
+        return [Region(0.0, 2.0), Region(2.5, 4.5)]
+
+    monkeypatch.setattr(asr, "speech_regions", regions)
+    results = (RegionResult("en", 0.3, [seg("Thank you.")]), RegionResult("vi", 0.8, [seg("Mai mình đi chợ")]))
+    item_id = await _audio_item(pool, pki_settings, dev["device_id"])
+    assert await asr.transcribe_audio(make_ctx(pool, pki_settings, transcriber=FakeTranscriber(*results)), item_id) == 2
+    rows = await fetch_all(pool, "SELECT lang, lang_prob, text FROM transcript_segment ORDER BY start_ts")
+    assert [(r["lang"], r["lang_prob"], r["text"]) for r in rows] == [
+        ("en", pytest.approx(0.3), "Thank you."), ("vi", pytest.approx(0.8), "Mai mình đi chợ")]
+    ruled = pki_settings.model_copy(update={"asr_rules": "lone_phrase,short_foreign", "asr_vad_threshold": 0.4})
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET analysis_state = 'pending' WHERE id = %s", (item_id,))
+    assert await asr.transcribe_audio(make_ctx(pool, ruled, transcriber=FakeTranscriber(*results)), item_id) == 1
+    assert [r["text"] for r in await fetch_all(pool, "SELECT text FROM transcript_segment")] == ["Mai mình đi chợ"]
+    assert thresholds == [0.5, 0.4]

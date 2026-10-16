@@ -5,6 +5,11 @@ from zoneinfo import ZoneInfo
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Hallucination rules the ASR stage can switch on beyond its P2a filters (implemented in pipeline/asr.py). None is
+# on by default: the evaluation runner measures each on the owner's golden set first (spec §13), and a rule becomes a
+# default only when those numbers say so.
+ASR_RULES = ("outro", "lone_phrase", "short_foreign")
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="LOOPI_")
@@ -32,6 +37,9 @@ class Settings(BaseSettings):
     asr_languages: str = "vi,ko,en"
     whisper_cpu_threads: int = 4
     asr_max_gain_db: float = Field(default=30.0, ge=0.0, le=60.0)  # level gain before VAD/Whisper (spec D19)
+    asr_vad_threshold: float = Field(default=0.5, gt=0.0, lt=1.0)  # Silero's speech probability for a region
+    # Comma-separated names from ASR_RULES that are switched on (none by default).
+    asr_rules: str = ""
     # Understanding (P2b): text models (chapters, recap, chat) leave memory a minute after answering (the host is
     # short of memory: P2a deferred M14), get a context window large enough for their bounded prompts, and may
     # take long on a CPU: a request waits up to llm_timeout_s seconds for the whole answer.
@@ -62,6 +70,14 @@ class Settings(BaseSettings):
             return value.strip() or None
         return value
 
+    @field_validator("asr_rules")
+    @classmethod
+    def _known_rules(cls, value: str) -> str:
+        unknown = sorted({r.strip() for r in value.split(",") if r.strip()} - set(ASR_RULES))
+        if unknown:
+            raise ValueError(f"unknown ASR rules: {', '.join(unknown)} (known: {', '.join(ASR_RULES)})")
+        return value
+
     @property
     def zone(self) -> ZoneInfo:
         return ZoneInfo(self.tz)
@@ -69,3 +85,7 @@ class Settings(BaseSettings):
     @property
     def asr_language_list(self) -> list[str]:
         return [code.strip() for code in self.asr_languages.split(",") if code.strip()]
+
+    @property
+    def asr_rule_set(self) -> frozenset[str]:
+        return frozenset(r.strip() for r in self.asr_rules.split(",") if r.strip())
