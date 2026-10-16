@@ -105,8 +105,13 @@ def segment(points: list[Point], params: ChapterParams = ChapterParams()) -> lis
 
 
 def closed_count(segments: list[list[Point]], horizon: dt.datetime, day_end: dt.datetime) -> int:
-    """How many leading segments are settled: everything up to the start of the next segment (the end of the
-    day, for the last one) lies before ``horizon``, so data still to come can no longer change them."""
+    """How many leading segments are closed: the next segment starts at or before ``horizon`` (for the last one:
+    the whole day is over, ``day_end`` <= ``horizon``), so the last, open segment is never closed while the day runs.
+
+    Closed segments are frozen as they stood when they closed: the caller keeps their rows and re-segments only
+    the moments after them, so data arriving later never changes a closed segment. A drift boundary is confirmed
+    by the next moment of its kind, however far away, so a full rebuild of the whole day from scratch (after a
+    forget or a reprocess) may draw different boundaries than the ones frozen earlier."""
     count = 0
     for k in range(len(segments)):
         limit = segments[k + 1][0].start if k + 1 < len(segments) else day_end

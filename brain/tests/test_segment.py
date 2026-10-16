@@ -118,6 +118,18 @@ def test_closing_needs_the_next_chapter_settled_and_the_last_needs_the_day_over(
     assert closed_count(chapters, day_end, day_end) == 3
 
 
+def test_the_open_last_chapter_is_never_closed_while_the_day_is_not_over():
+    # Task 4 keeps closed chapters as they are and re-segments only what comes after them: the chapter that is
+    # still being written (the last one) must stay open until the day is over, however late the horizon.
+    day = points(("visual", 0, 15, 1, 0), ("visual", 1, 15, 1, 0), ("visual", 0, 10, 1, 30))
+    chapters = segment(day)
+    day_end = T + dt.timedelta(hours=15)
+    for horizon in (T, day[-1].end, day[-1].end + dt.timedelta(hours=3), day_end - dt.timedelta(seconds=1)):
+        assert closed_count(chapters, horizon, day_end) <= len(chapters) - 1
+    assert closed_count(chapters, day_end, day_end) == len(chapters)
+    assert closed_count([chapters[0]], T + dt.timedelta(hours=2), day_end) == 0
+
+
 def test_signature_names_the_members():
     day = points(("visual", 0, 3, 1, 0))
     assert signature(day) == signature(list(day)) and len(signature(day)) == 32
