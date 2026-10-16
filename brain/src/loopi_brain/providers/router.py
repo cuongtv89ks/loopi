@@ -105,5 +105,13 @@ class Router:
 
 
 def build_router(config: ProvidersConfig, settings: Settings, client: httpx.AsyncClient | None = None) -> Router:
-    ollama = OllamaProvider(settings.ollama_url, keep_alive=settings.ollama_keep_alive, client=client)
+    ollama = OllamaProvider(
+        settings.ollama_url,
+        keep_alive=settings.ollama_keep_alive,
+        client=client,
+        text_models=config.ollama_text_models(),
+        text_keep_alive=settings.ollama_text_keep_alive,
+        num_ctx=settings.llm_num_ctx,
+        text_timeout=settings.llm_timeout_s,
+    )
     return Router(config, {"ollama": ollama})

@@ -111,7 +111,9 @@ class FakeOllama:
     """In-process stand-in for the Ollama HTTP API, used as an ``httpx.MockTransport`` handler.
 
     Set ``down = True`` to simulate a stopped model server (every request raises ConnectError), or
-    ``error = 500`` to make chat and embed requests fail with that HTTP status.
+    ``error = 500`` to make chat and embed requests fail with that HTTP status. ``reply``, if set, is called
+    with each /api/chat request body and returns the answer (a str, or a dict sent as JSON); by default
+    every chat answers with ``caption``.
     """
 
     def __init__(self, caption: dict | str | None = None, models: list[str] | None = None, dims: int = 1024):
@@ -120,6 +122,7 @@ class FakeOllama:
         self.caption = DEFAULT_CAPTION if caption is None else caption
         self.models = list(DEFAULT_OLLAMA_MODELS if models is None else models)
         self.dims = dims
+        self.reply = None
         self.requests: list[tuple[str, dict]] = []
         self.timeouts: list[tuple[str, dict | None]] = []
 
@@ -140,7 +143,8 @@ class FakeOllama:
             if body["model"] not in self.models:
                 return httpx.Response(404, json={"error": f"model '{body['model']}' not found"})
         if path == "/api/chat":
-            content = self.caption if isinstance(self.caption, str) else json.dumps(self.caption)
+            answer = self.caption if self.reply is None else self.reply(body)
+            content = answer if isinstance(answer, str) else json.dumps(answer)
             return httpx.Response(
                 200, json={"model": body["model"], "message": {"role": "assistant", "content": content}, "done": True}
             )

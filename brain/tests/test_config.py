@@ -40,3 +40,19 @@ def test_asr_gain_ceiling_from_env(monkeypatch):
         monkeypatch.setenv("LOOPI_ASR_MAX_GAIN_DB", bad)
         with pytest.raises(pydantic.ValidationError, match="asr_max_gain_db"):
             Settings()
+
+
+def test_text_model_defaults_and_limits(monkeypatch):
+    import pydantic
+    import pytest
+
+    s = Settings(database_url="postgresql://x")
+    assert (s.ollama_text_keep_alive, s.llm_num_ctx, s.llm_timeout_s) == ("1m", 8192, 900.0)
+    monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("LOOPI_LLM_NUM_CTX", "1024")
+    with pytest.raises(pydantic.ValidationError, match="llm_num_ctx"):
+        Settings()
+    monkeypatch.setenv("LOOPI_LLM_NUM_CTX", "8192")
+    monkeypatch.setenv("LOOPI_LLM_TIMEOUT_S", "10")
+    with pytest.raises(pydantic.ValidationError, match="llm_timeout_s"):
+        Settings()

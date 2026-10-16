@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     asr_languages: str = "vi,ko,en"
     whisper_cpu_threads: int = 4
     asr_max_gain_db: float = Field(default=30.0, ge=0.0, le=60.0)  # level gain before VAD/Whisper (spec D19)
+    # Understanding (P2b): text models (chapters, recap, chat) leave memory a minute after answering (the host is
+    # short of memory: P2a deferred M14), get a context window large enough for their bounded prompts, and may
+    # take long on a CPU: a request waits up to llm_timeout_s seconds for the whole answer.
+    ollama_text_keep_alive: str = "1m"
+    llm_num_ctx: int = Field(default=8192, ge=2048, le=131072)
+    llm_timeout_s: float = Field(default=900.0, ge=60.0, le=3600.0)
 
     @property
     def zone(self) -> ZoneInfo:

@@ -29,10 +29,27 @@ def _tagged(model: str) -> str:
 class OllamaProvider:
     name = "ollama"
 
-    def __init__(self, base_url: str, *, keep_alive: str = "30m", client: httpx.AsyncClient | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        keep_alive: str = "30m",
+        client: httpx.AsyncClient | None = None,
+        text_models: frozenset[str] = frozenset(),
+        text_keep_alive: str = "1m",
+        num_ctx: int | None = None,
+        text_timeout: float | None = None,
+    ):
+        """``text_models`` (the big text models) stay loaded only ``text_keep_alive`` after a request, get a
+        ``num_ctx`` context window and wait up to ``text_timeout`` seconds for an answer; every other model stays
+        ``keep_alive``, with Ollama's default context and the client's timeout."""
         self._base = base_url.rstrip("/")
         self._keep_alive = keep_alive
         self._client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
+        self._text_models = text_models
+        self._text_keep_alive = text_keep_alive
+        self._num_ctx = num_ctx
+        self._text_timeout = text_timeout
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -64,6 +81,12 @@ class OllamaProvider:
             raise ProviderError(f"ollama {path}: unexpected response {str(data)[:ERROR_TAIL]}")
         return data
 
+    def _timeout_for(self, model: str) -> httpx.Timeout | None:
+        """A text model writes a whole recap before Ollama replies (CPU: minutes); others keep the client's timeout."""
+        if model in self._text_models and self._text_timeout is not None:
+            return httpx.Timeout(self._text_timeout, connect=5.0)
+        return None
+
     async def chat(
         self,
         model: str,
@@ -77,20 +100,23 @@ class OllamaProvider:
         msgs = [dict(m) for m in messages]
         if images:
             msgs[-1]["images"] = [base64.b64encode(img).decode("ascii") for img in images]
+        text_model = model in self._text_models
         options: dict = {"temperature": temperature}
         if max_tokens is not None:
             options["num_predict"] = max_tokens  # a looping model stops instead of filling the context
+        if text_model and self._num_ctx is not None:
+            options["num_ctx"] = self._num_ctx  # Ollama silently drops the start of a longer prompt
         payload: dict = {
             "model": model,
             "messages": msgs,
             "stream": False,
             "think": False,
-            "keep_alive": self._keep_alive,
+            "keep_alive": self._text_keep_alive if text_model else self._keep_alive,
             "options": options,
         }
         if json_schema is not None:
             payload["format"] = json_schema
-        data = await self._request("POST", "/api/chat", payload)
+        data = await self._request("POST", "/api/chat", payload, timeout=self._timeout_for(model))
         content = (data.get("message") or {}).get("content")
         if not isinstance(content, str):
             raise ProviderError("ollama /api/chat: response has no message content")

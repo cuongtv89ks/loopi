@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 # P2a ships the Ollama provider and the in-process ASR ("local"); cloud providers arrive in P2b.
 KNOWN_PROVIDERS = frozenset({"ollama", "local"})
 TASKS = ("caption", "asr", "embed", "chapter_summary", "recap", "chat")
+# Tasks that send only text (chapter summaries, the day recap, chat answers).
+TEXT_TASKS = ("chapter_summary", "recap", "chat")
 LOCAL_ASR_MODELS = frozenset({"faster-whisper/large-v3-turbo-int8"})
 
 
@@ -70,6 +72,12 @@ class ProvidersConfig(BaseModel):
                 if step.provider == "ollama" and step.model not in models:
                     models.append(step.model)
         return models
+
+    def ollama_text_models(self) -> frozenset[str]:
+        """Ollama models that serve a text task (chapters, recap, chat), fallbacks included."""
+        return frozenset(
+            step.model for task in TEXT_TASKS for step in self.tasks[task].chain() if step.provider == "ollama"
+        )
 
 
 DEFAULT_CONFIG = ProvidersConfig(

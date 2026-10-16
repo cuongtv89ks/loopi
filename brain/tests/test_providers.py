@@ -289,3 +289,44 @@ async def test_router_rejects_wrong_embedding_dimensions():
         await router.embed("embed", ["a"])
     result = await _router(DEFAULT_CONFIG, ollama=StubProvider()).embed("embed", ["a", "b"])
     assert len(result.vectors) == 2 and result.model_version == "ollama:qwen3-embedding:0.6b"
+
+
+async def test_text_models_leave_memory_soon_and_get_a_context_window():
+    fake = FakeOllama()
+    provider = OllamaProvider("http://models.test:11434", keep_alive="30m", client=fake.client(),
+                              text_models=frozenset({"qwen3:8b"}), text_keep_alive="1m", num_ctx=8192,
+                              text_timeout=900.0)
+    await provider.chat("qwen3:8b", [{"role": "user", "content": "x"}], max_tokens=100)
+    await provider.chat("minicpm-v4.6:1b", [{"role": "user", "content": "x"}], images=[b"img"])
+    await provider.embed("qwen3-embedding:0.6b", ["a"])
+    (_, text), (_, vision), (_, embed) = fake.requests
+    assert text["keep_alive"] == "1m" and text["options"] == {"temperature": 0.0, "num_predict": 100, "num_ctx": 8192}
+    assert vision["keep_alive"] == "30m" and "num_ctx" not in vision["options"]
+    assert embed["keep_alive"] == "30m"
+    # A recap on a CPU takes minutes: only the text model waits that long.
+    (_, text_timeout), (_, vision_timeout), _ = fake.timeouts
+    assert text_timeout == {"connect": 5.0, "read": 900.0, "write": 900.0, "pool": 900.0}
+    assert vision_timeout["read"] == 5.0  # the client's own timeout
+
+
+async def test_build_router_gives_every_text_task_model_the_text_options():
+    assert DEFAULT_CONFIG.ollama_text_models() == {"qwen3:4b", "qwen3:8b"}
+    fake = FakeOllama()
+    settings = Settings(database_url="postgresql://unused", ollama_url="http://models.test:11434",
+                        ollama_text_keep_alive="2m", llm_num_ctx=4096, llm_timeout_s=600)
+    router = build_router(DEFAULT_CONFIG, settings, fake.client())
+    for task in ("chapter_summary", "recap", "chat"):
+        await router.chat(task, [{"role": "user", "content": "x"}])
+    await router.chat("caption", [{"role": "user", "content": "x"}], images=[b"img"])
+    assert [(b["model"], b["keep_alive"], b["options"].get("num_ctx")) for _, b in fake.requests] == [
+        ("qwen3:4b", "2m", 4096), ("qwen3:8b", "2m", 4096), ("qwen3:8b", "2m", 4096),
+        ("minicpm-v4.6:1b", "30m", None),
+    ]
+    assert [t["read"] for _, t in fake.timeouts] == [600.0, 600.0, 600.0, 5.0]
+
+
+async def test_fake_ollama_answers_chats_with_its_reply_hook():
+    fake = FakeOllama()
+    fake.reply = lambda body: {"echo": body["model"]}
+    provider = OllamaProvider("http://models.test:11434", client=fake.client())
+    assert json.loads(await provider.chat("qwen3:4b", [{"role": "user", "content": "x"}])) == {"echo": "qwen3:4b"}
