@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("second")
     impact = eval_sub.add_parser("rules-impact", help="what each rule would drop from the live transcripts (counts)")
     impact.add_argument("--days", type=int, default=7, help="transcripts written in the last DAYS days (default 7)")
+    acceptance = sub.add_parser("acceptance", help="print the P2 acceptance numbers (spec §14) as Markdown")
+    acceptance.add_argument("--days", type=int, default=7, help="complete local days before today (default 7)")
+    acceptance.add_argument("--cpu-samples", help="the cgroup CPU samples of the measurement window ('-': stdin)")
+    acceptance.add_argument("--exclude-day", action="append", default=[], type=dt.date.fromisoformat,
+                            help="a local day (YYYY-MM-DD) left out of the latency, e.g. one reprocessed (repeatable)")
     return parser
 
 
@@ -177,6 +182,29 @@ async def _eval(args: argparse.Namespace) -> int:
         await pool.close()
 
 
+async def _acceptance(args: argparse.Namespace) -> int:
+    from .acceptance import report
+    from .config import Settings
+    from .db import make_pool
+
+    if args.days < 1:
+        print("error: --days must be at least 1", file=sys.stderr)
+        return 2
+    samples = None
+    if args.cpu_samples == "-":
+        samples = sys.stdin.read()
+    elif args.cpu_samples:
+        samples = Path(args.cpu_samples).read_text()
+    settings = Settings()
+    pool = make_pool(settings.database_url)
+    await pool.open()
+    try:
+        print(await report(pool, settings.zone, args.days, samples, exclude=args.exclude_day), end="")
+    finally:
+        await pool.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "init-pki":
@@ -195,4 +223,6 @@ def main(argv: list[str] | None = None) -> int:
         return _models_pull()
     if args.cmd == "eval":
         return asyncio.run(_eval(args))
+    if args.cmd == "acceptance":
+        return asyncio.run(_acceptance(args))
     return 2
