@@ -252,31 +252,39 @@ def _evaluation_lines(run: dict | None, zone) -> list[str]:
     when = run["requested_at"].astimezone(zone).strftime("%Y-%m-%d %H:%M")
     recorded = audio.get("recorded")
     lines = [f"### ASR (evaluation run {run['id']}, {when}; rules: {', '.join(live['rules']) or 'none'})", "",
-             f"Golden clips: {audio['clips']}"
+             f"Golden clips: {audio['clips']} ({audio.get('failed', 0)} could not be transcribed)"
              + (f", recorded {recorded['first']} … {recorded['last']}" if recorded else "")
              + f"; references edited from Whisper's text: {audio.get('prefilled', 0)}, typed blind: "
                f"{audio.get('blind', 0)}. The 30 % rule reads WER for vi and en, CER for ko (D22); 95 % intervals "
                "resample whole clips.", "",
              "| Language | Clips | Words | WER (95 %) | Characters | CER (95 %) | ≤ 30 % |",
              "|---|---|---|---|---|---|---|"]
-    measured, missing = [], []
+    measured, no_clip, all_failed = [], [], []
     for lang in ("vi", "ko", "en"):
         row = live["languages"].get(lang)
         if row is None:
-            missing.append(lang)
-            lines.append(f"| {lang} | 0 | — | — | — | — | not measurable (no clip) |")
+            failed = runner.failed_clips(audio, lang)
+            if failed:
+                all_failed.append(f"{lang} ({failed})")
+            else:
+                no_clip.append(lang)
+            lines.append(f"| {lang} | {runner.clips_cell(audio, lang, 0)} | — | — | — | — | "
+                         f"{runner.not_measurable(audio, lang)} |")
             continue
         measured.append(lang)
         verdict = "no — change the model or the configuration" if row["over_limit"] else "yes"
-        lines.append(f"| {lang} | {row['clips']} | {row['words']} | {runner.pct(row['wer'])} "
-                     f"({runner.span(row['wer_ci'])}) | {row['chars']} | {runner.pct(row['cer'])} "
-                     f"({runner.span(row['cer_ci'])}) | {verdict} ({row['metric'].upper()}) |")
+        lines.append(f"| {lang} | {runner.clips_cell(audio, lang, row['clips'])} | {row['words']} | "
+                     f"{runner.pct(row['wer'])} ({runner.span(row['wer_ci'])}) | {row['chars']} | "
+                     f"{runner.pct(row['cer'])} ({runner.span(row['cer_ci'])}) | {verdict} ({row['metric'].upper()}) |")
     silent = live["no_speech"]
     lines += ["", f"Baseline measured for: {', '.join(measured) or 'none'}"
-                  + (f"; not measurable (no clip): {', '.join(missing)}" if missing else ""),
+                  + (f"; not measurable (no clip): {', '.join(no_clip)}" if no_clip else "")
+                  + (f"; not measurable (clips could not be transcribed): {', '.join(all_failed)}"
+                     if all_failed else ""),
               "", f"No-speech clips: {silent['clips']} ({silent['with_text']} with Whisper's text when labelled), "
                   f"with invented text: {silent['invented']} ({runner.pct(silent['rate'])}, 95 % "
-                  f"{runner.span(silent['rate_ci'])}; {silent['words']} words)", "", "### Captions (owner's scores)", ""]
+                  f"{runner.span(silent['rate_ci'])}; {silent['words']} words)" + runner.silent_failed_note(audio),
+              "", "### Captions (owner's scores)", ""]
     lines += [f"- {model}: {row['scored']} keyframes, mean {row['mean']:.2f}/5, ≥ 4: {row['good']}"
               for model, row in results["captions"].items()] or ["- none scored"]
     recall = results["recall"]

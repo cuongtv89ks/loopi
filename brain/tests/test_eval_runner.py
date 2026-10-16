@@ -20,7 +20,7 @@ from helpers import (
     paired_device,
     run_jobs,
 )
-from loopi_brain import cli
+from loopi_brain import acceptance, cli
 from loopi_brain.evaluation import golden, questions, runner
 from loopi_brain.pipeline import asr
 from loopi_brain.pipeline.asr import Region, RegionResult, SegmentResult
@@ -198,6 +198,52 @@ async def test_a_clip_whisper_cannot_read_is_counted_and_the_run_goes_on(pool, p
     row = await fetch_one(pool, "SELECT segments, error FROM eval_run_audio WHERE sample_id = %s", (first["id"],))
     assert row["segments"] is None and row["error"]
     assert "vi" not in run["results"]["asr"]["variants"]["live"]["languages"]
+
+
+async def test_a_language_whose_clips_all_failed_is_not_reported_as_having_no_clip(pool, pki_settings, dev, jobs_open,
+                                                                                    one_region):
+    d = dev["device_id"]
+    await _clip(pool, pki_settings, d, 0, golden.AudioLabel("vi", False, SECRET))
+    await _clip(pool, pki_settings, d, 1, golden.AudioLabel("ko", False, "네 알겠어요"))
+    await _clip(pool, pki_settings, d, 2, golden.AudioLabel("ko", False, "알겠어요 네"))
+    await _clip(pool, pki_settings, d, 3, golden.AudioLabel(None, True, ""))
+    broken = await fetch_all(pool, "SELECT path FROM eval_audio WHERE lang = 'ko' OR no_speech")
+    for row in broken:  # both Korean clips and the one without speech cannot be read
+        (pki_settings.eval_dir / row["path"]).write_bytes(b"OggS-not-audio")
+    run = await _run(pool, pki_settings, FakeTranscriber(HEARD[0]))
+    audio = run["results"]["asr"]
+    assert (audio["clips"], audio["failed"], audio["failed_by_lang"]) == (4, 3, {"ko": 2, "silent": 1})
+    assert "ko" not in audio["variants"]["live"]["languages"]  # nothing of it was heard
+    report = runner.format_run(run, pki_settings.zone)
+    assert "Clips: 4 (3 could not be transcribed)" in report
+    assert "| ko | 0 (2 failed) | — | — | — | — | not measurable (2 clips could not be transcribed) |" in report
+    assert "| en | 0 | — | — | — | — | not measurable (no clip) |" in report  # no clip was ever labelled
+    assert "| live (none) | 20.0 % (1 clips) | — (2 failed) | — | 0/0 (0 words) |" in report
+    assert "1 no-speech clip could not be transcribed" in report
+    text = "\n".join(acceptance._evaluation_lines(run, pki_settings.zone))
+    assert "Golden clips: 4 (3 could not be transcribed), recorded 2026-10-14 … 2026-10-14;" in text
+    assert "| ko | 0 (2 failed) | — | — | — | — | not measurable (2 clips could not be transcribed) |" in text
+    assert "| en | 0 | — | — | — | — | not measurable (no clip) |" in text
+    assert ("Baseline measured for: vi; not measurable (no clip): en; not measurable (clips could not be "
+            "transcribed): ko (2)") in text
+    assert "1 no-speech clip could not be transcribed" in text
+    for lines in (report, text):
+        assert "ko | 0 | — | — | — | — | not measurable (no clip)" not in lines
+        assert SECRET not in lines and "알겠어요" not in lines  # numbers only
+
+
+async def test_one_failed_clip_among_the_heard_ones_is_counted_in_its_language_row(pool, pki_settings, dev, jobs_open,
+                                                                                   one_region):
+    d = dev["device_id"]
+    await _clip(pool, pki_settings, d, 0, golden.AudioLabel("vi", False, SECRET))
+    await _clip(pool, pki_settings, d, 1, golden.AudioLabel("vi", False, "Hai ba bốn"))
+    [first] = await fetch_all(pool, "SELECT path FROM eval_audio ORDER BY id LIMIT 1")
+    (pki_settings.eval_dir / first["path"]).write_bytes(b"OggS-not-audio")
+    run = await _run(pool, pki_settings, FakeTranscriber(RegionResult("vi", 0.9, [seg("Hai ba bốn")])))
+    audio = run["results"]["asr"]
+    assert (audio["clips"], audio["failed"], audio["failed_by_lang"]) == (2, 1, {"vi": 1})
+    assert "| vi | 1 (1 failed) | 3 | 0.0 % (—) |" in runner.format_run(run, pki_settings.zone)
+    assert "| vi | 1 (1 failed) | 3 | 0.0 % (—) |" in "\n".join(acceptance._evaluation_lines(run, pki_settings.zone))
 
 
 async def test_captions_are_summed_per_caption_model(pool, pki_settings, dev, jobs_open):

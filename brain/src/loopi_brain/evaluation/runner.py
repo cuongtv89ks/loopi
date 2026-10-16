@@ -46,6 +46,7 @@ PRIMARY = {"vi": "wer", "en": "wer", "ko": "cer"}  # the rate the 30 % rule read
 DISTANCES = (0.5, 0.6, 0.7, 0.8)  # the threshold grid of the recall section
 SIMILARITIES = (0.2, 0.3, 0.4)
 RESULTS_SHOWN = 10  # hit@10 needs the first 10 results
+SILENT = "silent"  # the "language" of the clips without speech in the failed-clip counts
 VARIANTS = ("live", "none", *ASR_RULES, "all")  # the rule sets in the order they are shown (JSONB keeps no order)
 
 
@@ -274,8 +275,14 @@ async def _finish(ctx: PipelineContext, run_id: str, config: dict) -> None:
     heard = [c for c in clips if c["segments"] is not None]
     days = sorted(c["started_at"].astimezone(zone).date() for c in clips)
     variants = await anyio.to_thread.run_sync(_score_variants, heard, config["rules"])
+    failed_by_lang: dict[str, int] = {}  # a language is not "missing" when its clips failed: say which ones
+    for clip in clips:
+        if clip["segments"] is None:
+            kind = SILENT if clip["no_speech"] else clip["lang"]
+            failed_by_lang[kind] = failed_by_lang.get(kind, 0) + 1
     results = {
         "asr": {"clips": len(clips), "failed": len(clips) - len(heard),
+                "failed_by_lang": dict(sorted(failed_by_lang.items())),
                 "recorded": {"first": days[0].isoformat(), "last": days[-1].isoformat()} if days else None,
                 "prefilled": sum(1 for c in clips if c["prefilled"] and not c["no_speech"]),
                 "blind": sum(1 for c in clips if not c["prefilled"] and not c["no_speech"]),
@@ -406,6 +413,33 @@ def span(interval: list[float] | None) -> str:
     return "—" if not interval else f"{100 * interval[0]:.1f}–{100 * interval[1]:.1f} %"
 
 
+def failed_clips(audio: dict, lang: str) -> int:
+    """The golden clips of ``lang`` (``SILENT``: those without speech) the run could not transcribe; 0 for a run that
+    did not keep the count. They are in no rate: a language is only as measured as the clips that were heard."""
+    return (audio.get("failed_by_lang") or {}).get(lang, 0)
+
+
+def clips_cell(audio: dict, lang: str, heard: int) -> str:
+    """The clips of a language that were heard, with the ones that could not be transcribed when there were any."""
+    failed = failed_clips(audio, lang)
+    return f"{heard} ({failed} failed)" if failed else str(heard)
+
+
+def not_measurable(audio: dict, lang: str) -> str:
+    """Why a language has no numbers: no clip was labelled, or none of its clips could be transcribed (a problem of
+    the copies or of the worker, not of the household's languages)."""
+    failed = failed_clips(audio, lang)
+    if not failed:
+        return "not measurable (no clip)"
+    return f"not measurable ({failed} {'clip' if failed == 1 else 'clips'} could not be transcribed)"
+
+
+def silent_failed_note(audio: dict) -> str:
+    """A sentence ending for the no-speech line when some of those clips could not be transcribed."""
+    failed = failed_clips(audio, SILENT)
+    return f"; {failed} no-speech {'clip' if failed == 1 else 'clips'} could not be transcribed" if failed else ""
+
+
 def _audio_lines(audio: dict) -> list[str]:
     recorded = audio.get("recorded")
     lines = [f"Clips: {audio['clips']} ({audio['failed']} could not be transcribed)"
@@ -418,8 +452,11 @@ def _audio_lines(audio: dict) -> list[str]:
         cells = []
         for lang in ("vi", "ko", "en"):
             row = variant["languages"].get(lang)
-            cells.append("—" if row is None else
-                         f"{pct(row['score'])} ({row['clips']} clips){' > 30 %' if row['over_limit'] else ''}")
+            if row is None:
+                failed = failed_clips(audio, lang)
+                cells.append(f"— ({failed} failed)" if failed else "—")
+            else:
+                cells.append(f"{pct(row['score'])} ({row['clips']} clips){' > 30 %' if row['over_limit'] else ''}")
         silent, dropped = variant["no_speech"], variant["dropped"]
         label = f"{name} ({', '.join(variant['rules']) or 'none'})" if name == "live" else name
         lines.append(f"| {label} | {' | '.join(cells)} | {silent['invented']}/{silent['clips']} "
@@ -431,14 +468,16 @@ def _audio_lines(audio: dict) -> list[str]:
     for lang in ("vi", "ko", "en"):
         row = live["languages"].get(lang)
         if row is None:
-            lines.append(f"| {lang} | 0 | — | — | — | — | not measurable (no clip) |")
+            lines.append(f"| {lang} | {clips_cell(audio, lang, 0)} | — | — | — | — | {not_measurable(audio, lang)} |")
             continue
-        lines.append(f"| {lang} | {row['clips']} | {row['words']} | {pct(row['wer'])} ({span(row['wer_ci'])}) | "
+        lines.append(f"| {lang} | {clips_cell(audio, lang, row['clips'])} | {row['words']} | "
+                     f"{pct(row['wer'])} ({span(row['wer_ci'])}) | "
                      f"{row['chars']} | {pct(row['cer'])} ({span(row['cer_ci'])}) | "
                      f"{'no' if row['over_limit'] else 'yes'} ({row['metric'].upper()}) |")
     silent = live["no_speech"]
     lines += ["", f"No speech: {silent['clips']} clips ({silent['with_text']} with Whisper's text when labelled), "
-                  f"invented text in {silent['invented']} ({pct(silent['rate'])}, 95 % {span(silent['rate_ci'])})"]
+                  f"invented text in {silent['invented']} ({pct(silent['rate'])}, 95 % {span(silent['rate_ci'])})"
+                  + silent_failed_note(audio)]
     return lines
 
 

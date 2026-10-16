@@ -151,7 +151,8 @@ async def test_the_report_holds_the_numbers_and_never_the_text(pool, pki_setting
     assert "| video → caption | 1 | 1.0 min | 1.0 min | 0 | met |" in text
     assert "| audio → transcript | 1 | 0.5 min | 0.5 min | 0 | met |" in text
     assert "### ASR (evaluation run R1," in text
-    assert "Golden clips: 2, recorded 2026-10-16 … 2026-10-20; references edited from Whisper's text: 1" in text
+    assert ("Golden clips: 2 (0 could not be transcribed), recorded 2026-10-16 … 2026-10-20; references edited from "
+            "Whisper's text: 1") in text
     assert "| vi | 1 | 4 | 25.0 % (—) | 11 | 27.3 % (—) | yes (WER) |" in text and "| yes (WER) |" in text and "| yes (CER) |" in text
     assert "| en | 0 | — | — | — | — | not measurable (no clip) |" in text
     assert "Baseline measured for: vi, ko; not measurable (no clip): en" in text
