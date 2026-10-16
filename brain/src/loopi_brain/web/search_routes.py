@@ -51,8 +51,9 @@ async def search_page(
 ):
     state = request.app.state
     zone = state.settings.zone
+    q = search.clean_query(q)
     result = None
-    if q.strip():
+    if q:
         start, end = range_utc(first, last, zone)
         result = await search.search_moments(
             state.pool, search.request_router(state.settings, state.llm), q, start=start, end=end,

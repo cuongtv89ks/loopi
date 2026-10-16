@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import unicodedata
 from dataclasses import dataclass
 
 import httpx
@@ -52,6 +53,13 @@ class Hit:
 class SearchResult:
     hits: list[Hit]
     semantic: bool  # False when the question could not be embedded (model server down): words only
+
+
+def clean_query(text: str) -> str:
+    """A question as it is searched: control characters (NUL, which PostgreSQL text cannot hold, escapes, zero-width
+    marks) become spaces, whitespace is collapsed, at most QUERY_MAX characters are kept. May be empty."""
+    spaced = "".join(" " if unicodedata.category(c)[0] == "C" and not c.isspace() else c for c in text)
+    return " ".join(spaced.split())[:QUERY_MAX]
 
 
 def request_router(settings: Settings, client: httpx.AsyncClient) -> Router | None:
@@ -106,7 +114,7 @@ async def search_moments(
     min_similarity: float = 0.3,
 ) -> SearchResult:
     """The ``limit`` most relevant moments for ``query`` with ts_start in [start, end) (either bound optional)."""
-    query = " ".join(query.split())[:QUERY_MAX]
+    query = clean_query(query)
     if not query:
         return SearchResult([], semantic=router is not None)
     params = {"start": start, "end": end, "limit": CANDIDATES}

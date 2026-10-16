@@ -148,3 +148,38 @@ def test_search_thresholds_are_settings(monkeypatch):
     monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
     monkeypatch.setenv("LOOPI_SEARCH_MAX_DISTANCE", "0.45")
     assert Settings().search_max_distance == 0.45
+
+
+async def test_control_characters_in_a_question_never_reach_the_database(pool, dev, router, ollama):
+    ids = await _memories(pool, dev["device_id"])
+    result = await search.search_moments(pool, router, "đi\x00 chợ\x07")  # NUL, BEL: spaces, not errors
+    assert [h.id for h in result.hits] == [ids["both"], ids["kitchen"], ids["market"]]
+    [(_, body)] = [r for r in ollama.requests if r[0] == "/api/embed"]
+    assert body["input"] == [search.QUERY_INSTRUCTION + "đi chợ"]
+    ollama.requests.clear()
+    assert (await search.search_moments(pool, router, "\x00\x1b​﻿")).hits == [] and ollama.requests == []
+    assert (await search.search_moments(pool, None, "a\x00b")).hits == []
+
+
+async def test_the_search_page_survives_control_characters(web, pool, dev, ollama):
+    await _memories(pool, dev["device_id"])
+    for q in ("%00", "%00%07%1b"):
+        response = await web.get(f"/search?q={q}")
+        assert response.status_code == 200 and 'name="q"' in response.text
+        assert "Không tìm thấy khoảnh khắc" not in response.text and "\x00" not in response.text
+    assert ollama.requests == []
+    response = await web.get("/search?q=a%00b")  # searched as "a b": any answer but a crash
+    assert response.status_code == 200 and "\x00" not in response.text
+    response = await web.get("/search?q=%C4%91i%00ch%E1%BB%A3")  # "đi\x00chợ": searched as "đi chợ"
+    assert response.status_code == 200 and response.text.count('class="hit"') == 3 and "\x00" not in response.text
+
+
+async def test_the_date_range_means_local_days_not_utc_days(web, pool, dev):
+    late = dt.datetime(2026, 10, 14, 16, 0, tzinfo=dt.UTC)  # 01:00 on the 15th in Seoul
+    moment = await insert_moment(pool, dev["device_id"], kind="visual", ts=late, axis=0, lang="en",
+                                 text="A night owl reads in bed")
+    on_the_14th = (await web.get("/search", params={"q": "đọc sách", "from": "2026-10-14", "to": "2026-10-14"})).text
+    assert "Không tìm thấy khoảnh khắc nào." in on_the_14th and f"m-{moment}" not in on_the_14th
+    on_the_15th = (await web.get("/search", params={"q": "đọc sách", "from": "2026-10-15", "to": "2026-10-15"})).text
+    assert f'<a href="/?day=2026-10-15#m-{moment}">' in on_the_15th
+    assert "<time>15/10/2026 01:00</time>" in on_the_15th
