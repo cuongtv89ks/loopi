@@ -357,3 +357,9 @@ async def test_the_planner_job_asks_for_the_days_of_the_current_context(pool, de
         set_context(None)
     locks = await jobs_by_lock(pool)
     assert f"chapters:{ts.astimezone(ctx.settings.zone).date()}" in locks
+
+
+async def test_a_chapter_build_never_runs_ahead_of_live_work_even_when_deferred_directly(pool, jobs_open):
+    await jobs.job_app.tasks[jobs.BUILD_CHAPTERS].defer_async(day="2026-10-14")  # not through defer_build
+    job = await fetch_one(pool, "SELECT queue_name, lock, priority FROM procrastinate_jobs")
+    assert (job["queue_name"], job["lock"], job["priority"]) == ("understand", "llm", jobs.LLM_PRIORITY)

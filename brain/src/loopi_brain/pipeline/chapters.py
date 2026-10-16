@@ -368,6 +368,11 @@ async def plan_chapters_job(timestamp: int | None = None) -> None:
     await plan_chapters(ctx.pool, ctx.router, ctx.settings.zone)
 
 
-@job_app.task(name=jobs.BUILD_CHAPTERS, queue="understand", lock=jobs.LLM_LOCK, retry=jobs.RETRY, pass_context=True)
+# The task's own priority is the same as the one ``defer_build`` passes, so a direct ``.defer`` never runs a chapter
+# build ahead of live work (or, in Procrastinate 3.10, ahead of every queued recap behind the same lock) either.
+@job_app.task(
+    name=jobs.BUILD_CHAPTERS, queue="understand", lock=jobs.LLM_LOCK, priority=jobs.LLM_PRIORITY, retry=jobs.RETRY,
+    pass_context=True,
+)
 async def build_chapters_job(context: JobContext, day: str) -> None:
     await build_chapters(get_context(), dt.date.fromisoformat(day), attempt=context.job.attempts)
