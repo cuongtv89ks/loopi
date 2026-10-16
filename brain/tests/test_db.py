@@ -11,6 +11,7 @@ from loopi_brain.db import PROCRASTINATE_SCHEMA, migrate
 EXPECTED_TABLES = {
     "device", "pair_token", "item", "device_command", "schema_migration",
     "keyframe", "transcript_segment", "moment",
+    "chapter", "day_recap", "commitment", "setting", "forget_log", "day_job_error",
     "procrastinate_jobs", "procrastinate_events", "procrastinate_workers", "procrastinate_periodic_defers",
 }
 
@@ -24,7 +25,7 @@ def test_migrate_is_idempotent_and_creates_schema(database_url):
         ).fetchall()
         names = {r[0] for r in conn.execute("SELECT name FROM schema_migration")}
     assert EXPECTED_TABLES <= {r[0] for r in rows}
-    assert {"001_init.sql", "002_pipeline.sql", PROCRASTINATE_SCHEMA} <= names
+    assert {"001_init.sql", "002_pipeline.sql", "003_understanding.sql", PROCRASTINATE_SCHEMA} <= names
 
 
 def test_recorded_procrastinate_schema_matches_installed_version():
@@ -59,7 +60,7 @@ def test_p1_rows_become_pending_after_upgrade(database_url):
                 "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes, raw_path, status)"
                 " VALUES ('I1', 'D1', 'audio', now(), now(), 'x', 1, 'raw/x.opus', 'ready')"
             )
-        assert migrate(url) == ["002_pipeline.sql", PROCRASTINATE_SCHEMA]
+        assert migrate(url) == ["002_pipeline.sql", "003_understanding.sql", PROCRASTINATE_SCHEMA]
         with psycopg.connect(url) as conn:
             state = conn.execute("SELECT analysis_state, analysis_job_id FROM item WHERE id = 'I1'").fetchone()
         assert state == ("pending", None)
@@ -82,7 +83,9 @@ def test_concurrent_migrations_apply_each_step_once(database_url):
         for t in threads:
             t.join()
     assert errors == []
-    assert sorted(results, key=len) == [[], ["001_init.sql", "002_pipeline.sql", PROCRASTINATE_SCHEMA]]
+    assert sorted(results, key=len) == [
+        [], ["001_init.sql", "002_pipeline.sql", "003_understanding.sql", PROCRASTINATE_SCHEMA]
+    ]
 
 
 def test_cascading_foreign_keys_are_indexed(database_url):
@@ -96,7 +99,8 @@ def test_cascading_foreign_keys_are_indexed(database_url):
             )
         }
     assert {("keyframe", "item_id"), ("transcript_segment", "item_id"), ("moment", "item_id"),
-            ("moment", "keyframe_id"), ("moment", "transcript_segment_id")} <= indexed
+            ("moment", "keyframe_id"), ("moment", "transcript_segment_id"),
+            ("commitment", "source_moment_id")} <= indexed
 
 
 async def test_pool_connections_read_and_write_vectors(pool, pki_settings):
@@ -110,3 +114,33 @@ async def test_pool_connections_read_and_write_vectors(pool, pki_settings):
         )
         row = await (await conn.execute("SELECT embedding FROM moment WHERE id = 'M1'")).fetchone()
     assert row["embedding"].to_list()[:2] == [1.0, 0.0]
+
+
+async def test_understanding_tables_keep_their_rules(pool, pki_settings):
+    dev = await paired_device(pool, pki_settings)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO moment (id, device_id, ts_start, ts_end, kind, text, model_version)"
+            " VALUES ('M1', %s, now(), now(), 'speech', 'mai đi chợ', 'test')",
+            (dev["device_id"],),
+        )
+        await conn.execute(
+            "INSERT INTO commitment (id, day, text, source_moment_id, model_version)"
+            " VALUES ('C1', '2026-10-14', 'Đi chợ', 'M1', 'test')"
+        )
+        await conn.execute("DELETE FROM moment WHERE id = 'M1'")  # a reprocessed transcript
+        row = await (await conn.execute("SELECT source_moment_id, status FROM commitment")).fetchone()
+        assert row == {"source_moment_id": None, "status": "open"}  # the user's list keeps the item
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute("UPDATE commitment SET status = 'later'")
+    async with pool.connection() as conn:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                "INSERT INTO chapter (id, day, ts_start, ts_end, last_moment_at, moment_count, signature)"
+                " VALUES ('CH1', '2026-10-14', now(), now() - interval '1 minute', now(), 1, 's')"
+            )
+    async with pool.connection() as conn:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute(
+                "INSERT INTO forget_log (id, range_start, range_end, counts) VALUES ('F1', now(), now(), '{}')"
+            )

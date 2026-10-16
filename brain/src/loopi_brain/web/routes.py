@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from .. import audio_level, devices, media, pki
+from ..days import day_bounds_utc
 from ..pipeline import moments as moment_rules
 from ..pipeline import status
 
@@ -41,12 +42,6 @@ def require_htmx(hx_request: str | None = Header(default=None)) -> None:
     """CSRF guard: cross-site forms cannot set custom headers."""
     if hx_request != "true":
         raise HTTPException(status_code=403, detail="missing HX-Request header")
-
-
-def day_bounds_utc(day: dt.date, zone: ZoneInfo) -> tuple[dt.datetime, dt.datetime]:
-    start = dt.datetime.combine(day, dt.time.min, tzinfo=zone)
-    end = dt.datetime.combine(day + dt.timedelta(days=1), dt.time.min, tzinfo=zone)
-    return start.astimezone(dt.UTC), end.astimezone(dt.UTC)
 
 
 def _hour() -> dict[str, list]:

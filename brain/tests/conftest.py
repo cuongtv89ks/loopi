@@ -8,7 +8,8 @@ from loopi_brain.db import make_pool, migrate
 
 PG_IMAGE = "pgvector/pgvector:pg17"
 APP_TABLES = (
-    "moment, transcript_segment, keyframe, device_command, item, pair_token, device,"
+    "commitment, chapter, day_recap, setting, forget_log, day_job_error,"
+    " moment, transcript_segment, keyframe, device_command, item, pair_token, device,"
     " procrastinate_events, procrastinate_periodic_defers, procrastinate_jobs, procrastinate_workers"
 )
 

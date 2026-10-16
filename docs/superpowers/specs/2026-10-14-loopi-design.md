@@ -2,7 +2,7 @@
 
 - **Ngày:** 2026-10-14
 - **Trạng thái:** Draft, chờ review
-- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18)
+- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18); 2026-10-15: agent khuếch đại âm thanh (có bộ giới hạn đỉnh) trước khi encode, brain chuẩn hoá mức âm thanh trước ASR và khi phát lại (D19); 2026-10-16: brain giữ audio thô 7 ngày như video thay vì xoá ngay sau khi có transcript, số ngày chỉnh được trong trang Cài đặt (D20)
 - **Phạm vi tài liệu:** kiến trúc tổng thể và thiết kế cho cả 3 dự án con (`os/`, `agent/`, `brain/`). Mỗi phase sẽ có implementation plan riêng.
 
 ---
@@ -76,6 +76,8 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D16 | Phần cứng thu | Camera CSI đi kèm kit (nối bằng cáp CSI của Zero). Mic là USB mic cắm qua cổng OTG, nên khi ghi âm cổng OTG chạy chế độ host |
 | D17 | Truy cập khi bring-up | Image dev bật sẵn USB gadget trên cổng OTG: một cáp micro-USB tới máy tính vừa cấp điện vừa cho console (ACM) và mạng (ECM, `ssh root@10.55.0.1`). Trước khi cắm mic, chuyển cổng sang host bằng `loopi-usbmode host` rồi reboot. Mỗi lần boot chỉ một chế độ. Không cần cáp serial; lỗi trước tầng ứng dụng thì xem qua HDMI (`console=tty1`) |
 | D18 | Đèn báo ghi hình | Đèn báo ghi hình là LED ACT (xanh lá) có sẵn trên Pi Zero W, agent điều khiển qua `/sys/class/leds/ACT`, nên không phải gắn LED ngoài. Sau khi boot, firmware và kernel không dùng LED này nữa; agent thoát thì systemd tắt nó. LED đỏ gắn GPIO17 vẫn cấu hình được. Ý nghĩa các kiểu sáng (mục 7.2) và bất biến riêng tư giữ nguyên |
+| D19 | Mức âm thanh | USB mic thu tiếng nói rất nhỏ: đo trên hơn 1 300 đoạn ghi trong 2 ngày, RMS khoảng −55 dBFS cả ngày lẫn đêm, kể cả khi bật AGC của mic; tăng volume mixer chỉ được thêm 2–3 dB. Vì vậy agent khuếch đại số mỗi khung âm thanh trước khi encode Opus, qua một bộ giới hạn đỉnh −1 dBFS (attack tức thì, nhả khoảng 100 ms) để tiếng động lớn sát mic không bị vỡ. Mức khuếch đại là `capture.audio_gain_db` trong `loopi.toml` (mặc định 20 dB, cho phép 0–36 dB), không chỉnh từ xa; protocol v1 giữ nguyên. Brain chuẩn hoá mức âm thanh trước VAD/ASR và cho bản nghe trên web: đưa phân vị 99,9 của biên độ lên −6 dBFS (phân vị chứ không phải đỉnh, vì có những mẫu nhiễu lẻ chạm 0 dBFS), tối đa +30 dB, không bao giờ giảm, và không nâng nền nhiễu của phòng lên quá −40 dBFS. File thô giữ nguyên như lúc thu |
+| D20 | Lưu audio thô | Brain giữ audio thô 7 ngày như video, không xoá ngay sau khi có transcript: transcript chưa đủ tin cậy (Whisper có thể bịa câu trên tiếng ồn hoặc bỏ sót tiếng nói nhỏ) và người dùng cần nghe lại bản đã chuẩn hoá mức âm thanh (D19). Số ngày giữ video thô và audio thô chỉnh được trong trang Cài đặt (mặc định 7 và 7). Job lưu trữ lúc 03:00 chỉ chạy sau khi người dùng bật trong Cài đặt (mặc định tắt) và chỉ xoá file thô (kèm bản xem/nghe đã chuyển đổi) của những đoạn đã phân tích xong; keyframe, transcript, caption, chương và recap vẫn giữ vĩnh viễn |
 
 ---
 
@@ -191,6 +193,7 @@ video_fps       = 2
 segment_seconds = 60
 audio_enabled   = true
 audio_device    = "auto"        # thiết bị ALSA; "auto" = thiết bị USB capture đầu tiên
+audio_gain_db   = 20.0          # khuếch đại số trước khi encode, 0–36 dB (D19)
 
 [schedule]
 quiet_hours = ["00:00-07:00"]   # không ghi trong khoảng này
@@ -213,7 +216,7 @@ RAUC với bundle được ký, chuyển slot A/B. Bản mới phải boot đư�
 | Module | Nhiệm vụ | Phụ thuộc (trait) |
 |---|---|---|
 | `recorder::video` | Spawn và giám sát `rpicam-vid -t 0 -n --codec h264 --inline --framerate <fps> --width/--height --segment <ms> -o /data/queue/incoming/v_%06d.h264`. Dùng inotify bắt đoạn vừa đóng, gắn `started_at`/`ended_at` theo wall clock, chuyển vào hàng đợi | `Camera`, `Clock` |
-| `recorder::audio` | Mở USB mic qua ALSA theo `audio_device` (`auto` = thiết bị USB capture đầu tiên). Mở qua `plughw` ở 16kHz mono. Nếu mic không hỗ trợ sẵn 16kHz, lớp plug của ALSA tự chuyển đổi. Encode Opus ~24kbps thành file Ogg 60s căn theo phút đồng hồ. Mic bị rút thì thử mở lại 10s một lần và báo `mic_missing`, video vẫn ghi bình thường | `AudioSource`, `Clock` |
+| `recorder::audio` | Mở USB mic qua ALSA theo `audio_device` (`auto` = thiết bị USB capture đầu tiên). Mở qua `plughw` ở 16kHz mono. Nếu mic không hỗ trợ sẵn 16kHz, lớp plug của ALSA tự chuyển đổi. Mỗi khung được khuếch đại `audio_gain_db` (mặc định 20 dB) qua bộ giới hạn đỉnh −1 dBFS rồi mới encode (D19). Encode Opus ~24kbps thành file Ogg 60s căn theo phút đồng hồ. Mic bị rút thì thử mở lại 10s một lần và báo `mic_missing`, video vẫn ghi bình thường | `AudioSource`, `Clock` |
 | `queue` | Lưu file kèm sidecar JSON (`id` ULID, `kind`, `started_at`, `ended_at`, `sha256`, `size`). Ghi atomic (tmp → fsync → rename). Thẻ trên 85% thì xoá video chưa gửi cũ nhất cho tới khi xuống dưới 80%, mỗi lần xoá đều ghi sự kiện `dropped` để báo về brain; audio không bị xoá. Trên 95% thì dừng ghi, LED báo lỗi, gửi sự kiện `disk_full` | `Clock` |
 | `uploader` | Gửi tuần tự, cũ nhất trước, `PUT /v1/items/{id}`. rustls + mTLS, **ưu tiên ChaCha20-Poly1305** vì ARMv6 không có AES phần cứng. Thời gian chờ khi lỗi tăng dần từ 1s tới 5 phút. Xoá file local sau khi nhận `200`/`201` | `Transport` |
 | `control` | Event bus (`tokio::sync::broadcast`) với các lệnh `Mark`, `Pause`, `Resume`, `SetConfig`. Nguồn lệnh: nút bấm (`gpiocdev`), lệnh từ heartbeat, lịch `quiet_hours`. Chỉ ghi khi đủ các điều kiện: đã ghép cặp, NTP đã đồng bộ, không pause, ngoài giờ yên lặng, thẻ chưa đầy. Trạng thái pause và audio được lưu ở `/data/config/state.json`, nên khởi động lại vẫn giữ nguyên. **Đây là điểm cắm cho các extension Bluetooth** | — |
@@ -275,9 +278,10 @@ Media lưu trên filesystem (`/srv/loopi/media/raw/<device_id>/YYYY/MM/DD/`, `ke
 5. MiniCPM-V 4.6 trả JSON `{scene, activity, people_count, objects[], text_seen, notable: bool}`. Caption viết bằng tiếng Anh.
 
 **Mỗi đoạn audio:**
-1. Silero VAD tìm các đoạn có tiếng nói.
-2. faster-whisper large-v3-turbo (int8, CPU) tự nhận ngôn ngữ cho từng đoạn và trả transcript kèm timestamp.
-3. Xoá audio thô sau khi có transcript (mặc định; chỉnh được).
+1. Chuẩn hoá mức âm thanh (D19): phân vị 99,9 của biên độ lên −6 dBFS, tối đa +30 dB, không giảm, nền nhiễu không quá −40 dBFS. Chỉ bản trong bộ nhớ được chuẩn hoá, file thô không đổi.
+2. Silero VAD tìm các đoạn có tiếng nói.
+3. faster-whisper large-v3-turbo (int8, CPU) tự nhận ngôn ngữ cho từng đoạn và trả transcript kèm timestamp.
+4. Giữ audio thô 7 ngày như video, sau đó job lưu trữ mới xoá (D20; chỉnh được trong trang Cài đặt).
 
 **Hợp nhất:** mỗi caption hoặc đoạn transcript thành một `moment` (khoảng thời gian, loại, text, liên kết tới keyframe/transcript). Sau đó embed text bằng Qwen3-Embedding-0.6B.
 
@@ -327,7 +331,7 @@ tasks:
 
 ### 9.5 Chính sách lưu trữ (mặc định, chỉnh được)
 - Video thô giữ 7 ngày. Keyframe, transcript, caption, chương, recap và vlog giữ vĩnh viễn.
-- Audio thô xoá ngay sau khi có transcript.
+- Audio thô giữ 7 ngày như video (D20). Số ngày giữ của cả hai chỉnh được trong trang Cài đặt; việc xoá hằng đêm chỉ chạy sau khi người dùng bật trong Cài đặt (mặc định tắt), và file thô chỉ bị xoá khi đoạn đó đã phân tích xong.
 - **"Quên khoảng thời gian"**: xoá hẳn item, keyframe, transcript, moment (kể cả embedding), đồng thời đánh dấu chương, recap và vlog của khoảng đó cần sinh lại.
 
 ### 9.6 Ước tính sức chịu (nghiệm thu ở P2)
@@ -410,7 +414,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 ## 13. Kiểm thử
 - **Coverage:** ≥80% cho logic của agent và brain (TDD theo quy ước của người dùng).
 - **Contract:** `docs/protocol/v1.openapi.yaml` dùng chung. Agent test client theo schema, brain test server theo schema.
-- **Agent:** unit test với các trait `Camera`, `AudioSource`, `Clock`, `Transport`, chạy được trên máy dev. Integration test dùng script `rpicam-vid` giả phát đoạn H.264 mẫu, gửi tới brain giả (wiremock). Trên thiết bị có `loopi-selftest`: in ra sensor camera nhận được, kiểm USB mic có mặt và mức âm thanh, NTP, một vòng upload và LED.
+- **Agent:** unit test với các trait `Camera`, `AudioSource`, `Clock`, `Transport`, chạy được trên máy dev. Integration test dùng script `rpicam-vid` giả phát đoạn H.264 mẫu, gửi tới brain giả (wiremock). Trên thiết bị có `loopi-selftest`: in ra sensor camera nhận được, kiểm USB mic có mặt và mức âm thanh (trước và sau khuếch đại), NTP, một vòng upload và LED.
 - **OS:** CI build cả hai defconfig (có ccache). Smoke test boot trên phần cứng thật mỗi khi phát hành.
 - **Brain:** pytest cho từng stage với fixture, integration test với Postgres thật (testcontainers), và bài E2E "phát lại một ngày".
 - **Đánh giá chất lượng AI (golden set, lưu ở `brain/eval/`):**
