@@ -16,6 +16,7 @@ TASK_MODULES = [
     "loopi_brain.pipeline.moments",
     "loopi_brain.pipeline.caption",
     "loopi_brain.pipeline.asr",
+    "loopi_brain.pipeline.chapters",
 ]
 
 ANALYZE_VIDEO = "analyze_video"
@@ -26,10 +27,18 @@ EMBED_MOMENTS = "embed_moments"
 DISPATCH_PENDING = "dispatch_pending"
 RETRY_STALLED = "retry_stalled_jobs"
 REMOVE_OLD_JOBS = "remove_old_jobs"
+PLAN_CHAPTERS = "plan_chapters"
+BUILD_CHAPTERS = "build_chapters"
 PIPELINE_TASKS = (ANALYZE_VIDEO, CAPTION_KEYFRAME, TRANSCRIBE_AUDIO, INDEX_MARKER, EMBED_MOMENTS)
 # Runs that start again by themselves (the dispatcher asks for embedding runs; the scheduler starts
-# each periodic tick), so a failed one is never retried and only the newest failed one is kept.
-AUTO_RERUN_TASKS = (EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS)
+# each periodic tick; the hourly planner asks for each day's chapters again), so a failed one is never
+# retried and only the newest failed one is kept.
+AUTO_RERUN_TASKS = (EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS, PLAN_CHAPTERS, BUILD_CHAPTERS)
+# The text models run one job at a time (chapters, recaps): each one takes most of the CPU. They also wait behind
+# every live job (video, captions, ASR, markers, embeddings: priority 0) for a free worker slot, so recordings keep
+# their 15-minute latency target while chapters and recaps are being written (spec §14 P2).
+LLM_LOCK = "llm"
+LLM_PRIORITY = -10
 
 # Spec §12: a failed job is retried 3 times, then stays 'failed' (the dead-letter list).
 # RetryStrategy compares max_attempts with the attempts already made (0 on the first run),
@@ -60,16 +69,18 @@ async def enqueue(
     queue: str,
     queueing_lock: str,
     lock: str | None = None,
+    priority: int | None = None,
     **task_kwargs,
 ) -> int:
-    """Defer ``task`` inside the caller's transaction and return the job id.
+    """Defer ``task`` inside the caller's transaction and return the job id (``priority``: higher runs first,
+    default 0).
 
     If a 'todo' job already holds ``queueing_lock``, return that job's id instead.
     """
     try:
         async with conn.transaction():  # savepoint: a unique violation must not abort the caller
             deferrer = job_app.configure_task(
-                task, queue=queue, lock=lock, queueing_lock=queueing_lock, connection=conn
+                task, queue=queue, lock=lock, queueing_lock=queueing_lock, priority=priority, connection=conn
             )
             return await deferrer.defer_async(**task_kwargs)
     except AlreadyEnqueued:

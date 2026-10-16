@@ -26,6 +26,8 @@ TASK_LABELS = {
     jobs.DISPATCH_PENDING: "Điều phối xử lý",
     jobs.RETRY_STALLED: "Khôi phục job bị treo",
     jobs.REMOVE_OLD_JOBS: "Dọn job cũ",
+    jobs.PLAN_CHAPTERS: "Lên lịch chia chương",
+    jobs.BUILD_CHAPTERS: "Chia chương",
 }
 _LATENCY = (
     "SELECT count(*) AS n, avg(s) AS avg, percentile_cont(0.95) WITHIN GROUP (ORDER BY s) AS p95 FROM ({}) t"
@@ -42,11 +44,12 @@ AUDIO_LATENCY = _LATENCY.format(
 )
 FAILED_JOBS = """
 SELECT j.id, j.task_name, j.attempts,
-       COALESCE(j.args->>'item_id', j.args->>'keyframe_id') AS target,
-       COALESCE(i.analysis_error, k.caption_error) AS error
+       COALESCE(j.args->>'item_id', j.args->>'keyframe_id', j.args->>'day') AS target,
+       COALESCE(i.analysis_error, k.caption_error, e.error) AS error
   FROM procrastinate_jobs j
   LEFT JOIN item i ON i.id = j.args->>'item_id'
   LEFT JOIN keyframe k ON k.id = j.args->>'keyframe_id'
+  LEFT JOIN day_job_error e ON e.task = j.task_name AND e.day::text = j.args->>'day'
  WHERE j.status = 'failed'
  ORDER BY j.id DESC
  LIMIT %s
@@ -65,12 +68,15 @@ SELECT count(*) AS n FROM keyframe k
  WHERE k.caption IS NULL AND j.id IS NULL
 """
 # jobs.AUTO_RERUN_TASKS have no retry button: the dispatcher requests a new embedding run every
-# minute, and the scheduler starts the next tick of each periodic task by itself (retry_stalled_jobs
-# every 10 minutes, remove_old_jobs daily). The value says when that happens.
+# minute, the scheduler starts the next tick of each periodic task by itself (retry_stalled_jobs
+# every 10 minutes, remove_old_jobs daily), and the hourly chapter planner asks for a day's build again
+# (a chapter whose summary failed: after 6 hours). The value says when that happens.
 EVERY_MINUTE = "tự chạy lại mỗi phút"
+CHAPTER_RERUN = "tự chạy lại ở lần lên lịch chia chương (mỗi giờ; chương tóm tắt lỗi: sau 6 giờ)"
 ON_SCHEDULE = "tự chạy lại theo lịch"
 AUTO_RERUN = {
-    task: EVERY_MINUTE if task in (jobs.EMBED_MOMENTS, jobs.DISPATCH_PENDING) else ON_SCHEDULE
+    task: EVERY_MINUTE if task in (jobs.EMBED_MOMENTS, jobs.DISPATCH_PENDING)
+    else CHAPTER_RERUN if task == jobs.BUILD_CHAPTERS else ON_SCHEDULE
     for task in jobs.AUTO_RERUN_TASKS
 }
 NOT_RETRIED = jobs.AUTO_RERUN_TASKS

@@ -218,15 +218,29 @@ async def insert_moment(
     ts: dt.datetime | None = None,
     text: str = "x",
     lang: str | None = None,
+    axis: int | None = None,
+    item_id: str | None = None,
+    seconds: float = 0,
 ) -> str:
-    """Insert a moment row without an embedding (both timestamps = ``ts``, default now); return its id."""
+    """Insert a moment row (it starts at ``ts``, default now, and lasts ``seconds``); return its id.
+
+    ``axis`` gives it an embedding: the unit vector along that axis (moments on one axis are "the same
+    subject", on two axes unrelated). Without it the moment waits for its embedding."""
+    from pgvector import Vector
+
     moment_id = new_ulid()
     ts = ts or dt.datetime.now(dt.UTC)
+    vector = None
+    if axis is not None:
+        values = [0.0] * 1024
+        values[axis] = 1.0
+        vector = Vector(values)
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO moment (id, device_id, ts_start, ts_end, kind, text, lang, model_version)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, 'test')",
-            (moment_id, device_id, ts, ts, kind, text, lang),
+            "INSERT INTO moment (id, device_id, ts_start, ts_end, kind, text, lang, item_id, embedding, embed_model,"
+            " model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'test')",
+            (moment_id, device_id, ts, ts + dt.timedelta(seconds=seconds), kind, text, lang, item_id, vector,
+             None if vector is None else "test"),
         )
     return moment_id
 
@@ -377,3 +391,26 @@ class FakeTranscriber:
         self.chunks.append(len(chunk))
         self.peaks.append(float(abs(chunk).max()) if len(chunk) else 0.0)
         return self.results[(len(self.chunks) - 1) % len(self.results)]
+
+
+async def insert_chapter(
+    pool,
+    day: dt.date,
+    ts_start: dt.datetime,
+    ts_end: dt.datetime,
+    *,
+    title: str | None = None,
+    summary: str | None = None,
+    closed: bool = True,
+    moment_count: int = 1,
+) -> str:
+    """Insert a chapter row directly (its moments are those starting in [ts_start, ts_end]); return its id."""
+    chapter_id = new_ulid()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO chapter (id, day, ts_start, ts_end, last_moment_at, moment_count, signature, closed,"
+            " title, summary, summary_signature, model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (chapter_id, day, ts_start, ts_end, ts_end, moment_count, chapter_id, closed, title, summary,
+             chapter_id if title else None, "test" if title else None),
+        )
+    return chapter_id

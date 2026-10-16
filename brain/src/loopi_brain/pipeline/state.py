@@ -6,6 +6,7 @@ before or during its job (e.g. by the smoke test's cleanup) makes the job a no-o
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 
 from psycopg import AsyncConnection
@@ -73,3 +74,36 @@ async def keyframe_exists(pool: AsyncConnectionPool, keyframe_id: str) -> bool:
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT 1 FROM keyframe WHERE id = %s", (keyframe_id,))
         return await cur.fetchone() is not None
+
+
+async def record_day_error(pool: AsyncConnectionPool, task: str, day: dt.date, exc: BaseException) -> None:
+    """Store the last error of a per-day job (chapters, recap) for the dead-letter list."""
+    try:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO day_job_error (task, day, error) VALUES (%s, %s, %s)"
+                " ON CONFLICT (task, day) DO UPDATE SET error = EXCLUDED.error, at = now()",
+                (task, day, error_text(exc)),
+            )
+    except Exception:
+        log.exception("could not record the %s error of %s", task, day)
+
+
+async def lock_day(conn: AsyncConnection, day: dt.date) -> None:
+    """Serialise, for one local day and inside the caller's transaction, everything that writes text derived from
+    that day (chapters, summaries, the recap) with "Quên khoảng thời gian"."""
+    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"day:{day.isoformat()}",))
+
+
+async def forgotten(conn: AsyncConnection, start: dt.datetime, end: dt.datetime) -> int:
+    """How many "Quên khoảng thời gian" requests overlap [start, end): read before a model call and again (under
+    ``lock_day``) before writing its answer; a different number means the material may hold forgotten text."""
+    cur = await conn.execute(
+        "SELECT count(*) AS n FROM forget_log WHERE range_start < %s AND range_end > %s", (end, start)
+    )
+    return (await cur.fetchone())["n"]
+
+
+async def clear_day_error(pool: AsyncConnectionPool, task: str, day: dt.date) -> None:
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM day_job_error WHERE task = %s AND day = %s", (task, day))
