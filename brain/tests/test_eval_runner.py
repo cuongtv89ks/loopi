@@ -338,10 +338,29 @@ async def test_two_runs_side_by_side_give_the_noise_floor(pool, pki_settings, de
     second = await _run(pool, pki_settings, FakeTranscriber(RegionResult("vi", 0.9, [seg("Mai mình đi chợ nhé")]),
                                                             *HEARD[1:]))
     text = runner.format_compare(first, second)
-    assert "| vi WER | 20.0 % | 0.0 % | -20.0 points |" in text and "| ko CER | 0.0 % | 0.0 % | +0.0 points |" in text
+    assert "| vi WER | 20.0 % (1 clips) | 0.0 % (1 clips) | -20.0 points |" in text
+    assert "| ko CER | 0.0 % (1 clips) | 0.0 % (1 clips) | +0.0 points |" in text
     assert "| no speech: clips with invented text | 1/1 | 1/1 | +0 |" in text and SECRET not in text
     assert "| hit@5: questions found | 1/1 | 1/1 | +0 |" in text
     assert runner.format_compare(first, {**second, "status": "running"}) == "Both runs must be finished."
+
+
+def test_a_comparison_shows_the_size_of_every_sample_so_two_golden_sets_cannot_pass_as_one():
+    def run(run_id, vi_clips, ko_clips, questions, found5):
+        def row(metric, clips, score):
+            return {"metric": metric, "clips": clips, "score": score}
+
+        languages = {"vi": row("wer", vi_clips, 0.2), **({"ko": row("cer", ko_clips, 0.1)} if ko_clips else {})}
+        return {"id": run_id, "status": "done", "results": {
+            "asr": {"variants": {"live": {"languages": languages, "no_speech": {"clips": 6, "invented": 2}}}},
+            "recall": {"questions": questions, "found5": found5}}}
+
+    # The owner relabelled between the runs: 6 → 4 Vietnamese clips, Korean gone, 25 → 20 questions.
+    text = runner.format_compare(run("A", 6, 6, 25, 18), run("B", 4, 0, 20, 15))
+    assert "| vi WER | 20.0 % (6 clips) | 20.0 % (4 clips) | +0.0 points |" in text
+    assert "| ko CER | 10.0 % (6 clips) | — | — |" in text
+    assert "| no speech: clips with invented text | 2/6 | 2/6 | +0 |" in text
+    assert "| hit@5: questions found | 18/25 | 15/20 | -3 |" in text
 
 
 async def test_what_the_rules_would_drop_from_the_live_transcripts_is_counted(pool, pki_settings, dev):

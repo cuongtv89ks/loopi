@@ -148,8 +148,10 @@ async def test_the_report_holds_the_numbers_and_never_the_text(pool, pki_setting
     assert ("Evaluation numbers from run R1 (2026-10-16 10:00): gain ≤ 30 dB, VAD threshold 0.5, rules: none,"
             " overrides: none") in text
     assert "WARNING" not in text  # the live settings: nothing to flag
-    assert "| video → caption | 1 | 1.0 min | 1.0 min | 0 | met |" in text
-    assert "| audio → transcript | 1 | 0.5 min | 0.5 min | 0 | met |" in text
+    # n counts captioned keyframes for the video path and recordings for the audio path: the table says which
+    assert "| Path | n | Average | p95 | Over 6 h | Target |" in text
+    assert "| video → caption (n = captioned keyframes) | 1 | 1.0 min | 1.0 min | 0 | met |" in text
+    assert "| audio → transcript (n = recordings) | 1 | 0.5 min | 0.5 min | 0 | met |" in text
     assert "### ASR (evaluation run R1," in text
     assert ("Golden clips: 2 (0 could not be transcribed), recorded 2026-10-16 … 2026-10-20; references edited from "
             "Whisper's text: 1") in text
@@ -251,7 +253,7 @@ async def test_the_per_day_latency_shows_how_many_recordings_each_day_rests_on(p
         await _captioned(pool, pki_settings, d, local(15, hour), delay)
     await _transcribed(pool, d, local(16, 10), 30)
     lines = acceptance._latency_lines(await acceptance.latency(pool, SEOUL, 2, now=NOW))
-    assert "| Day | video n | video avg | video p95 | audio n | audio avg | audio p95 |" in lines
+    assert "| Day | video keyframes | video avg | video p95 | audio recordings | audio avg | audio p95 |" in lines
     assert "| 2026-10-15 | 3 | 2.0 min | 2.9 min | 0 | — | — |" in lines
     assert "| 2026-10-16 | 0 | — | — | 1 | 0.5 min | 0.5 min |" in lines
 

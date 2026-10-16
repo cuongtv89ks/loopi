@@ -185,8 +185,10 @@ def _minutes(seconds: float | None) -> str:
 def _latency_lines(found: dict) -> list[str]:
     lines = [f"### Latency, recordings that ended {DAY_HOURS[0]:02d}:00–{DAY_HOURS[1]:02d}:00 "
              "(target: average ≤ 15 min)", "",
-             "| Path | Recordings | Average | p95 | Over 6 h | Target |", "|---|---|---|---|---|---|"]
-    for name, label in (("video", "video → caption"), ("audio", "audio → transcript")):
+             "| Path | n | Average | p95 | Over 6 h | Target |", "|---|---|---|---|---|---|"]
+    # n is not one unit: a video recording yields several keyframes, each captioned (and timed) on its own
+    for name, label in (("video", "video → caption (n = captioned keyframes)"),
+                        ("audio", "audio → transcript (n = recordings)")):
         row = found[name]
         verdict = "—" if not row["n"] else ("met" if row["avg"] <= LATENCY_TARGET_S else "not met")
         lines.append(f"| {label} | {row['n']} | {_minutes(row['avg'])} | {_minutes(row['p95'])} | {row['late']} | "
@@ -201,7 +203,7 @@ def _latency_lines(found: dict) -> list[str]:
     if found["outside"]:
         lines += ["", "Not in the window, so nothing was left out for it: "
                       f"{', '.join(str(day) for day in found['outside'])}"]
-    lines += ["", "| Day | video n | video avg | video p95 | audio n | audio avg | audio p95 |",
+    lines += ["", "| Day | video keyframes | video avg | video p95 | audio recordings | audio avg | audio p95 |",
               "|---|---|---|---|---|---|---|"]
     for day in found["days"]:
         video, audio = found["video_by_day"].get(day), found["audio_by_day"].get(day)

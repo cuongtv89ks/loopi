@@ -530,9 +530,14 @@ def _points(a: float | None, b: float | None) -> str:
     return "—" if a is None or b is None else f"{100 * (b - a):+.1f} points"
 
 
+def _rate_cell(row: dict | None) -> str:
+    return "—" if row is None else f"{pct(row['score'])} ({row['clips']} clips)"
+
+
 def format_compare(first: dict, second: dict) -> str:
     """Two finished runs side by side (live rules): per language, the no-speech check and hit@5 — the difference
-    between two runs of one configuration is the noise floor a tuning change must beat (Task 13)."""
+    between two runs of one configuration is the noise floor a tuning change must beat (Task 13). Every cell carries
+    its sample size (clips, questions), so two runs over different golden sets cannot pass as one."""
     if first["status"] != "done" or second["status"] != "done":
         return "Both runs must be finished."
     a, b = first["results"], second["results"]
@@ -544,7 +549,7 @@ def format_compare(first: dict, second: dict) -> str:
         if x is None and y is None:
             continue
         metric = (x or y)["metric"].upper()
-        lines.append(f"| {lang} {metric} | {pct(x and x['score'])} | {pct(y and y['score'])} | "
+        lines.append(f"| {lang} {metric} | {_rate_cell(x)} | {_rate_cell(y)} | "
                      f"{_points(x and x['score'], y and y['score'])} |")
     x, y = a["asr"]["variants"]["live"]["no_speech"], b["asr"]["variants"]["live"]["no_speech"]
     lines.append(f"| no speech: clips with invented text | {x['invented']}/{x['clips']} | {y['invented']}/{y['clips']} "
