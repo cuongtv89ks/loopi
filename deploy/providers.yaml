@@ -12,5 +12,7 @@ tasks:
   chapter_summary: { provider: ollama, model: "qwen3:4b" }
   recap:           { provider: ollama, model: "qwen3:8b" }
   chat:            { provider: ollama, model: "qwen3:8b" }
-  # Cloud fallbacks need the Anthropic provider (P2b) and ANTHROPIC_API_KEY, e.g.:
+  # Optional cloud routes, for text tasks only (chapter_summary, recap, chat), used only when ANTHROPIC_API_KEY is
+  # set in deploy/.env (without it they are skipped). Captions, embeddings and ASR always stay local. E.g.:
   # recap: { provider: ollama, model: "qwen3:8b", fallback: { provider: anthropic, model: claude-haiku-5-5 } }
+  # chat:  { provider: anthropic, model: claude-sonnet-5-5, fallback: { provider: ollama, model: "qwen3:8b" } }

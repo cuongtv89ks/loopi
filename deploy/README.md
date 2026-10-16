@@ -50,3 +50,33 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   `view/**/*.opus` to rebuild the cached copies.
 - `docker compose logs -f worker` follows the pipeline; `docker compose exec worker loopi-brain worker-health`
   checks its heartbeat.
+
+## Understanding and pages (P2b)
+
+- **Hôm nay** (`/`, any day with `/?day=YYYY-MM-DD`): the day's recap, the "việc cần làm hoặc đã hứa" list (Xong /
+  Bỏ qua / Mở lại), then the chapters in order with their pictures (320 px thumbnails, made on first view under
+  `thumbs/`), marked moments and speech (with playback while the raw audio is kept). "Chi tiết theo giờ" (`/hours`)
+  is the P2a hourly view.
+- Chapters are built every hour (minute 5) by `qwen3:4b`; a day's chapters settle ("closed") once everything recorded
+  up to them is analysed and 30 minutes old. The recap (`qwen3:8b`) is written at 23:30 (again at 23:30 if
+  "Tạo lại recap" wrote one earlier), and for an earlier day as soon as all its chapters are settled, and once more
+  if its chapters change afterwards. Days analysed before this upgrade get chapters one day per hour, newest first,
+  then their recaps. A failed recap shows on its Day page and on "Xử lý".
+- The worker runs 3 jobs at once (`LOOPI_WORKER_CONCURRENCY`); chapter and recap jobs take at most one slot and
+  wait behind captions and transcriptions (lowest priority), so live recordings keep their latency.
+- **Tìm kiếm** (`/search`): plain search by meaning and by words; "Hỏi" answers from the matching moments only, cites
+  them, and streams the answer (on a CPU the first words take tens of seconds). No matching moment: "Không tìm thấy".
+- **Cài đặt** (`/settings`): providers (read only; edit `deploy/providers.yaml`, then
+  `docker compose up -d api worker`), how many days raw video and audio are kept (7 and 7 by default, spec D20),
+  "Quên khoảng thời gian" (preview, then permanent deletion of everything recorded in the range, at most 7 days at a
+  time; an audit row keeps the range and the counts, never content), and reprocessing a day with the current models.
+- Retention is **off** after installing: Cài đặt shows how many recordings (and GB) it would delete; once turned on
+  there, it runs at 03:00 local time: raw files (and their MP4/playback copies) of finished recordings older than the
+  kept days are deleted and the pages say "đã hết hạn". Keyframes, transcripts, chapters and recaps stay. The same
+  03:00 run (on or off) retries files a "Quên khoảng thời gian" could not delete at once.
+- Memory: Ollama keeps at most 2 models (`OLLAMA_MAX_LOADED_MODELS`). Measured: minicpm-v ≈ 2.9 GB, qwen3-embedding
+  ≈ 1.3 GB; `qwen3:8b` with its 8192-token context ≈ 6–6.5 GB and `qwen3:4b` ≈ 3.5 GB, so a recap or a chat raises
+  Ollama from ≈ 4.2 GB to ≈ 9.4–10 GB; text models unload 1 minute after their last request. A text request may
+  take up to 15 minutes on the CPU (`LOOPI_LLM_TIMEOUT_S`, 900 s).
+- Optional Anthropic text provider: set `ANTHROPIC_API_KEY` in `deploy/.env` and route a text task to `anthropic` in
+  `deploy/providers.yaml` (examples there). Images and audio are never sent; without the key those routes are skipped.

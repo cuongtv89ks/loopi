@@ -8,6 +8,7 @@ import httpx
 from procrastinate.exceptions import ConnectorException
 from psycopg_pool import AsyncConnectionPool
 
+from .. import store
 from ..config import Settings
 from ..health import HEARTBEAT_MAX_AGE_S
 from ..providers.config import ProvidersConfigError, load_providers
@@ -135,6 +136,31 @@ async def pipeline_status(pool: AsyncConnectionPool) -> dict:
         "worker_alive": worker_alive,
         "failed": failed,
         "failed_total": failed_total,
+    }
+
+
+async def understanding_status(pool: AsyncConnectionPool, zone) -> dict:
+    """The understanding jobs at a glance: chapters waiting for a summary, the newest recap, failed recaps,
+    retention (days, on or off)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT count(*) AS n FROM chapter WHERE summary_signature IS DISTINCT FROM signature"
+        )
+        waiting = (await cur.fetchone())["n"]
+        cur = await conn.execute("SELECT day, generated_at FROM day_recap ORDER BY generated_at DESC LIMIT 1")
+        recap = await cur.fetchone()
+        cur = await conn.execute(
+            "SELECT count(*) AS n FROM procrastinate_jobs WHERE task_name = %s AND status = 'failed'",
+            (jobs.WRITE_RECAP,),
+        )
+        recaps_failed = (await cur.fetchone())["n"]
+    return {
+        "chapters_waiting": waiting,
+        "recaps_failed": recaps_failed,
+        "last_recap": (
+            {"day": recap["day"], "at": recap["generated_at"].astimezone(zone).strftime("%d/%m %H:%M")} if recap else None
+        ),
+        "retention": await store.get_retention(pool),
     }
 
 

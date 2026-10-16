@@ -85,3 +85,17 @@ def test_smoke_script_removes_what_it_created_on_every_exit():
     # selection and yields no keyframe), and the wait ends on either final analysis state.
     assert "smptebars=size=320x240:rate=2" in script and "testsrc" not in script
     assert '[[ "$STATE" == "done" || "$STATE" == "skipped" ]] && break' in script
+
+
+def test_the_worker_has_a_third_slot_for_one_text_model_job():
+    assert SERVICES["worker"]["environment"]["LOOPI_WORKER_CONCURRENCY"] == "3"
+    assert "mem_limit" not in SERVICES["models"]  # a kill would stop a caption mid-job; memory is checked in Task 14
+
+
+def test_the_anthropic_key_is_optional_and_comes_only_from_the_env_file():
+    for name in ("api", "worker"):
+        assert SERVICES[name]["environment"]["ANTHROPIC_API_KEY"] == "${ANTHROPIC_API_KEY:-}"
+    example = (DEPLOY / ".env.example").read_text()
+    assert "\nANTHROPIC_API_KEY=\n" in example  # empty: 100 % local unless the owner adds a key
+    providers = yaml.safe_load((DEPLOY / "providers.yaml").read_text())
+    assert all(step["provider"] != "anthropic" for step in providers["tasks"].values())  # routes stay commented out

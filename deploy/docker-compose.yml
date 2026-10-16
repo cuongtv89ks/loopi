@@ -23,6 +23,8 @@ services:
       LOOPI_TZ: ${LOOPI_TZ:-Asia/Seoul}
       LOOPI_OLLAMA_URL: http://models:11434
       LOOPI_PROVIDERS_FILE: /etc/loopi/providers.yaml
+      # Optional (spec §9.3): text tasks may use Anthropic only when this is set AND providers.yaml routes them there.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - ${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi
       - ./providers.yaml:/etc/loopi/providers.yaml:ro
@@ -51,6 +53,10 @@ services:
       LOOPI_PROVIDERS_FILE: /etc/loopi/providers.yaml
       LOOPI_MODEL_DIR: /srv/loopi/models
       LOOPI_ASR_MAX_GAIN_DB: ${LOOPI_ASR_MAX_GAIN_DB:-30}
+      # Two slots for live work (video, captions, ASR, markers, embeddings) and one more, used by at most one
+      # chapter/recap job at a time (job lock "llm"; those jobs also have the lowest priority).
+      LOOPI_WORKER_CONCURRENCY: "3"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # The container user has no home directory; Hugging Face caches go next to the models.
       HF_HOME: /srv/loopi/models/hf
       # Whisper sets its own thread count (LOOPI_WHISPER_CPU_THREADS); keep every other library
@@ -80,6 +86,10 @@ services:
     image: ollama/ollama:0.35.1
     environment:
       OLLAMA_KEEP_ALIVE: 30m
+      # Two models at most (measured 2026-10-16: minicpm-v ≈ 2.9 GB, qwen3-embedding ≈ 1.3 GB, qwen3:8b with an
+      # 8192-token context ≈ 6–6.5 GB, qwen3:4b ≈ 3.5 GB; the host had 7.5 GB available). A chapter, recap or
+      # chat run unloads one of the two all-day models and leaves 1 minute after its last request
+      # (LOOPI_OLLAMA_TEXT_KEEP_ALIVE): peak ≈ 9.4–10 GB instead of ≈ 4.2 GB.
       OLLAMA_MAX_LOADED_MODELS: "2"
       OLLAMA_NUM_PARALLEL: "1"
     volumes:

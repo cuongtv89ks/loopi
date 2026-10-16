@@ -218,6 +218,7 @@ async def pipeline_page(request: Request):
         {
             **await status.pipeline_status(state.pool),
             "health": await status.model_health(state.settings, state.http),
+            "understanding": await status.understanding_status(state.pool, state.settings.zone),
         },
     )
 
