@@ -48,6 +48,13 @@ def test_an_unusable_answer_says_where_and_why_but_never_quotes_the_answer(text,
     assert not any(word in printed for word in PRIVATE_WORDS)
 
 
+def test_a_number_too_long_to_convert_is_not_json_either():
+    text = '{"title": "x", "n": ' + "9" * 5000 + "}"
+    with pytest.raises(AnswerInvalid) as caught:
+        parse_answer(text, Answer)
+    assert str(caught.value) == f"the answer is not JSON (ValueError); answer of {len(text)} characters"
+
+
 def test_an_answer_with_many_problems_names_the_first_three():
     with pytest.raises(AnswerInvalid) as caught:
         parse_answer('{"title": [1], "n": [2]}', Answer)
