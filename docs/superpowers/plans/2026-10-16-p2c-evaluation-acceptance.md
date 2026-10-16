@@ -2,23 +2,24 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Measure the P2 pipeline against the owner's own golden set and close P2: a Vietnamese "Đánh giá" page where the owner labels 20 clips, 30 keyframes and 25 questions (data outside git, new decision D21), an evaluation runner (`loopi-brain eval run` and a button) for WER/CER, invented text on silence, caption scores and recall@5, switchable ASR hallucination rules that are measured before any default changes, and `loopi-brain acceptance`, which prints the spec §14 P2 numbers for the acceptance report.
+**Goal:** Measure the P2 pipeline against the owner's own golden set and close P2: a Vietnamese "Đánh giá" page where the owner labels about 22 clips, 30 keyframes and 25 questions (data outside git, new decision D21), an evaluation runner (`loopi-brain eval run` and a button) for WER and CER, invented text on silence, caption scores and hit@5 (the §14 "recall@5", new decision D22), each with its sample size and a 95 % interval, switchable ASR hallucination rules that are measured before any default changes, and `loopi-brain acceptance`, which prints the spec §14 P2 numbers for the acceptance report.
 
-**Architecture:** The golden set lives in seven new tables (migration 005) and in copies under `LOOPI_EVAL_DIR` (`/srv/loopi/eval`): a golden clip is a whole recording copied byte for byte (plus a playback copy at a level you can hear), a golden keyframe a JPEG copy with the owner's scores per caption model, a question its correct moments anchored to their sources so reprocessing does not lose them. "Quên khoảng thời gian" deletes the samples of its range and sweeps their copies; retention never touches them. A run is a chain of Procrastinate jobs on the worker — one golden clip per job through the live ASR path (`asr.transcribe_file`: level normalisation, Silero VAD with the run's threshold, Whisper), lock `asr`, priority −20, so live recordings always go first — and a last job that scores every rule set from the stored segments, sums the caption scores and asks `search_moments` each answered question. Pages are Jinja + HTMX like P2b; numbers leave the brain only through `loopi-brain eval show` and `loopi-brain acceptance`, never text.
+**Architecture:** The golden set lives in seven new tables (migration 005) and in copies under `LOOPI_EVAL_DIR` (`/srv/loopi/eval`): a golden clip is a whole recording copied byte for byte (plus a playback copy at a level you can hear), a golden keyframe a JPEG copy with the owner's scores per caption model, a question its correct moments anchored to their sources so reprocessing does not lose them. "Quên khoảng thời gian" deletes the samples of its range and sweeps their copies; retention never touches them. A run is a chain of Procrastinate jobs on the worker — one golden clip per job through the live ASR path (`asr.transcribe_file`: level normalisation, Silero VAD with the run's threshold, Whisper), lock `asr`, priority −20, so live recordings always go first — and a last job under its own lock (`eval`, never Whisper's) that scores every rule set from the stored segments, sums the caption scores and asks `search_moments` each answered question, embedding each question once. Pages are Jinja + HTMX like P2b; numbers leave the brain only through `loopi-brain eval show` and `loopi-brain acceptance`, never text.
 
 **Tech Stack:** Python 3.13, uv, FastAPI/Starlette (`Form`, `FileResponse`, `HX-Redirect`), Jinja2 + HTMX (vendored), psycopg 3, Procrastinate 3.10.0 (job locks and priorities), pgvector/pg_trgm search from P2b, faster-whisper 1.2.1 (Silero `VadOptions(threshold=…)`), ffmpeg (playback copies, as `/audio`), NumPy; pytest + pytest-asyncio + testcontainers (`pgvector/pgvector:pg17`), `FakeOllama`, `FakeTranscriber`. **No new dependency**: Levenshtein, WER and CER are written here (none is in `uv.lock`).
 
-**Spec:** `docs/superpowers/specs/2026-10-14-loopi-design.md` (Vietnamese, binding): §13 ("Đánh giá chất lượng AI": 30 keyframes with hand-scored captions, 20 clips vi/ko/en with reference transcripts → WER/CER, 25 questions with their correct moments → recall@5), §14 P2 (average latency recording → caption/transcript ≤ 15 min between 08:00 and 22:00; a recap every evening; a WER/CER baseline for vi/ko/en, WER > 30 % → change the model or the configuration; recall@5 ≥ 70 %; CPU time per day measured), §9.2 (ASR path), §9.5 (retention, "Quên khoảng thời gian"), §10.4 (search), §10.6 (pages), D19, D20. Task 1 adds decision **D21**. The design brief (owner direction 2026-10-16) is session scratch; its decisions are restated here so this plan stands alone:
+**Spec:** `docs/superpowers/specs/2026-10-14-loopi-design.md` (Vietnamese, binding): §13 ("Đánh giá chất lượng AI": 30 keyframes with hand-scored captions, 20 clips vi/ko/en with reference transcripts → WER/CER, 25 questions with their correct moments → recall@5), §14 P2 (average latency recording → caption/transcript ≤ 15 min between 08:00 and 22:00; a recap every evening; a WER/CER baseline for vi/ko/en, WER > 30 % → change the model or the configuration; recall@5 ≥ 70 %; CPU time per day measured), §9.2 (ASR path), §9.5 (retention, "Quên khoảng thời gian"), §10.4 (search), §10.6 (pages), D19, D20. Task 1 adds decisions **D21** and **D22**. The design brief (owner direction 2026-10-16) is session scratch; its decisions are restated here so this plan stands alone:
 - P2 is split: **P2a** perception (live since 2026-10-15 23:51 KST), **P2b** understanding + UI (implemented on `feat/p2b`, deployed by its Task 14 after 2026-10-17 04:28 KST), **P2c** evaluation + acceptance (this plan). Vlog and MCP are P3. New models only if the 30 % rule triggers — and then Task 13 proposes options and stops for the owner.
 - **D21 (owner, 2026-10-16):** golden-set data stays OUT of git: real audio clips, keyframe copies, reference transcripts and questions live under the brain's data dir (`/srv/loopi/eval` in the containers = `/home/soul/loopi-data/eval` on the host; setting `LOOPI_EVAL_DIR`) and in the brain's own database; the repo gets only result NUMBERS (WER, CER, scores, recall).
-- **The owner labels** through the new Vietnamese "Đánh giá" page (1–2 h, possibly in several sittings).
+- **The owner labels** through the new Vietnamese "Đánh giá" page (estimated 1–2 h in the brief, 2–3 h in this plan; several sittings).
+- **D22 (owner, 2026-10-16, after the independent plan review):** (1) the §14 "Recall@5 ≥ 70 %" number is **hit@5** — a question counts when at least one of its correct moments is in the first 5 results; the report also shows capped recall@5 (÷ min(n, 5)), hit@10 and MRR; (2) the 30 % rule uses **CER for Korean** and WER for Vietnamese and English; the report shows both for every language.
 - Work in the worktree **`/home/soul/loopi-p2c`**, branch **`feat/p2c`** (from `feat/p2b` @ `80a88b8` = P1 + P2a + audio level + P2b). The live stack (compose project `deploy`) runs from `/home/soul/loopi-p2/deploy` (branch `feat/phase2`). Real-world order, each step needing the owner's yes: deploy P2c (after P2b is live) → the owner labels → evaluation runs → tuning decisions → acceptance report `docs/measurements/2026-10-p2-acceptance.md` (numbers only).
 
 **Plan shape:** 14 tasks. Tasks 1–10 are code (each one a reviewed commit on `feat/p2c`); **Tasks 11–14 are controller-executed** on the live stack, after the final review and with the owner's yes at each stop: 11 deploy, 12 the owner labels + the baseline run, 13 evidence-first tuning, 14 the CPU window, the acceptance report and the handoff.
 
 **Ledger:** every ruling taken while executing goes to `docs/superpowers/ledgers/p2c-progress.md` (CLAUDE.md). Copy "Rulings taken while writing this plan" (end of this file) into it before Task 1.
 
-**Prototype:** every code block below ran in a throw-away worktree replayed task by task from `80a88b8`, and every "Expected" is what that run printed (red runs: the task's test changes on the previous task's code; green runs: the whole suite with coverage). Baseline: brain **696 passed, 1 skipped, 99 %**; after Task 10: **769 passed, 1 skipped, 99 %**.
+**Prototype:** every code block below ran in a throw-away worktree replayed task by task from `80a88b8`, and every "Expected" is what that run printed (red runs: the task's test changes on the previous task's code; green runs: the whole suite with coverage). Baseline: brain **696 passed, 1 skipped, 99 %**; after Task 10: **782 passed, 1 skipped, 99 %**. This revision applies the independent plan review of 2026-10-16 ("Ready with fixes": I1–I7 and every cheap minor; the controller's and the owner's rulings are R36–R55).
 
 **How to read the code blocks:** new files are given whole. Changes to existing files are unified diffs against the state the previous task left: apply them from the repository root (`git apply <<'PATCH' … PATCH`) or edit by hand — every context line is exact.
 
@@ -32,6 +33,10 @@
 - PostgreSQL `percentile_cont(0.95)` interpolates: the p95 of 120 s and 240 s is 234 s. `docker inspect` start times carry nanoseconds; Python's `datetime.fromisoformat` reads them (to microseconds) and the parser compares them as strings only.
 - The api and the worker mount the same data dir (`${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi`) as the same user (`LOOPI_UID:LOOPI_GID`): the api writes golden copies, the worker's runs read them; no new volume.
 - The P2a CPU window (2026-10-16 04:28 → 2026-10-17 04:28 KST) sampled the `worker` and `models` cgroups into `~/loopi-backups/p2a-cpu-samples.txt` as `<service> <UTC time> usage_usec <n> started=<container start>` plus `<service> memory.peak <bytes>` lines (script `scratchpad/p2a-sample-24h.sh`); that window predates chapters, recaps and evaluation runs.
+- faster-whisper keeps its temperature fallback (`best_of=5` once `avg_logprob < −1.0`); noisy clips sit near that line, so two runs of one configuration can differ: the plan runs the baseline twice and treats their difference as the noise floor every tuning change must beat.
+- Vietnamese writes the tone of an open "oa", "oe", "uy" in two styles ("hòa"/"hoà", "khỏe"/"khoẻ", "tùy"/"tuỳ"); without one form, equal words count as substitutions (the review's probe: 2 errors in 5 words).
+- The live device has recorded with its +20 dB gain (D19) since smoke8 was flashed, 2026-10-16 08:41 KST; recordings before that are about −55 dBFS and are kept with retention off.
+- 25 questions give a wide interval (18/25 → Wilson 95 % 52–86 %); about 6 clips per language give roughly ±10 points of WER: the set is a baseline, and every number is printed with n and its interval.
 - What motivates the rules (P2a's live findings, Task 11): most English segments are Whisper's stock inventions on normalised room noise — the lone "Thank you." / "Yeah." class, dozens a night — with avg_logprob ≈ −0.8…−0.9 and no_speech_prob 0.00 (VAD-cut regions), so the P2a filter keeps them; and the phrase-list gaps recorded in the committed P2a ledger (a newscast sign-off, a channel-subscribe request worded differently).
 
 ## Global Constraints
@@ -41,7 +46,9 @@
 - `LOOPI_EVAL_DIR` = `/srv/loopi/eval` in the containers (`/home/soul/loopi-data/eval` on the host); retention never deletes it; "Quên khoảng thời gian" deletes the samples of its range with their copies (§9.5, §11).
 - The live ASR behaviour is unchanged by default: `LOOPI_ASR_RULES` empty, VAD threshold 0.5, gain ceiling 30 dB (D19). A default changes only in a controller task, with before/after numbers from the owner's golden set and the owner's yes.
 - Evaluation never runs ahead of live work (§14 P2 latency): one golden clip per job, queue `light`, job lock `asr`, priority −20 (below chapter and recap jobs at −10).
-- Golden-set targets (§13): 30 keyframes, 20 clips vi/ko/en, 25 questions. Acceptance (§14 P2): average latency ≤ 15 min for recordings between 08:00 and 22:00; a recap every evening; a WER/CER baseline for vi/ko/en with WER > 30 % → change the model or the configuration; recall@5 ≥ 70 %; CPU time per day measured. A language the household rarely speaks is reported with its real number of clips, never padded.
+- Golden-set targets (§13): 30 keyframes, 20 clips vi/ko/en (here 22: 6 vi, 6 ko, 4 en, and 6 without speech on which Whisper wrote text), 25 questions with 1–3 correct moments each. Acceptance (§14 P2, D22): average latency ≤ 15 min for recordings between 08:00 and 22:00; a recap every evening; a WER/CER baseline for vi/ko/en, an error above 30 % (WER for vi and en, CER for ko) → change the model or the configuration; hit@5 ≥ 70 %; CPU time per day measured. Every rate is printed with its sample size and a 95 % interval. A language the household rarely speaks is reported with its real number of clips ("not measurable" when 0), never padded.
+- D22 (owner, 2026-10-16): "Recall@5 ≥ 70 %" is hit@5; the 30 % rule reads CER for Korean, WER for Vietnamese and English; the report shows WER and CER for every language.
+- The brain never raises audio by more than 30 dB (D19), in an evaluation run either; evaluation and tuning runs are made outside 08:00–22:00.
 - Python ≥ 3.13, uv-locked; no new dependency (`brain/pyproject.toml` and `brain/uv.lock` unchanged); WER/CER/Levenshtein in-house.
 - UI text Vietnamese; every web POST needs `HX-Request: true`; text written by a model or by the owner is always HTML-escaped.
 - TDD, coverage ≥ 80 % for `loopi_brain`, conventional commits ending with the session's attribution lines, never commit secrets (`deploy/.env`, API keys, PKI material), never prune or delete Docker resources you did not create (testcontainers' own containers are fine).
@@ -51,10 +58,10 @@
 
 ## Review Focus
 
-1. **A recording expires or is forgotten while the owner labels it** (the page stays open for hours; the 03:00 retention once it is on; "Quên khoảng thời gian" in another tab) → saving says "Không lưu được", no half-made sample and no orphan copy stays; a sample whose range is forgotten later goes with its copies; a sweep that fails stops neither the forget nor retention. Tests: Task 4 (`test_a_sample_forgotten_while_its_copy_is_written_leaves_no_copy`, `test_a_recording_whose_file_is_missing_leaves_no_sample`, `test_forgetting_a_range_takes_its_golden_samples_and_their_copies`, `test_a_failing_sweep_stops_neither_a_forget_nor_retention`), Task 7 (`test_a_clip_that_cannot_be_saved_says_why`).
-2. **A household language that barely occurs** (English is mostly Whisper's inventions at home; Korean may be rare in some weeks) → the page says how many recordings are left to choose from, and the acceptance report prints the real count ("no clip"), never an extrapolation. Tests: Task 7 (`test_a_language_the_home_rarely_speaks_is_reported_not_faked`), Task 9 (`test_the_report_holds_the_numbers_and_never_the_text`, the `| en | 0 | — | — | no clip |` row), Task 6 (`test_a_language_above_30_percent_is_flagged`).
+1. **A recording expires or is forgotten while the owner labels it** (the page stays open for hours; the 03:00 retention once it is on; "Quên khoảng thời gian" in another tab) → saving says "Không lưu được", no half-made sample and no orphan copy stays; a sample whose range is forgotten later goes with its copies; a sweep that fails stops neither the forget nor retention. Tests: Task 4 (`test_a_sample_forgotten_while_its_copy_is_written_leaves_no_copy`, `test_a_recording_whose_file_is_missing_leaves_no_sample`, `test_forgetting_a_range_takes_its_golden_samples_and_their_copies`, `test_a_failing_sweep_stops_neither_a_forget_nor_retention`), Task 7 (`test_a_clip_that_cannot_be_saved_says_why_and_keeps_what_was_typed`).
+2. **A household language that barely occurs** (English is mostly Whisper's inventions at home; Korean may be rare in some weeks) → the page says how many recordings are left to choose from, and the acceptance report prints the real count ("no clip"), never an extrapolation. Tests: Task 7 (`test_scarce_kinds_of_clip_are_reported_not_faked`), Task 9 (`test_the_report_holds_the_numbers_and_never_the_text`: the "not measurable (no clip)" row and "Baseline measured for: vi, ko; not measurable (no clip): en"), Task 6 (`test_a_language_above_30_percent_is_flagged`).
 3. **A day reprocessed after it was labelled** (a new caption model, re-transcription after a rule change) → the questions' correct moments are still recognised by their source, golden keyframes ask for a score of the new caption, golden clips are untouched (they are copies). Tests: Task 5 (`test_an_answer_is_recognised_after_its_day_is_reprocessed`, `test_a_correct_moment_keeps_what_it_came_from`), Task 4 (`test_a_scored_keyframe_is_copied_and_scored_again_for_a_new_caption_model`).
-4. **An evaluation run while the house is recording, or a worker restart during a run** → a waiting live transcription always starts before the next evaluation job and Whisper is held for one clip at a time; a run whose job vanished does not block the next one; an unreadable clip is counted, not fatal; with the embedding model down, recall is "not measured", not a words-only number. Tests: Task 6 (`test_a_waiting_evaluation_never_goes_ahead_of_a_live_transcription`, `test_one_run_at_a_time_and_a_run_whose_job_is_gone_does_not_block_the_next`, `test_a_clip_whisper_cannot_read_is_counted_and_the_run_goes_on`, `test_recall_waits_for_the_embedding_model`).
+4. **An evaluation run while the house is recording, or a worker restart during a run** → a waiting live transcription always starts before the next evaluation job and Whisper is held for one clip at a time; a run whose job vanished does not block the next one; an unreadable clip is counted, not fatal; with the embedding model down, recall is "not measured", not a words-only number; the numbers job never holds Whisper's lock, and a failing embedding ends the recall section at once instead of 13 waits per question. Tests: Task 6 (`test_a_waiting_evaluation_never_goes_ahead_of_a_live_transcription`, `test_one_transcription_scores_every_rule_set`: the last job's lock is `eval`, `test_each_question_is_embedded_once_and_a_failing_embedding_ends_recall`, `test_one_run_at_a_time_and_a_run_whose_job_is_gone_does_not_block_the_next`, `test_a_clip_deleted_before_its_job_leads_straight_to_the_numbers`, `test_a_clip_whisper_cannot_read_is_counted_and_the_run_goes_on`, `test_recall_waits_for_the_embedding_model`).
 5. **Golden-set text leaking out** (logs, error messages, the CLI, the acceptance report, URLs in access logs) → numbers only everywhere; the labelling search is a POST. Tests: Task 4 (`test_a_recording_whose_file_is_missing_leaves_no_sample`), Task 6 (`test_one_transcription_scores_every_rule_set`: log and report free of the clips' text), Task 8 (`test_the_owner_writes_a_question_and_picks_its_correct_moments`: the labelling search is a POST and refuses a request without `HX-Request`), Task 9 (`test_the_report_holds_the_numbers_and_never_the_text`).
 
 ---
@@ -62,17 +69,21 @@
 ## File Structure
 
 ```
-docs/superpowers/specs/2026-10-14-loopi-design.md   # Task 1: D21 (§3, Sửa đổi, §10.6, §13, §17)
+docs/superpowers/specs/2026-10-14-loopi-design.md   # Task 1: D21 and D22 (§3, Sửa đổi, §10.6, §13, §14, §17)
 brain/src/loopi_brain/
 ├── migrations/005_evaluation.sql      # Task 1: transcript_segment.lang_prob; eval_audio, eval_caption,
 │                                      #         eval_caption_score, eval_question, eval_answer, eval_run, eval_run_audio
-├── config.py                          # Task 1: eval_dir; Task 3: ASR_RULES, asr_vad_threshold, asr_rules
+├── config.py                          # Task 1: eval_dir; Task 3: ASR_RULES, asr_vad_threshold, asr_rules;
+│                                      # Task 4: eval_audio_since
 ├── evaluation/
 │   ├── __init__.py                    # Task 2: what lives where (D21)
-│   ├── metrics.py                     # Task 2: normalisation, Levenshtein, WER, CER, recall@k, hit@k, MRR
-│   ├── golden.py                      # Task 4: proposals, copies, labels, scores, delete, sweep, forget rows
+│   ├── metrics.py                     # Task 2: normalisation (tone marks), Levenshtein, WER, CER, hit@k, capped
+│   │                                  #         recall@k, MRR, Wilson and bootstrap intervals
+│   ├── golden.py                      # Task 4: proposals (cut-off date, maybe-noise group), copies, labels, scores,
+│   │                                  #         delete, sweep, forget rows
 │   ├── questions.py                   # Task 5: questions, correct moments, labelling search, matching, ranks
-│   └── runner.py                      # Task 6: runs (job chain), rule sets, caption and recall numbers, format_run
+│   └── runner.py                      # Task 6: runs (job chain), rule sets, dropped speech, intervals, caption and
+│                                      #         hit@5 numbers, format_run, format_compare, rules_impact
 ├── pipeline/asr.py                    # Task 3: VAD threshold, region language probability, switchable rules
 ├── pipeline/jobs.py, pipeline/status.py   # Task 6: run_eval task (registered, labelled)
 ├── pipeline/retention.py              # Task 4: the 03:00 tick sweeps golden copies (on or off)
@@ -80,13 +91,14 @@ brain/src/loopi_brain/
 ├── days.py                            # Task 5: range_utc (moved from web/search_routes.py)
 ├── search.py                          # Task 5: search_moments(candidates=…)
 ├── acceptance.py                      # Task 9: the §14 P2 numbers as Markdown
-├── cli.py                             # Task 6: `eval run` / `eval show`; Task 9: `acceptance`
+├── cli.py                             # Task 6: `eval run|show|compare|rules-impact`; Task 9: `acceptance`
 ├── app.py                             # Task 7: the eval router
 └── web/
     ├── eval_routes.py                 # Task 7: /eval, clips, keyframes, golden files; Task 8: questions, runs
     ├── search_routes.py               # Task 5: range_utc from days.py
-    └── templates/                     # Task 7: eval, eval_audio, eval_captions, _eval_clip, _eval_picture,
-                                       #   _eval_caption, _eval_score; base (menu); _forget_preview/_forgotten (Task 4)
+    └── templates/                     # Task 7: eval, eval_audio, eval_captions, _eval_candidate, _eval_clip,
+                                       #   _eval_keyframe, _eval_picture, _eval_caption, _eval_score; base (menu,
+                                       #   phone layout); _forget_preview/_forgotten (Task 4)
                                        # Task 8: eval_questions, eval_question, _eval_answers, _eval_hits, _eval_runs
 brain/tests/  conftest.py, helpers.py (shared fakes and inserts, edited) and
               test_eval_{metrics,golden,questions,runner,page}.py, test_acceptance.py (new);
@@ -97,10 +109,10 @@ docs/HANDOFF.md, docs/superpowers/ledgers/p2c-progress.md   # Task 14 (controlle
 ```
 
 ---
-### Task 1: Spec D21, the golden-set schema (migration 005) and `LOOPI_EVAL_DIR`
+### Task 1: Spec D21 and D22, the golden-set schema (migration 005) and `LOOPI_EVAL_DIR`
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-10-14-loopi-design.md` (D21 in §3, "Sửa đổi", §10.6, §13, §17)
+- Modify: `docs/superpowers/specs/2026-10-14-loopi-design.md` (D21 and D22 in §3, "Sửa đổi", §10.6, §13, §14, §17)
 - Create: `brain/src/loopi_brain/migrations/005_evaluation.sql`
 - Modify: `brain/src/loopi_brain/config.py` (`eval_dir`)
 - Modify: `brain/tests/conftest.py` (truncation list, `settings.eval_dir`), `brain/tests/test_db.py`, `brain/tests/test_config.py`
@@ -110,7 +122,7 @@ docs/HANDOFF.md, docs/superpowers/ledgers/p2c-progress.md   # Task 14 (controlle
 - Produces:
   - `Settings.eval_dir: Path` (default `/srv/loopi/eval`, env `LOOPI_EVAL_DIR`); the test `settings` fixture sets it to `tmp_path / "eval"`.
   - Column `transcript_segment.lang_prob REAL` (NULL for P2a/P2b rows).
-  - Tables (columns exactly as in `005_evaluation.sql` below): `eval_audio` (`id`, `item_id` UNIQUE → `item` ON DELETE CASCADE, `path`, `lang` vi|ko|en, `no_speech`, `reference`; check: no speech ⇔ no language and an empty reference), `eval_caption` (`id`, `keyframe_id` UNIQUE → `keyframe` CASCADE, `path`), `eval_caption_score` (PK `sample_id` + `model_version`, `caption` jsonb, `score` 1–5, `wrong_people`, `invented_objects`, `wrong_activity`), `eval_question` (`id`, `text` non-blank, `first_day` ≤ `last_day`), `eval_answer` (PK `question_id` + `moment_id`, `kind`, `item_id` → `item` CASCADE, `keyframe_id` → `keyframe` CASCADE, `ts_start`, `ts_end`), `eval_run` (`id`, `status` waiting|running|done|failed, `config` jsonb, `results` jsonb, `error`, times), `eval_run_audio` (PK `run_id` + `sample_id`, `segments` jsonb, `error`).
+  - Tables (columns exactly as in `005_evaluation.sql` below): `eval_audio` (`id`, `item_id` UNIQUE → `item` ON DELETE CASCADE, `path`, `lang` vi|ko|en, `no_speech`, `reference`, `had_text` (the live transcript had text when labelled), `prefilled` (the reference was edited from Whisper's text); check: no speech ⇔ no language and an empty reference), `eval_caption` (`id`, `keyframe_id` UNIQUE → `keyframe` CASCADE, `path`), `eval_caption_score` (PK `sample_id` + `model_version`, `caption` jsonb, `score` 1–5, `wrong_people`, `invented_objects`, `wrong_activity`), `eval_question` (`id`, `text` non-blank, `first_day` ≤ `last_day`), `eval_answer` (PK `question_id` + `moment_id`, `kind`, `item_id` → `item` CASCADE, `keyframe_id` → `keyframe` CASCADE, `ts_start`, `ts_end`), `eval_run` (`id`, `status` waiting|running|done|failed, `config` jsonb, `results` jsonb, `error`, times), `eval_run_audio` (PK `run_id` + `sample_id`, `segments` jsonb, `error`).
   - `conftest.APP_TABLES` truncates the new tables between tests.
 
 - [ ] **Step 1: Write the failing tests**
@@ -211,7 +223,7 @@ diff --git a/brain/tests/test_db.py b/brain/tests/test_db.py
  
  
  async def test_pool_connections_read_and_write_vectors(pool, pki_settings):
-@@ -148,3 +156,42 @@ async def test_understanding_tables_keep_their_rules(pool, pki_settings):
+@@ -148,3 +156,44 @@ async def test_understanding_tables_keep_their_rules(pool, pki_settings):
              await conn.execute(
                  "INSERT INTO forget_log (id, range_start, range_end, counts) VALUES ('F1', now(), now(), '{}')"
              )
@@ -229,6 +241,8 @@ diff --git a/brain/tests/test_db.py b/brain/tests/test_db.py
 +        await conn.execute(
 +            "INSERT INTO eval_audio (id, item_id, path, lang, reference) VALUES ('A1', 'I1', 'audio/A1.opus', 'vi', 'ừ')"
 +        )
++        row = await (await conn.execute("SELECT had_text, prefilled FROM eval_audio")).fetchone()
++        assert row == {"had_text": False, "prefilled": True}
 +        await conn.execute("INSERT INTO eval_run (id, config) VALUES ('R1', '{}')")
 +        await conn.execute("INSERT INTO eval_run_audio (run_id, sample_id, segments) VALUES ('R1', 'A1', '[]')")
 +        bad = [
@@ -261,7 +275,7 @@ diff --git a/brain/tests/test_db.py b/brain/tests/test_db.py
 Run: `cd brain && uv run pytest tests/test_config.py tests/test_db.py -q`
 Expected: FAIL — `5 failed, 7 passed, 3 errors`: `AttributeError: 'Settings' object has no attribute 'eval_dir'`, the migration lists and table sets lack the 005 objects, and the truncation errors with `psycopg.errors.UndefinedTable: relation "eval_run_audio" does not exist`.
 
-- [ ] **Step 3: Add D21 to the spec**
+- [ ] **Step 3: Add D21 and D22 to the spec**
 
 Run from the repository root (the spec is Vietnamese; each replaced line must occur exactly once):
 
@@ -283,7 +297,8 @@ swap(
     "số ngày chỉnh được trong trang Cài đặt (D20)\n",
     "số ngày chỉnh được trong trang Cài đặt (D20); 2026-10-16: dữ liệu của bộ đánh giá (golden set) nằm ngoài git,"
     " trong thư mục dữ liệu và database của brain, người dùng tự gán nhãn trên trang Đánh giá, repo chỉ giữ code và"
-    " các con số kết quả (D21)\n",
+    " các con số kết quả (D21); recall@5 trong tiêu chí nghiệm thu P2 là hit@5, quy tắc 30% dùng CER cho tiếng Hàn và"
+    " WER cho tiếng Việt, tiếng Anh (D22)\n",
 )
 d20_end = "keyframe, transcript, caption, chương và recap vẫn giữ vĩnh viễn |\n"
 swap(
@@ -296,7 +311,17 @@ swap(
     " transcript hay câu hỏi nào. Người dùng tự gán nhãn trên trang \"Đánh giá\" của brain: nghe từng đoạn audio đã"
     " chuẩn hoá mức âm thanh rồi sửa transcript thành bản chuẩn (hoặc đánh dấu \"không có lời nói\"), chấm điểm"
     " caption của keyframe, viết câu hỏi và chọn moment đúng. Job lưu trữ không xoá bản sao trong bộ đánh giá;"
-    " \"Quên khoảng thời gian\" xoá cả các mẫu đánh giá lấy từ khoảng đó |\n",
+    " \"Quên khoảng thời gian\" xoá cả các mẫu đánh giá lấy từ khoảng đó |\n"
+    + "| D22 | Cách đo nghiệm thu P2 | \"Recall@5 ≥ 70%\" ở mục 14 là **hit@5**: một câu hỏi được tính là tìm thấy khi ít"
+    " nhất một khoảnh khắc đúng của nó nằm trong 5 kết quả đầu. Báo cáo ghi thêm recall@5 có giới hạn (số khoảnh khắc"
+    " đúng tìm được trong 5 kết quả đầu chia cho min(n, 5), n là số khoảnh khắc đúng của câu hỏi), hit@10 và MRR."
+    " Quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh; báo cáo ghi cả WER lẫn CER cho mọi ngôn"
+    " ngữ. Mọi con số kèm số mẫu và khoảng tin cậy 95% |\n",
+)
+swap(
+    "Có baseline WER/CER cho vi/ko/en; WER trên 30% thì đổi model hoặc cấu hình. Recall@5 ≥ 70%.",
+    "Có baseline WER/CER cho vi/ko/en; lỗi trên 30% (WER cho vi/en, CER cho ko, D22) thì đổi model hoặc cấu hình."
+    " Recall@5 ≥ 70% (hit@5, D22).",
 )
 swap(
     "| Cài đặt | Provider, chính sách lưu trữ, \"Quên khoảng thời gian\", token MCP, job lỗi và nút xử lý lại |\n",
@@ -324,7 +349,7 @@ PY
 git diff --stat -- docs/superpowers/specs/2026-10-14-loopi-design.md
 ```
 
-Expected: `1 file changed, 6 insertions(+), 3 deletions(-)` (the "Sửa đổi" line, the D21 row, the Đánh giá page row in §10.6, the §13 heading and its new line about runs, §17).
+Expected: `1 file changed, 8 insertions(+), 4 deletions(-)` (the "Sửa đổi" line, the D21 and D22 rows, the Đánh giá page row in §10.6, the §13 heading and its new line about runs, the §14 P2 row, §17).
 
 - [ ] **Step 4: Write the migration**
 
@@ -341,6 +366,8 @@ ALTER TABLE transcript_segment ADD COLUMN lang_prob REAL;
 
 -- A recording the owner listened to and wrote down by hand (the reference transcript), or marked as having no
 -- speech at all (silence, TV, noise: the hallucination check). `path`: a byte copy of the raw recording.
+-- `had_text`: the live transcript had text when it was labelled (a no-speech clip with text tests the rules);
+-- `prefilled`: the reference was edited from Whisper's text (false: typed after listening, without seeing it).
 CREATE TABLE eval_audio (
     id          TEXT PRIMARY KEY,
     item_id     TEXT NOT NULL UNIQUE REFERENCES item(id) ON DELETE CASCADE,
@@ -348,6 +375,8 @@ CREATE TABLE eval_audio (
     lang        TEXT CHECK (lang IN ('vi', 'ko', 'en')),
     no_speech   BOOLEAN NOT NULL DEFAULT FALSE,
     reference   TEXT NOT NULL DEFAULT '',
+    had_text    BOOLEAN NOT NULL DEFAULT FALSE,
+    prefilled   BOOLEAN NOT NULL DEFAULT TRUE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT eval_audio_label CHECK (
@@ -465,10 +494,10 @@ Expected: `698 passed, 1 skipped`, `TOTAL … 99%`.
 git add docs/superpowers/specs/2026-10-14-loopi-design.md brain/src/loopi_brain/migrations/005_evaluation.sql \
   brain/src/loopi_brain/config.py brain/tests/conftest.py brain/tests/test_db.py brain/tests/test_config.py
 git commit -F - <<'EOF'
-feat(brain): golden-set schema (migration 005), LOOPI_EVAL_DIR and spec D21
+feat(brain): golden-set schema (migration 005), LOOPI_EVAL_DIR and spec D21/D22
 
 The owner's golden set stays out of git (D21, owner decision 2026-10-16): copies under LOOPI_EVAL_DIR, labels in
-the brain's database; the repo gets only numbers.
+the brain's database; the repo gets only numbers. D22: the §14 recall@5 is hit@5, the 30 % rule reads CER for Korean.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
@@ -477,7 +506,7 @@ EOF
 
 ---
 
-### Task 2: WER, CER, recall@k and MRR
+### Task 2: WER, CER, hit@k, recall@k, MRR and their intervals
 
 **Files:**
 - Create: `brain/src/loopi_brain/evaluation/__init__.py`, `brain/src/loopi_brain/evaluation/metrics.py`
@@ -485,7 +514,7 @@ EOF
 
 **Interfaces:**
 - Consumes: nothing (pure functions).
-- Produces (`loopi_brain.evaluation.metrics`): `normalise(text) -> str` (NFC, lower case, every punctuation mark and symbol a space, whitespace collapsed); `words(text) -> list[str]`; `chars(text) -> list[str]` (no spaces); `Errors(substitutions=0, deletions=0, insertions=0, reference=0)` frozen dataclass with `.edits`, `.rate -> float | None` (None without reference tokens) and `+`; `align(reference, hypothesis) -> Errors`; `wer(reference, hypothesis) -> Errors` (words); `cer(reference, hypothesis) -> Errors` (characters without spaces); `recall_at(ranks, relevant, k) -> float` (ValueError when `relevant` ≤ 0); `hit_at(ranks, k) -> float`; `reciprocal_rank(ranks) -> float`. `ranks` are the 1-based ranks at which correct moments were found.
+- Produces (`loopi_brain.evaluation.metrics`): `normalise(text) -> str` (NFC, lower case, every punctuation mark and symbol a space, the tone mark of an open "oa", "oe", "uy" on its second vowel, whitespace collapsed); `words(text) -> list[str]`; `chars(text) -> list[str]` (no spaces); `Errors(substitutions=0, deletions=0, insertions=0, reference=0)` frozen dataclass with `.edits`, `.rate -> float | None` (None without reference tokens) and `+`; `align(reference, hypothesis) -> Errors`; `wer(reference, hypothesis) -> Errors` (words); `cer(reference, hypothesis) -> Errors` (characters without spaces); `recall_at(ranks, relevant, k) -> float` (capped: found in the first k ÷ min(relevant, k), D22; ValueError when `relevant` ≤ 0); `hit_at(ranks, k) -> float`; `reciprocal_rank(ranks) -> float`; `wilson(successes, n) -> (low, high) | None` (95 % Wilson interval); `bootstrap(clips: list[Errors], iterations=2000, seed=0) -> (low, high) | None` (95 % interval of a corpus rate, resampling clips; None under two clips). `ranks` are the 1-based ranks at which correct moments were found.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -508,6 +537,15 @@ def test_text_is_compared_without_case_punctuation_or_unicode_form():
     assert metrics.normalise("내일 회의는 열 시예요.") == "내일 회의는 열 시예요"
     assert metrics.normalise("9:30 — “ok” ...") == "9 30 ok"  # symbols and punctuation are spaces
     assert metrics.words("...") == [] and metrics.chars(" - ") == []
+
+
+def test_both_vietnamese_tone_mark_placements_are_the_same_word():
+    old_style = "Mẹ khỏe không, tùy con. Hòa bình, thủy, họa, góa"
+    new_style = "mẹ khoẻ không tuỳ con hoà bình thuỷ hoạ goá"
+    assert metrics.normalise(old_style) == metrics.normalise(new_style) == new_style
+    assert metrics.wer(old_style, new_style).edits == 0 and metrics.cer(old_style, new_style).edits == 0
+    # Closed syllables, "qu" words and other diphthongs are written one way only and stay as they are.
+    assert metrics.normalise("Hoàng toán khuya quý của mía") == "hoàng toán khuya quý của mía"
 
 
 def test_word_errors_count_substitutions_deletions_and_insertions():
@@ -541,11 +579,24 @@ def test_recall_hits_and_reciprocal_rank():
     # Two correct moments: one found first, one found at rank 7.
     assert metrics.recall_at([1, 7], relevant=2, k=5) == 0.5
     assert metrics.recall_at([1, 7], relevant=2, k=10) == 1.0
+    # Capped (D22): eight correct moments and a perfect first five is a full score, not 5/8.
+    assert metrics.recall_at([1, 2, 3, 4, 5], relevant=8, k=5) == 1.0
     assert metrics.hit_at([7], k=5) == 0.0 and metrics.hit_at([7], k=10) == 1.0
     assert metrics.reciprocal_rank([7, 3]) == pytest.approx(1 / 3)
     assert metrics.recall_at([], relevant=3, k=5) == 0.0 and metrics.reciprocal_rank([]) == 0.0
     with pytest.raises(ValueError):
         metrics.recall_at([1], relevant=0, k=5)  # a question without a correct moment is not scored
+
+
+def test_intervals_carry_the_size_of_the_sample():
+    low, high = metrics.wilson(18, 25)  # 72 % of 25 questions
+    assert (round(low, 3), round(high, 3)) == (0.524, 0.857)
+    assert metrics.wilson(0, 4)[0] == 0.0 and metrics.wilson(4, 4)[1] == 1.0 and metrics.wilson(0, 0) is None
+    clips = [Errors(1, 0, 0, 10), Errors(3, 0, 0, 10), Errors(0, 0, 0, 10), Errors(6, 0, 0, 10)]
+    low, high = metrics.bootstrap(clips)
+    assert low < sum(clips, Errors()).rate < high and 0.0 <= low and high <= 0.6
+    assert metrics.bootstrap(clips) == metrics.bootstrap(clips)  # the same seed, the same interval
+    assert metrics.bootstrap(clips[:1]) is None and metrics.bootstrap([Errors(0, 0, 2, 0)] * 3) is None
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -569,25 +620,41 @@ carry counts, never their text.
 Create `brain/src/loopi_brain/evaluation/metrics.py`:
 
 ```python
-"""The numbers of an evaluation (spec §13): word and character error rates, recall@k and the reciprocal rank.
+"""The numbers of an evaluation (spec §13, D22): word and character error rates, hit@k, recall@k, the reciprocal
+rank, and their 95 % intervals.
 
-Text is compared after NFC normalisation, in lower case, with every punctuation mark and symbol read as a space.
+Text is compared after NFC normalisation, in lower case, with every punctuation mark and symbol read as a space and
+the Vietnamese tone mark of an open "oa", "oe", "uy" always on its second vowel (both "hòa" and "hoà" are in use).
 Vietnamese and English are scored by words (a Vietnamese word is a syllable: WER is the syllable error rate);
 Korean by characters without spaces (CER: Whisper's spacing of Korean is no error). Rates over several clips add
 their errors first (corpus WER), so a long clip weighs more than a short one.
 """
 from __future__ import annotations
 
+import math
+import random
+import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+# The five Vietnamese tone marks as combining characters: huyền, sắc, hỏi, ngã, nặng.
+_TONES = "\u0300\u0301\u0309\u0303\u0323"
+# Old style puts the tone of an open "oa", "oe", "uy" on its first vowel (hòa, khỏe, tùy), new style on the second
+# (hoà, khoẻ, tuỳ); closed syllables (hoàng, toán) and "qu" words (quý) are written one way only.
+_OLD_STYLE = re.compile(f"(o(?=[{_TONES}][ae])|u(?=[{_TONES}]y))([{_TONES}])([aey])(?![\\w\u0300-\u036f])")
+
+
+def _tone_on_second_vowel(text: str) -> str:
+    decomposed = unicodedata.normalize("NFD", text)
+    return unicodedata.normalize("NFC", _OLD_STYLE.sub(lambda m: m.group(1) + m.group(3) + m.group(2), decomposed))
+
 
 def normalise(text: str) -> str:
-    """NFC, lower case, punctuation and symbols as spaces, whitespace collapsed."""
+    """NFC, lower case, punctuation and symbols as spaces, the new tone-mark placement, whitespace collapsed."""
     text = unicodedata.normalize("NFC", text).lower()
     text = "".join(" " if unicodedata.category(c)[0] in "PS" else c for c in text)
-    return " ".join(text.split())
+    return " ".join(_tone_on_second_vowel(text).split())
 
 
 def words(text: str) -> list[str]:
@@ -653,11 +720,12 @@ def cer(reference: str, hypothesis: str) -> Errors:
 
 
 def recall_at(ranks: Sequence[int], relevant: int, k: int) -> float:
-    """The share of a question's ``relevant`` correct moments found in the first ``k`` results; ``ranks`` holds,
-    for each correct moment that was found, the rank (from 1) of its result."""
+    """Capped recall: the correct moments found in the first ``k`` results over min(``relevant``, ``k``), so a
+    question with many correct moments can still score 1 (D22). ``ranks`` holds, for each correct moment that was
+    found, the rank (from 1) of its result."""
     if relevant <= 0:
         raise ValueError("a question needs at least one correct moment")
-    return sum(1 for rank in ranks if rank <= k) / relevant
+    return sum(1 for rank in ranks if rank <= k) / min(relevant, k)
 
 
 def hit_at(ranks: Sequence[int], k: int) -> float:
@@ -668,15 +736,39 @@ def hit_at(ranks: Sequence[int], k: int) -> float:
 def reciprocal_rank(ranks: Sequence[int]) -> float:
     """1 / the rank of the first correct result; 0.0 when none was found."""
     return 1.0 / min(ranks) if ranks else 0.0
+
+
+def wilson(successes: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
+    """The 95 % Wilson score interval of a proportion (questions found, clips with invented text); None for n = 0."""
+    if n <= 0:
+        return None
+    p = successes / n
+    denominator = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denominator
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denominator
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def bootstrap(clips: Sequence[Errors], iterations: int = 2000, seed: int = 0) -> tuple[float, float] | None:
+    """A 95 % percentile interval of a corpus error rate, resampling whole clips (the words of one clip are not
+    independent); deterministic for a seed. None with fewer than two clips that have reference tokens."""
+    usable = [c for c in clips if c.reference]
+    if len(usable) < 2:
+        return None
+    rng = random.Random(seed)
+    rates = sorted(
+        sum((usable[rng.randrange(len(usable))] for _ in usable), Errors()).rate for _ in range(iterations)
+    )
+    return rates[int(0.025 * iterations)], rates[int(0.975 * iterations) - 1]
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_eval_metrics.py -q`
-Expected: `6 passed`.
+Expected: `8 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `704 passed, 1 skipped`, `TOTAL … 99%` (`evaluation/metrics.py` 100 %).
+Expected: `706 passed, 1 skipped`, `TOTAL … 99%` (`evaluation/metrics.py` 100 %).
 
 - [ ] **Step 5: Commit**
 
@@ -684,10 +776,11 @@ Expected: `704 passed, 1 skipped`, `TOTAL … 99%` (`evaluation/metrics.py` 100 
 git add brain/src/loopi_brain/evaluation/__init__.py brain/src/loopi_brain/evaluation/metrics.py \
   brain/tests/test_eval_metrics.py
 git commit -F - <<'EOF'
-feat(brain): WER, CER, recall@k and MRR for the evaluation
+feat(brain): WER, CER, hit@k, capped recall@k, MRR and 95 % intervals for the evaluation
 
 Written here (no Levenshtein package is locked): Vietnamese and English by words after NFC/lower case/punctuation
-normalisation, Korean by characters without spaces; corpus rates add the errors of every clip.
+normalisation with one Vietnamese tone-mark placement, Korean by characters without spaces; corpus rates add the
+errors of every clip; Wilson intervals for proportions, a clip bootstrap for error rates.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
@@ -767,8 +860,8 @@ diff --git a/brain/tests/test_asr.py b/brain/tests/test_asr.py
 +    ("rule", "region"),
 +    [
 +        ("outro", RegionResult("vi", 0.9, [seg("Hãy đăng ký kênh để ủng hộ mình nhé")])),
-+        ("outro", RegionResult("vi", 0.9, [seg("Hãy subscribe cho kênh Ghiền Mì Gõ để xem những video mới nhất")])),
-+        ("outro", RegionResult("ko", 0.9, [seg("MBC 뉴스 김지경입니다.")])),
++        ("outro", RegionResult("vi", 0.9, [seg("Hãy subscribe cho kênh ABC để xem những video mới nhất")])),
++        ("outro", RegionResult("ko", 0.9, [seg("MBC 뉴스 홍길동입니다.")])),
 +        ("lone_phrase", RegionResult("en", 0.9, [seg("Thank you.")])),
 +        ("lone_phrase", RegionResult("en", 0.9, [seg("Yeah."), seg("Mm-hmm.", 2.0, 3.0)])),
 +        ("short_foreign", RegionResult("en", 0.3, [seg("Okay, let's go.")])),
@@ -1103,7 +1196,7 @@ Run: `cd brain && uv run pytest tests/test_asr.py tests/test_config.py tests/tes
 Expected: `79 passed, 1 skipped`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `721 passed, 1 skipped`, `TOTAL … 99%`.
+Expected: `723 passed, 1 skipped`, `TOTAL … 99%`.
 
 - [ ] **Step 6: Commit**
 
@@ -1126,7 +1219,7 @@ EOF
 
 **Files:**
 - Create: `brain/src/loopi_brain/evaluation/golden.py`
-- Modify: `brain/src/loopi_brain/forget.py`, `brain/src/loopi_brain/pipeline/retention.py`
+- Modify: `brain/src/loopi_brain/config.py` (`eval_audio_since`), `brain/src/loopi_brain/forget.py`, `brain/src/loopi_brain/pipeline/retention.py`
 - Modify: `brain/src/loopi_brain/web/templates/_forget_preview.html`, `brain/src/loopi_brain/web/templates/_forgotten.html`
 - Modify: `brain/tests/helpers.py` (`analysed_audio`, `insert_segment`, `captioned_keyframe`)
 - Test: `brain/tests/test_eval_golden.py` (new)
@@ -1134,15 +1227,16 @@ EOF
 **Interfaces:**
 - Consumes: Task 1's tables and `Settings.eval_dir`; P2b `media.inside(root, rel)`, `media.remove_files(root, rels) -> (deleted, failed)` (root-generic), `media.normalise_audio(src, dst)` (D19 playback copy), `devices.new_id()`, `forget._delete_rows` / `forget._derived` / `forget.forget_range`, `retention.apply_retention_job`.
 - Produces (`loopi_brain.evaluation.golden`):
-  - Constants `LANGUAGES = ("vi", "ko", "en")`, `NO_SPEECH = "none"`, `AUDIO_TARGET = 20`, `AUDIO_SUGGESTED = {"vi": 6, "ko": 6, "en": 4, "none": 4}`, `CAPTION_TARGET = 30`, `PER_PART = 2`, `DAY_PARTS` (4 Vietnamese labels), `CAPTIONS_SHOWN = 12`, `FLAGS = ("wrong_people", "invented_objects", "wrong_activity")`; `GoldenError`; `AudioLabel(lang, no_speech, reference)`.
+  - `Settings.eval_audio_since: datetime` (default 2026-10-16 08:41 KST, the device gain change; env `LOOPI_EVAL_AUDIO_SINCE`, a UTC offset is required).
+  - Constants `LANGUAGES = ("vi", "ko", "en")`, `NO_SPEECH = "none"` (no speech, Whisper wrote text), `SILENT = "silent"` (no speech, no text), `NOISE = "noise"` (the proposal group "maybe noise": a transcript of at most `NOISE_WORDS = 4` words or with an average log probability below `NOISE_LOGPROB = -0.7`), `AUDIO_TARGET = 22`, `AUDIO_SUGGESTED = {"vi": 6, "ko": 6, "en": 4, "none": 6}`, `CAPTION_TARGET = 30`, `PER_PART = 2`, `DAY_PARTS` (4 Vietnamese labels), `CAPTIONS_SHOWN = 12`, `FLAGS = ("wrong_people", "invented_objects", "wrong_activity")`; `GoldenError`; `AudioLabel(lang, no_speech, reference)`.
   - `clean_text(text, limit=5000) -> str`; `audio_label(lang, no_speech, reference) -> AudioLabel` (ValueError); `check_score(score) -> int` (ValueError outside 1–5); `audio_paths(sample_id) -> (copy, view)` = `("audio/<id>.opus", "audio/<id>.view.opus")`; `keyframe_path(sample_id)` = `"keyframes/<id>.jpg"` (relative to the eval dir); `sample_exists(pool, table, sample_id) -> bool` (`table` is `eval_audio` or `eval_caption`, else ValueError).
-  - `audio_candidates(pool, zone, seed=0) -> dict[str, {"available": int, "items": [{"id", "started_at", "part", "transcript"}]}]` keyed by `"vi"`, `"ko"`, `"en"` and `""` (Whisper heard nothing); `transcripts(pool, item_ids) -> dict[str, str]`.
-  - `add_audio(pool, settings, item_id, label) -> str` (GoldenError), `update_audio(pool, sample_id, label) -> bool`, `audio_samples(pool) -> list[dict]` (`id`, `item_id`, `lang`, `no_speech`, `reference`, `started_at`), `delete_audio(pool, settings, sample_id) -> bool`.
+  - `audio_candidates(pool, zone, seed=0, since=None) -> dict[str, {"available": int, "items": [{"id", "started_at", "part", "lang", "transcript"}]}]` keyed by `"vi"`, `"ko"`, `"en"`, `"noise"` and `""` (Whisper heard nothing); only recordings that started at or after `since`; `transcripts(pool, item_ids) -> dict[str, str]`.
+  - `add_audio(pool, settings, item_id, label, prefilled=True) -> str` (GoldenError; stores `had_text` from the live transcript), `update_audio(pool, sample_id, label) -> bool`, `audio_samples(pool) -> list[dict]` (`id`, `item_id`, `lang`, `no_speech`, `reference`, `had_text`, `prefilled`, `started_at`), `delete_audio(pool, settings, sample_id) -> bool`.
   - `caption_candidates(pool, zone, seed=0, limit=12) -> list[dict]` (`id`, `ts`, `caption`, `caption_model`); `add_caption(pool, settings, keyframe_id, score, flags) -> str` (GoldenError, ValueError); `score_caption(pool, sample_id, score, flags) -> bool`; `caption_samples(pool) -> list[dict]` (`id`, `keyframe_id`, `ts`, `caption`, `caption_model`, `scores`, `needs_score`); `delete_caption(pool, settings, sample_id) -> bool`.
-  - `progress(pool) -> {"audio": {lang|"none": n}, "audio_total", "captions", "captions_scored"}`.
+  - `progress(pool) -> {"audio": {"vi", "ko", "en", "none", "silent": n}, "audio_total", "captions", "captions_scored"}`.
   - `forget_rows(conn, item_ids, keyframe_ids, moment_ids, delete: bool) -> int` and `sweep(pool, eval_dir) -> int`.
-  - `forget.ForgetCounts.golden` (counted in the preview, deleted with the range, shown on the preview and the result); `forget_range` and the 03:00 retention tick (on or off) call `golden.sweep` — a failure there is logged and stops nothing.
-  - Test helpers: `analysed_audio(pool, settings, device_id, start, *, seconds=5, source=…) -> item id` (a finished recording with a real Ogg/Opus file), `insert_segment(pool, item_id, device_id, start, text, *, lang="vi", seconds=2, lang_prob=0.9) -> segment id`, `captioned_keyframe(pool, settings, device_id, ts, *, caption=None, model="ollama:minicpm-v4.6:1b") -> keyframe id`.
+  - `forget.ForgetCounts.golden` (counted in the preview, deleted with the range, shown on the preview — which says the owner's questions stay — and the result); `forget_range` and the 03:00 retention tick (on or off) call `golden.sweep` — a failure there is logged and stops nothing.
+  - Test helpers: `analysed_audio(pool, settings, device_id, start, *, seconds=5, source=…) -> item id` (a finished recording with a real Ogg/Opus file), `insert_segment(pool, item_id, device_id, start, text, *, lang="vi", seconds=2, lang_prob=0.9, avg_logprob=-0.3) -> segment id`, `captioned_keyframe(pool, settings, device_id, ts, *, caption=None, model="ollama:minicpm-v4.6:1b") -> keyframe id`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1152,7 +1246,7 @@ Apply to `brain/tests/helpers.py`:
 diff --git a/brain/tests/helpers.py b/brain/tests/helpers.py
 --- a/brain/tests/helpers.py
 +++ b/brain/tests/helpers.py
-@@ -440,3 +440,42 @@ def write_media(settings, rel: str, data: bytes = b"x") -> str:
+@@ -440,3 +440,43 @@ def write_media(settings, rel: str, data: bytes = b"x") -> str:
      path.parent.mkdir(parents=True, exist_ok=True)
      path.write_bytes(data)
      return rel
@@ -1170,14 +1264,15 @@ diff --git a/brain/tests/helpers.py b/brain/tests/helpers.py
 +
 +
 +async def insert_segment(pool, item_id: str, device_id: str, start: dt.datetime, text: str, *, lang: str = "vi",
-+                         seconds: float = 2, lang_prob: float | None = 0.9) -> str:
++                         seconds: float = 2, lang_prob: float | None = 0.9, avg_logprob: float = -0.3) -> str:
 +    """A transcript segment of ``item_id`` starting at ``start``; return its id."""
 +    segment_id = new_ulid()
 +    async with pool.connection() as conn:
 +        await conn.execute(
 +            "INSERT INTO transcript_segment (id, item_id, device_id, start_ts, end_ts, lang, text, lang_prob,"
-+            " model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'test')",
-+            (segment_id, item_id, device_id, start, start + dt.timedelta(seconds=seconds), lang, text, lang_prob),
++            " avg_logprob, no_speech_prob, model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0.0, 'test')",
++            (segment_id, item_id, device_id, start, start + dt.timedelta(seconds=seconds), lang, text, lang_prob,
++             avg_logprob),
 +        )
 +    return segment_id
 +
@@ -1231,9 +1326,9 @@ async def dev(pool, pki_settings):
     return await paired_device(pool, pki_settings)
 
 
-async def _spoken(pool, settings, device_id, start, lang, text, **kw) -> str:
+async def _spoken(pool, settings, device_id, start, lang, text, avg_logprob=-0.3, **kw) -> str:
     item_id = await analysed_audio(pool, settings, device_id, start, **kw)
-    await insert_segment(pool, item_id, device_id, start, text, lang=lang)
+    await insert_segment(pool, item_id, device_id, start, text, lang=lang, avg_logprob=avg_logprob)
     return item_id
 
 
@@ -1241,32 +1336,60 @@ def _hours(n: float) -> dt.timedelta:
     return dt.timedelta(hours=n)
 
 
-async def test_clips_are_proposed_by_language_and_part_of_the_day(pool, pki_settings, dev):
+KO = "네 알겠어요 내일 회의는 열 시예요"
+
+
+async def test_clips_are_proposed_by_language_part_of_the_day_and_maybe_noise(pool, pki_settings, dev):
     d = dev["device_id"]
-    morning = [await _spoken(pool, pki_settings, d, NINE + dt.timedelta(minutes=m), "vi", f"câu {m}") for m in (0, 10, 20)]
-    korean = await _spoken(pool, pki_settings, d, NINE + _hours(5), "ko", "네 알겠어요")  # 14:00
-    english = await _spoken(pool, pki_settings, d, NINE + _hours(12), "en", "Thank you.")  # 21:00
+    morning = [await _spoken(pool, pki_settings, d, NINE + dt.timedelta(minutes=m), "vi",
+                             f"Sáng nay mình nói câu số {m}") for m in (0, 10, 20)]
+    korean = await _spoken(pool, pki_settings, d, NINE + _hours(5), "ko", KO)  # 14:00
+    english = await _spoken(pool, pki_settings, d, NINE + _hours(12), "en", "Can you pass me the salt please")
+    stock = await _spoken(pool, pki_settings, d, NINE + _hours(12.5), "en", "Thank you.")  # 21:30, two words
+    unsure = await _spoken(pool, pki_settings, d, NINE + _hours(13), "vi", "Hãy đăng ký kênh để ủng hộ mình nhé",
+                           avg_logprob=-0.9)  # 22:00, long but unsure
     silent = await analysed_audio(pool, pki_settings, d, NINE - _hours(6))  # 03:00, Whisper heard nothing
-    expired = await _spoken(pool, pki_settings, d, NINE + _hours(1), "vi", "đã hết hạn")
-    pending = await _spoken(pool, pki_settings, d, NINE + _hours(2), "vi", "chưa xong")
+    expired = await _spoken(pool, pki_settings, d, NINE + _hours(1), "vi", "Câu này đã hết hạn rồi nhé")
+    pending = await _spoken(pool, pki_settings, d, NINE + _hours(2), "vi", "Câu này chưa phân tích xong đâu")
     async with pool.connection() as conn:
         await conn.execute("UPDATE item SET raw_deleted_at = now() WHERE id = %s", (expired,))
         await conn.execute("UPDATE item SET analysis_state = 'pending' WHERE id = %s", (pending,))
     strata = await golden.audio_candidates(pool, pki_settings.zone)
-    assert set(strata) == {"vi", "ko", "en", ""}
+    assert set(strata) == {"vi", "ko", "en", "noise", ""}
     vi = strata["vi"]
     assert vi["available"] == 3 and len(vi["items"]) == golden.PER_PART  # 2 of the 3 morning recordings
     assert {i["id"] for i in vi["items"]} < set(morning)
-    assert all(i["part"] == "sáng (6–12 giờ)" for i in vi["items"])
-    assert [i["transcript"] for i in strata["ko"]["items"]] == ["네 알겠어요"]
+    assert all(i["part"] == "sáng (6–12 giờ)" and i["lang"] == "vi" for i in vi["items"])
+    assert [i["transcript"] for i in strata["ko"]["items"]] == [KO]
     assert [(i["id"], i["part"]) for i in strata["en"]["items"]] == [(english, "tối (18–24 giờ)")]
+    noise = strata["noise"]  # what the no-speech check needs: Whisper wrote something, maybe on noise
+    assert noise["available"] == 2 and {(i["id"], i["lang"]) for i in noise["items"]} == {(stock, "en"), (unsure, "vi")}
     assert [(i["id"], i["transcript"]) for i in strata[""]["items"]] == [(silent, "")]
     assert strata["ko"]["items"][0]["id"] == korean
-    await golden.add_audio(pool, pki_settings, korean, golden.AudioLabel("ko", False, "네 알겠어요"))
+    await golden.add_audio(pool, pki_settings, korean, golden.AudioLabel("ko", False, KO))
     again = await golden.audio_candidates(pool, pki_settings.zone)
     assert again["ko"] == {"available": 0, "items": []}  # a golden clip is not proposed again
     other = await golden.audio_candidates(pool, pki_settings.zone, seed=1)
     assert len(other["vi"]["items"]) == 2  # another draw ("Gợi ý khác") of the same recordings
+    later = await golden.audio_candidates(pool, pki_settings.zone, since=NINE + _hours(3))
+    assert later["vi"] == {"available": 0, "items": []} and later["en"]["available"] == 1  # recorded since then only
+
+
+def test_clips_are_proposed_from_the_device_gain_change_on(monkeypatch):
+    from zoneinfo import ZoneInfo
+
+    import pydantic
+
+    from loopi_brain.config import Settings
+
+    since = Settings(database_url="postgresql://x").eval_audio_since
+    assert since == dt.datetime(2026, 10, 16, 8, 41, tzinfo=ZoneInfo("Asia/Seoul"))  # smoke8: +20 dB (D19)
+    monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("LOOPI_EVAL_AUDIO_SINCE", "2026-10-20T00:00:00+09:00")
+    assert Settings().eval_audio_since == dt.datetime(2026, 10, 19, 15, 0, tzinfo=dt.UTC)
+    monkeypatch.setenv("LOOPI_EVAL_AUDIO_SINCE", "2026-10-20T00:00:00")
+    with pytest.raises(pydantic.ValidationError, match="UTC offset"):
+        Settings()
 
 
 async def test_a_labelled_clip_is_copied_and_outlives_retention(pool, pki_settings, dev):
@@ -1318,9 +1441,15 @@ async def test_a_recording_whose_file_is_missing_leaves_no_sample(pool, pki_sett
 
 async def test_labels_can_be_corrected_and_clips_deleted_with_their_copies(pool, pki_settings, dev):
     item = await _spoken(pool, pki_settings, dev["device_id"], NINE, "en", "Thank you.")
-    sample = await golden.add_audio(pool, pki_settings, item, golden.AudioLabel("en", False, "Thank you."))
+    sample = await golden.add_audio(pool, pki_settings, item, golden.AudioLabel("en", False, "Thank you."),
+                                    prefilled=False)
     assert await golden.update_audio(pool, sample, golden.audio_label("", True, ""))
-    assert (await golden.audio_samples(pool))[0]["no_speech"] is True
+    [row] = await golden.audio_samples(pool)
+    assert (row["no_speech"], row["had_text"], row["prefilled"]) == (True, True, False)
+    silent = await analysed_audio(pool, pki_settings, dev["device_id"], NINE + _hours(1))
+    await golden.add_audio(pool, pki_settings, silent, golden.AudioLabel(None, True, ""))
+    found = await golden.progress(pool)
+    assert found["audio"] == {"vi": 0, "ko": 0, "en": 0, "none": 1, "silent": 1} and found["audio_total"] == 2
     assert await golden.delete_audio(pool, pki_settings, sample)
     assert not any((pki_settings.eval_dir / rel).exists() for rel in golden.audio_paths(sample))
     assert not await golden.delete_audio(pool, pki_settings, sample)
@@ -1362,8 +1491,8 @@ async def test_a_scored_keyframe_is_copied_and_scored_again_for_a_new_caption_mo
     assert [(x["model_version"], x["score"], x["caption"]) for x in s["scores"]] == [
         ("ollama:minicpm-v4.6:1b", 4, s["scores"][0]["caption"]), ("ollama:new", 2, {"scene": "A room"})]
     assert s["needs_score"] is False
-    assert await golden.progress(pool) == {"audio": {"vi": 0, "ko": 0, "en": 0, "none": 0}, "audio_total": 0,
-                                           "captions": 1, "captions_scored": 1}
+    assert await golden.progress(pool) == {"audio": {"vi": 0, "ko": 0, "en": 0, "none": 0, "silent": 0},
+                                           "audio_total": 0, "captions": 1, "captions_scored": 1}
     for bad in ((0, set()), (6, set()), (3, {"blurry"})):
         with pytest.raises(ValueError):
             await golden.score_caption(pool, sample, *bad)
@@ -1527,7 +1656,9 @@ Create `brain/src/loopi_brain/evaluation/golden.py`:
 
 A golden clip is one whole audio recording (the agent cuts them at 60 s) that the owner listened to on the Đánh giá
 page and wrote down by hand — the reference transcript — or marked as having no speech at all (silence, TV, room
-noise: the check for invented text). A golden keyframe carries the owner's 1–5 score of its caption, per caption
+noise: the check for invented text; useful only where Whisper wrote something, so such recordings are proposed in a
+group of their own). Only recordings made since ``Settings.eval_audio_since`` (the device's +20 dB gain, D19) are
+proposed, so the set holds one capture condition. A golden keyframe carries the owner's 1–5 score of its caption, per caption
 model, and three ticks ("sai số người", "bịa đồ vật", "sai hoạt động").
 
 Each sample gets its own copy under LOOPI_EVAL_DIR, so it outlives retention (D20 deletes raw audio after 7 days):
@@ -1539,6 +1670,7 @@ ids and counts, never a reference or a caption.
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import shutil
 import uuid
@@ -1556,10 +1688,17 @@ from ..config import Settings
 
 log = logging.getLogger(__name__)
 LANGUAGES = ("vi", "ko", "en")
-NO_SPEECH = "none"  # the language bucket of the clips marked "không có lời nói"
-# The page's target: 20 clips, about this many of each kind (a scarce language is reported, never faked).
-AUDIO_TARGET = 20
-AUDIO_SUGGESTED = {"vi": 6, "ko": 6, "en": 4, NO_SPEECH: 4}
+NO_SPEECH = "none"  # clips marked "không có lời nói" whose live transcript had text (they test the rules)
+SILENT = "silent"  # clips marked "không có lời nói" where Whisper wrote nothing either (they test nothing)
+NOISE = "noise"  # the proposal group "Whisper wrote something, but it may be noise"
+# A recording is proposed as maybe-noise when its whole transcript has at most this many words, or its segments'
+# average log probability is below this (P2a: Whisper's inventions on room noise sit at about -0.8 to -0.9).
+NOISE_WORDS = 4
+NOISE_LOGPROB = -0.7
+# The page's target: §13's 20 clips with speech or without, about this many of each kind; the no-speech clips need
+# text from Whisper to show what a rule removes (a scarce language is reported, never faked).
+AUDIO_TARGET = 22
+AUDIO_SUGGESTED = {"vi": 6, "ko": 6, "en": 4, NO_SPEECH: 6}
 CAPTION_TARGET = 30
 PER_PART = 2  # proposals per detected language and part of the day
 DAY_PARTS = ("đêm (0–6 giờ)", "sáng (6–12 giờ)", "chiều (12–18 giờ)", "tối (18–24 giờ)")
@@ -1647,16 +1786,28 @@ WITH c AS (
     SELECT i.id, i.started_at,
            (SELECT s.lang FROM transcript_segment s WHERE s.item_id = i.id GROUP BY s.lang
              ORDER BY sum(extract(epoch FROM s.end_ts - s.start_ts)) DESC, s.lang LIMIT 1) AS lang,
+           t.words, t.logprob,
            extract(hour FROM i.started_at AT TIME ZONE %(tz)s)::int / 6 AS part
       FROM item i
+      LEFT JOIN LATERAL (
+          SELECT sum(array_length(regexp_split_to_array(btrim(s.text), '\\s+'), 1)) AS words,
+                 avg(s.avg_logprob) AS logprob
+            FROM transcript_segment s WHERE s.item_id = i.id
+      ) t ON true
      WHERE i.kind = 'audio' AND i.analysis_state = 'done' AND i.raw_deleted_at IS NULL
+       AND i.started_at >= %(since)s
        AND NOT EXISTS (SELECT 1 FROM eval_audio e WHERE e.item_id = i.id)
-), r AS (
-    SELECT *, coalesce(lang, '') AS stratum, count(*) OVER (PARTITION BY coalesce(lang, '')) AS available,
-           row_number() OVER (PARTITION BY coalesce(lang, ''), part ORDER BY md5(id || %(seed)s), id) AS n
+), s AS (
+    SELECT *, CASE WHEN lang IS NULL THEN ''
+                   WHEN words <= %(noise_words)s OR logprob < %(noise_logprob)s THEN 'noise'
+                   ELSE lang END AS stratum
       FROM c
+), r AS (
+    SELECT *, count(*) OVER (PARTITION BY stratum) AS available,
+           row_number() OVER (PARTITION BY stratum, part ORDER BY md5(id || %(seed)s), id) AS n
+      FROM s
 )
-SELECT id, started_at, stratum, part, available FROM r WHERE n <= %(per_part)s ORDER BY stratum, started_at
+SELECT id, started_at, lang, stratum, part, available FROM r WHERE n <= %(per_part)s ORDER BY stratum, started_at
 """
 
 
@@ -1671,29 +1822,40 @@ async def transcripts(pool: AsyncConnectionPool, item_ids: list[str]) -> dict[st
         return {r["item_id"]: r["text"] for r in await cur.fetchall()}
 
 
-async def audio_candidates(pool: AsyncConnectionPool, zone, seed: int = 0) -> dict[str, dict]:
-    """Recordings to propose, by the language Whisper heard most in them ('' for none heard): up to PER_PART per
-    part of the day (local time), spread over the days by a stable pseudo-random order that ``seed`` changes. Only
-    finished recordings whose raw audio is still kept and that are not golden clips yet; each with its current
-    transcript. Every language of the household is listed, with how many recordings are available."""
+async def audio_candidates(
+    pool: AsyncConnectionPool, zone, seed: int = 0, since: dt.datetime | None = None
+) -> dict[str, dict]:
+    """Recordings to propose, in groups: by the language Whisper heard most in them; NOISE when what it wrote is
+    short or unsure (maybe invented on noise: the no-speech check needs these); '' when it heard nothing (maybe
+    speech it missed). Up to PER_PART per group and part of the day (local time), spread over the days by a stable
+    pseudo-random order that ``seed`` changes. Only finished recordings made since ``since``, whose raw audio is still
+    kept and that are not golden clips yet; each with its current transcript and detected language. Every group is
+    listed, with how many recordings are available."""
+    params = {"tz": str(zone), "seed": str(seed), "per_part": PER_PART, "noise_words": NOISE_WORDS,
+              "noise_logprob": NOISE_LOGPROB, "since": since or dt.datetime.min.replace(tzinfo=dt.UTC)}
     async with pool.connection() as conn:
-        cur = await conn.execute(_AUDIO_CANDIDATES, {"tz": str(zone), "seed": str(seed), "per_part": PER_PART})
+        cur = await conn.execute(_AUDIO_CANDIDATES, params)
         rows = await cur.fetchall()
     texts = await transcripts(pool, [r["id"] for r in rows])
-    strata: dict[str, dict] = {lang: {"available": 0, "items": []} for lang in (*LANGUAGES, "")}
+    strata: dict[str, dict] = {group: {"available": 0, "items": []} for group in (*LANGUAGES, NOISE, "")}
     for row in rows:
         stratum = strata.setdefault(row["stratum"], {"available": 0, "items": []})
         stratum["available"] = row["available"]
         stratum["items"].append({"id": row["id"], "started_at": row["started_at"], "part": DAY_PARTS[row["part"]],
-                                 "transcript": texts.get(row["id"], "")})
+                                 "lang": row["lang"], "transcript": texts.get(row["id"], "")})
     return strata
 
 
-async def add_audio(pool: AsyncConnectionPool, settings: Settings, item_id: str, label: AudioLabel) -> str:
+async def add_audio(
+    pool: AsyncConnectionPool, settings: Settings, item_id: str, label: AudioLabel, prefilled: bool = True
+) -> str:
     """Make a finished recording whose raw audio is kept a golden clip with ``label``; return the sample id.
-    GoldenError when it cannot be (gone, expired, not analysed, already a clip, or its file cannot be copied)."""
+    ``prefilled``: the owner edited Whisper's text (False: typed after listening, without seeing it). The clip also
+    keeps whether its live transcript had text. GoldenError when it cannot be (gone, expired, not analysed, already a
+    clip, or its file cannot be copied)."""
     sample_id = devices.new_id()
     copy, view = audio_paths(sample_id)
+    had_text = bool((await transcripts(pool, [item_id])).get(item_id))
     try:
         async with pool.connection() as conn, conn.transaction():
             cur = await conn.execute(
@@ -1705,8 +1867,9 @@ async def add_audio(pool: AsyncConnectionPool, settings: Settings, item_id: str,
             if item is None:
                 raise GoldenError("this recording is gone, expired or not analysed yet")
             await conn.execute(
-                "INSERT INTO eval_audio (id, item_id, path, lang, no_speech, reference) VALUES (%s, %s, %s, %s, %s, %s)",
-                (sample_id, item_id, copy, label.lang, label.no_speech, label.reference),
+                "INSERT INTO eval_audio (id, item_id, path, lang, no_speech, reference, had_text, prefilled)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (sample_id, item_id, copy, label.lang, label.no_speech, label.reference, had_text, prefilled),
             )
     except psycopg.errors.UniqueViolation as exc:
         raise GoldenError("this recording is already a golden clip") from exc
@@ -1741,7 +1904,8 @@ async def audio_samples(pool: AsyncConnectionPool) -> list[dict]:
     """Every golden clip, oldest recording first: its label and when it was recorded."""
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT e.id, e.item_id, e.lang, e.no_speech, e.reference, i.started_at FROM eval_audio e"
+            "SELECT e.id, e.item_id, e.lang, e.no_speech, e.reference, e.had_text, e.prefilled, i.started_at"
+            " FROM eval_audio e"
             " JOIN item i ON i.id = e.item_id ORDER BY i.started_at, e.id"
         )
         return await cur.fetchall()
@@ -1883,13 +2047,15 @@ async def delete_caption(pool: AsyncConnectionPool, settings: Settings, sample_i
 # ---- the whole set ------------------------------------------------------------------------------------------------
 
 async def progress(pool: AsyncConnectionPool) -> dict:
-    """How far the labelling is: clips per language (NO_SPEECH for "không có lời nói"), golden keyframes and how many
-    of them have a score for their current caption."""
+    """How far the labelling is: clips per language, NO_SPEECH (no speech, but Whisper wrote text) and SILENT (no
+    speech and no text), golden keyframes and how many of them have a score for their current caption."""
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT coalesce(lang, %s) AS lang, count(*) AS n FROM eval_audio GROUP BY 1", (NO_SPEECH,)
+            "SELECT CASE WHEN NOT no_speech THEN lang WHEN had_text THEN %s ELSE %s END AS lang, count(*) AS n"
+            " FROM eval_audio GROUP BY 1",
+            (NO_SPEECH, SILENT),
         )
-        audio = {lang: 0 for lang in AUDIO_SUGGESTED} | {r["lang"]: r["n"] for r in await cur.fetchall()}
+        audio = {lang: 0 for lang in (*AUDIO_SUGGESTED, SILENT)} | {r["lang"]: r["n"] for r in await cur.fetchall()}
         cur = await conn.execute(
             "SELECT count(*) AS n, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM eval_caption_score s"
             " WHERE s.sample_id = e.id AND s.model_version = k.caption_model)) AS scored"
@@ -1951,9 +2117,42 @@ async def sweep(pool: AsyncConnectionPool, eval_dir: Path) -> int:
     return deleted
 ```
 
-- [ ] **Step 4: Forgetting takes the range's golden samples; the 03:00 tick sweeps their copies**
+- [ ] **Step 4: The cut-off setting; forgetting takes the range's golden samples; the 03:00 tick sweeps their copies**
 
 ```diff
+diff --git a/brain/src/loopi_brain/config.py b/brain/src/loopi_brain/config.py
+--- a/brain/src/loopi_brain/config.py
++++ b/brain/src/loopi_brain/config.py
+@@ -1,4 +1,5 @@
+ """Runtime settings, read from LOOPI_* environment variables."""
++import datetime as dt
+ from pathlib import Path
+ from zoneinfo import ZoneInfo
+ 
+@@ -60,6 +61,9 @@ class Settings(BaseSettings):
+     # Evaluation (P2c, spec D21): the owner's golden set — copies of the chosen recordings and keyframes — lives
+     # here, in the brain's data dir and never in git; retention never deletes it.
+     eval_dir: Path = Path("/srv/loopi/eval")
++    # Golden clips are proposed only from recordings made since this time: the device's +20 dB gain (D19) reached
++    # the live device then (smoke8, 2026-10-16 08:41 KST), so the set holds one capture condition.
++    eval_audio_since: dt.datetime = dt.datetime(2026, 10, 16, 8, 41, tzinfo=ZoneInfo("Asia/Seoul"))
+ 
+     @field_validator("anthropic_api_key", mode="before")
+     @classmethod
+@@ -70,6 +74,13 @@ class Settings(BaseSettings):
+             return value.strip() or None
+         return value
+ 
++    @field_validator("eval_audio_since")
++    @classmethod
++    def _aware(cls, value: dt.datetime) -> dt.datetime:
++        if value.tzinfo is None:
++            raise ValueError("needs a UTC offset, e.g. 2026-10-16T08:41:00+09:00")
++        return value
++
+     @field_validator("asr_rules")
+     @classmethod
+     def _known_rules(cls, value: str) -> str:
 diff --git a/brain/src/loopi_brain/forget.py b/brain/src/loopi_brain/forget.py
 --- a/brain/src/loopi_brain/forget.py
 +++ b/brain/src/loopi_brain/forget.py
@@ -2055,12 +2254,13 @@ diff --git a/brain/src/loopi_brain/pipeline/retention.py b/brain/src/loopi_brain
 diff --git a/brain/src/loopi_brain/web/templates/_forget_preview.html b/brain/src/loopi_brain/web/templates/_forget_preview.html
 --- a/brain/src/loopi_brain/web/templates/_forget_preview.html
 +++ b/brain/src/loopi_brain/web/templates/_forget_preview.html
-@@ -1,7 +1,7 @@
+@@ -1,7 +1,8 @@
  <div class="card">
    <p>Từ {{ first.strftime("%d/%m/%Y %H:%M") }} đến {{ last.strftime("%d/%m/%Y %H:%M") }} sẽ bị xoá vĩnh viễn:
       {{ c.items }} đoạn ghi, {{ c.keyframes }} khung hình, {{ c.transcript_segments }} đoạn transcript,
 -     {{ c.moments }} khoảnh khắc, {{ c.commitments }} việc cần làm; {{ c.chapters }} chương mất tóm tắt và
-+     {{ c.moments }} khoảnh khắc, {{ c.commitments }} việc cần làm, {{ c.golden }} mẫu đánh giá; {{ c.chapters }} chương mất tóm tắt và
++     {{ c.moments }} khoảnh khắc, {{ c.commitments }} việc cần làm, {{ c.golden }} mẫu đánh giá (đoạn ghi, khung hình và moment đúng của câu hỏi; bản thân câu hỏi đánh giá vẫn
++     giữ); {{ c.chapters }} chương mất tóm tắt và
       {{ c.recaps }} recap sẽ được viết lại.</p>
    {% if widened %}<p><strong>Thực tế sẽ xoá từ {{ span_start.strftime("%d/%m/%Y %H:%M:%S") }} đến {{ span_end.strftime("%d/%m/%Y %H:%M:%S") }}</strong>,
       vì có đoạn ghi nằm vắt qua ranh giới của khoảng này và chỉ xoá được trọn vẹn.</p>{% endif %}
@@ -2078,22 +2278,23 @@ diff --git a/brain/src/loopi_brain/web/templates/_forgotten.html b/brain/src/loo
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_eval_golden.py tests/test_forget.py tests/test_retention.py -q`
-Expected: `81 passed`.
+Expected: `82 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `737 passed, 1 skipped`, `TOTAL … 99%` (`forget.py`, `pipeline/retention.py` 100 %; `evaluation/golden.py` 99 %: `sample_exists`' guard is exercised by Task 7's page test).
+Expected: `740 passed, 1 skipped`, `TOTAL … 99%` (`forget.py`, `pipeline/retention.py` 100 %; `evaluation/golden.py` 99 %: `sample_exists`' guard is exercised by Task 7's page test).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add brain/src/loopi_brain/evaluation/golden.py brain/src/loopi_brain/forget.py \
+git add brain/src/loopi_brain/evaluation/golden.py brain/src/loopi_brain/config.py brain/src/loopi_brain/forget.py \
   brain/src/loopi_brain/pipeline/retention.py brain/src/loopi_brain/web/templates/_forget_preview.html \
   brain/src/loopi_brain/web/templates/_forgotten.html brain/tests/helpers.py brain/tests/test_eval_golden.py
 git commit -F - <<'EOF'
 feat(brain): golden clips and keyframes with their copies, labels and scores; forget and retention reach them
 
 A golden clip is a byte copy of a whole recording (and a playback copy), a golden keyframe a copy of its JPEG with
-the owner's score per caption model; both outlive retention (D20). "Quên khoảng thời gian" deletes the samples of
+the owner's score per caption model; both outlive retention (D20). Clips are proposed from the device gain change on,
+with a group of their own for what Whisper may have invented on noise. "Quên khoảng thời gian" deletes the samples of
 its range and sweeps their copies (D21).
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -2116,7 +2317,7 @@ EOF
 - Produces:
   - `days.range_utc(first, last, zone) -> (start | None, end | None)` (moved from `web/search_routes.py`, still importable there).
   - `search.search_moments(…, candidates: int = CANDIDATES)`: each of the two searches keeps `candidates` rows before the merge.
-  - `loopi_brain.evaluation.questions`: `QUESTION_TARGET = 25`, `TEXT_MAX = 500`, `LABEL_LIMIT = 50`, `LABEL_CANDIDATES = 100`, `LABEL_MAX_DISTANCE = 1.0`, `LABEL_MIN_SIMILARITY = 0.1`, `BROWSE_LIMIT = 200`, `SPEECH_SLACK = 2 s`; `check_question(text, first, last)`; `create_question(pool, text, first, last) -> str`; `update_question(…) -> bool`; `delete_question(pool, id) -> bool`; `list_questions(pool)` (with `answers` counts); `get_question(pool, id) -> dict | None` (with `answers`, each with the moment's current `text` or None); `add_answer(pool, question_id, moment_id) -> bool`; `remove_answer(…) -> bool`; `label_search(pool, router, query, first, last, zone) -> list[Hit]`; `matches(answer, hit) -> bool`; `ranks(answers, hits) -> list[int]`; `answered(pool) -> list[dict]` (questions with ≥ 1 answer, each with `answers`); `counts(pool) -> {"questions", "answered"}`.
+  - `loopi_brain.evaluation.questions`: `QUESTION_TARGET = 25`, `TEXT_MAX = 500`, `LABEL_LIMIT = 50`, `LABEL_CANDIDATES = 100`, `LABEL_MAX_DISTANCE = 1.0`, `LABEL_MIN_SIMILARITY = 0.1`, `BROWSE_LIMIT = 200`, `SPEECH_SLACK = 2 s`; `check_question(text, first, last)`; `create_question(pool, text, first, last) -> str`; `update_question(…) -> bool`; `delete_question(pool, id) -> bool`; `list_questions(pool)` (with `answers` counts); `get_question(pool, id) -> dict | None` (with `answers`, each with the moment's current `text` or None); `add_answer(pool, question_id, moment_id) -> bool`; `remove_answer(…) -> bool`; `label_search(pool, router, query, first, last, zone) -> list[Hit]`; `matches(answer, hit) -> bool`; `ranks(answers, hits) -> list[int]` (the ranks at which correct moments were found; a hit counts for at most one answer); `answered(pool) -> list[dict]` (questions with ≥ 1 answer, each with `answers`); `counts(pool) -> {"questions", "answered"}`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2207,6 +2408,12 @@ def test_an_answer_is_recognised_after_its_day_is_reprocessed():
     hits = [_hit("X", "visual", NINE), _hit("N1", "speech", NINE + dt.timedelta(seconds=5), item_id="I1"),
             _hit("Y", "speech", NINE), _hit("N3", "visual", NINE, keyframe_id="K1")]
     assert questions.ranks([speech, picture, marker], hits) == [2, 4]
+    after = {**speech, "moment_id": "M4", "ts_start": NINE + dt.timedelta(seconds=10),
+             "ts_end": NINE + dt.timedelta(seconds=14)}  # the next speech region of the same recording
+    inside_both = _hit("N7", "speech", NINE + dt.timedelta(seconds=9), item_id="I1")
+    assert questions.ranks([speech, after], [inside_both]) == [1]  # one moment found, not two
+    assert questions.ranks([speech, after], [inside_both, _hit("N8", "speech", NINE + dt.timedelta(seconds=12),
+                                                               item_id="I1")]) == [1, 2]
 
 
 async def test_the_labelling_search_shows_more_than_the_live_one_and_lets_the_owner_browse(pool, pki_settings, dev):
@@ -2506,13 +2713,17 @@ def matches(answer: dict, hit: Hit) -> bool:
 
 
 def ranks(answers: list[dict], hits: list[Hit]) -> list[int]:
-    """For each correct moment found among ``hits``, the rank (from 1) of the first hit that is it."""
+    """The ranks (from 1) at which correct moments were found. A hit is one moment and counts for at most one answer:
+    a hit inside two neighbouring speech answers (each with its slack) finds one of them, not both."""
+    found_answers: set[int] = set()
     found = []
-    for answer in answers:
-        rank = next((n for n, hit in enumerate(hits, start=1) if matches(answer, hit)), None)
-        if rank is not None:
-            found.append(rank)
-    return sorted(found)
+    for rank, hit in enumerate(hits, start=1):
+        for k, answer in enumerate(answers):
+            if k not in found_answers and matches(answer, hit):
+                found_answers.add(k)
+                found.append(rank)
+                break
+    return found
 
 
 async def answered(pool: AsyncConnectionPool) -> list[dict]:
@@ -2546,7 +2757,7 @@ Run: `cd brain && uv run pytest tests/test_eval_questions.py tests/test_days.py 
 Expected: `29 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `742 passed, 1 skipped`, `TOTAL … 99%`.
+Expected: `745 passed, 1 skipped`, `TOTAL … 99%`.
 
 - [ ] **Step 6: Commit**
 
@@ -2566,7 +2777,7 @@ EOF
 
 ---
 
-### Task 6: Evaluation runs and `loopi-brain eval`
+### Task 6: Evaluation runs and `loopi-brain eval` (run, show, compare, rules-impact)
 
 **Files:**
 - Create: `brain/src/loopi_brain/evaluation/runner.py`
@@ -2574,13 +2785,13 @@ EOF
 - Test: `brain/tests/test_eval_runner.py` (new)
 
 **Interfaces:**
-- Consumes: Task 2 metrics; Task 3 `asr.transcribe_file(path, transcriber, max_gain_db, vad_threshold)`, `asr.kept_segments`, `asr.RegionResult`, `asr.SegmentResult`, `ASR_RULES`; Task 4 golden clips (`eval_audio`), `eval_caption_score`; Task 5 `questions.answered`, `questions.ranks`, `days.range_utc`, `search.search_moments`; P2b `jobs.enqueue(conn, task, *, queue, queueing_lock, lock, priority, **kwargs)`, `state.error_text`, `PipelineContext(pool, settings, router, transcriber)`, `router.health()`, `router.task_ready("embed", health)`, `router.model_version(task)`, `media.inside`.
+- Consumes: Task 2 metrics; Task 3 `asr.transcribe_file(path, transcriber, max_gain_db, vad_threshold)`, `asr.kept_segments`, `asr.RegionResult`, `asr.SegmentResult`, `ASR_RULES`; Task 4 golden clips (`eval_audio`), `eval_caption_score`; Task 5 `questions.answered`, `questions.ranks` (one hit finds at most one answer), `days.range_utc`, `search.search_moments`, `search.QUERY_INSTRUCTION`, `search.clean_query`; P2b `jobs.enqueue(conn, task, *, queue, queueing_lock, lock, priority, **kwargs)`, `state.error_text`, `PipelineContext(pool, settings, router, transcriber)`, `router.health()`, `router.task_ready("embed", health)`, `router.model_version(task)`, `media.inside`.
 - Produces (`loopi_brain.evaluation.runner`):
-  - `EVAL_PRIORITY = -20`, `WER_LIMIT = 0.30`, `RECALL_TARGET = 0.70`, `PRIMARY = {"vi": "wer", "en": "wer", "ko": "cer"}`, `DISTANCES = (0.5, 0.6, 0.7, 0.8)`, `SIMILARITIES = (0.2, 0.3, 0.4)`, `VARIANTS = ("live", "none", "outro", "lone_phrase", "short_foreign", "all")`; `jobs.RUN_EVAL = "run_eval"` (queue `light`, lock `asr`, priority −20, queueing lock `eval:<run id>`).
-  - `start_run(pool, settings, *, max_gain_db=None, vad_threshold=None) -> (run_id, created)` (ValueError outside 0–60 dB / 0–1; one run at a time; a run without a live job is marked failed first); `run_step(ctx, run_id) -> "clip" | "done" | "failed" | "nothing"`; `latest_run(pool, run_id=None, finished=False) -> dict | None` and `list_runs(pool, limit=20)` (rows with `heard` and `clips` counts); `format_run(run, zone) -> str` (Markdown, numbers only); `pct(value) -> str`; `rule_sets(live) -> dict`; `hypothesis(regions, rules) -> str`; `asr_numbers(clips, rules)`, `caption_numbers(pool)`, `recall_numbers(pool, router, config, zone)`.
+  - `EVAL_PRIORITY = -20`, `FINAL_LOCK = "eval"`, `WER_LIMIT = 0.30`, `HIT_TARGET = 0.70`, `MAX_GAIN_DB = 30.0`, `PRIMARY = {"vi": "wer", "en": "wer", "ko": "cer"}`, `DISTANCES = (0.5, 0.6, 0.7, 0.8)`, `SIMILARITIES = (0.2, 0.3, 0.4)`, `VARIANTS = ("live", "none", "outro", "lone_phrase", "short_foreign", "all")`; `jobs.RUN_EVAL = "run_eval"` with kwargs `run_id`, `final` (queue `light`, priority −20, queueing lock `eval:<run id>`; a clip job takes lock `asr`, the final job lock `eval`).
+  - `start_run(pool, settings, *, max_gain_db=None, vad_threshold=None) -> (run_id, created)` (ValueError outside 0–30 dB / 0–1; one run at a time; a run without a live job is marked failed first); `run_step(ctx, run_id, final=False) -> "clip" | "done" | "failed" | "nothing"`; `latest_run(pool, run_id=None, finished=False) -> dict | None` and `list_runs(pool, limit=20)` (rows with `heard` and `clips` counts); `format_run(run, zone) -> str` (Markdown, numbers only); `format_compare(first, second) -> str`; `rules_impact(pool, since) -> dict` and `format_rules_impact(found) -> str`; `pct(value) -> str`; `span(interval) -> str`; `rule_sets(live) -> dict`; `asr_numbers(clips, rules)`, `caption_numbers(pool)`, `recall_numbers(pool, router, config, zone)`.
   - `eval_run.config`: `max_distance`, `min_similarity`, `overrides` (from the requester), then — when the worker starts the run — `max_gain_db`, `vad_threshold`, `rules`, `models` (`asr`, `caption`, `embed`).
-  - `eval_run.results`: `{"asr": {"clips", "failed", "variants": {name: {"rules", "languages": {lang: {"clips", "words", "chars", "wer", "cer", "metric", "score", "over_limit"}}, "no_speech": {"clips", "invented", "words", "rate"}}}}, "captions": {model: {"scored", "mean", "good", "wrong_people", "invented_objects", "wrong_activity"}}, "recall": {"questions", "at5", "at10", "hit5", "mrr", "semantic", "meets_target", "per_question": [{"id", "relevant", "ranks"}], "grid": [{"max_distance", "min_similarity", "at5"}]} | {"questions", "error"} | {"questions": 0}}`.
-  - CLI: `loopi-brain eval run [--max-gain-db X] [--vad-threshold Y] [--no-wait] [--timeout S]` (prints the run id, waits, prints `format_run`; exit 0 when done, 1 failed or timed out, 2 bad value), `loopi-brain eval show [RUN_ID]`; `cli.EVAL_POLL_S = 10.0`.
+  - `eval_run.results`: `{"asr": {"clips", "failed", "recorded": {"first", "last"} | None, "prefilled", "blind", "variants": {name: {"rules", "languages": {lang: {"clips", "words", "chars", "wer", "cer", "wer_ci", "cer_ci", "metric", "score", "score_ci", "over_limit"}}, "no_speech": {"clips", "with_text", "invented", "words", "rate", "rate_ci"}, "dropped": {"segments", "words"}}}}, "captions": {model: {"scored", "mean", "good", "wrong_people", "invented_objects", "wrong_activity"}}, "recall": {"questions", "found5", "hit5", "hit5_ci", "recall5", "hit10", "mrr", "semantic", "meets_target", "per_question": [{"id", "relevant", "ranks"}], "grid": [{"max_distance", "min_similarity", "found5", "hit5"}]} | {"questions", "error"} | {"questions": 0}}` (intervals are `[low, high]` or None).
+  - CLI: `loopi-brain eval run [--max-gain-db X] [--vad-threshold Y] [--no-wait] [--timeout S]` (prints the run id, waits, prints `format_run`; exit 0 when done, 1 failed or timed out, 2 bad value), `loopi-brain eval show [RUN_ID]`, `loopi-brain eval compare FIRST SECOND`, `loopi-brain eval rules-impact [--days 7]`; `cli.EVAL_POLL_S = 10.0`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2681,25 +2892,37 @@ async def test_one_transcription_scores_every_rule_set(pool, pki_settings, dev, 
     assert live["languages"]["vi"]["metric"] == "wer" and live["languages"]["vi"]["words"] == 5
     assert live["languages"]["ko"]["metric"] == "cer" and live["languages"]["ko"]["score"] == 0.0
     assert live["languages"]["vi"]["over_limit"] is False
-    assert live["no_speech"] == {"clips": 1, "invented": 1, "words": 2, "rate": 1.0}
+    assert live["languages"]["vi"]["score_ci"] is None  # one clip: no interval
+    assert live["no_speech"] == {"clips": 1, "with_text": 0, "invented": 1, "words": 2, "rate": 1.0,
+                                 "rate_ci": [pytest.approx(0.2065, abs=1e-4), 1.0]}
     for name in ("lone_phrase", "short_foreign", "all"):
         assert audio["variants"][name]["no_speech"]["invented"] == 0, name
         assert audio["variants"][name]["languages"]["vi"]["score"] == pytest.approx(0.2), name  # real speech kept
+        # Nothing was dropped from the clips with speech: these rules were not tested on real speech here.
+        assert audio["variants"][name]["dropped"] == {"segments": 0, "words": 0}, name
     assert audio["variants"]["outro"]["no_speech"]["invented"] == 1
+    assert audio["recorded"] == {"first": "2026-10-14", "last": "2026-10-14"}
+    assert (audio["prefilled"], audio["blind"]) == (2, 0)
     assert run["config"]["models"] == {"asr": "local:faster-whisper/large-v3-turbo-int8",
                                        "caption": "ollama:minicpm-v4.6:1b", "embed": "ollama:qwen3-embedding:0.6b"}
-    jobs = await fetch_all(pool, "SELECT task_name, status, lock, priority, queue_name FROM procrastinate_jobs")
-    assert len(jobs) == 4  # one job per clip, then the numbers
-    assert {(j["task_name"], j["status"], j["lock"], j["priority"], j["queue_name"]) for j in jobs} == {
-        ("run_eval", "succeeded", "asr", runner.EVAL_PRIORITY, "light")}
+    jobs = await fetch_all(pool, "SELECT task_name, status, lock, priority, queue_name, args FROM procrastinate_jobs"
+                                 " ORDER BY id")
+    # One job per clip under Whisper's lock, then the numbers under their own: live ASR never waits for the numbers.
+    assert [(j["lock"], j["args"]["final"]) for j in jobs] == [("asr", False)] * 3 + [("eval", True)]
+    assert {(j["task_name"], j["status"], j["priority"], j["queue_name"]) for j in jobs} == {
+        ("run_eval", "succeeded", runner.EVAL_PRIORITY, "light")}
     heard = await fetch_all(pool, "SELECT segments FROM eval_run_audio ORDER BY sample_id")
     assert heard[2]["segments"][0]["lang"] == "en" and heard[2]["segments"][0]["lang_prob"] == pytest.approx(0.3)
     assert SECRET not in caplog.text and "Thank you" not in caplog.text
     report = runner.format_run(run, pki_settings.zone)
-    assert "| live (none) | 20.0 % (1 clips) | 0.0 % (1 clips) | — | 1/1 (2 words) |" in report
-    rows = [line.split(" |")[0] for line in report.splitlines() if line.startswith("| ") and "WER" not in line]
+    assert ("| live (none) | 20.0 % (1 clips) | 0.0 % (1 clips) | — | 1/1 (2 words) | 0 segments (0 words) |"
+            in report)
+    table = report.split("| Rules |")[1].split("\n\n")[0]
+    rows = [line.split(" |")[0] for line in table.splitlines()[2:]]
     assert rows == ["| live (none)", "| none", "| outro", "| lone_phrase", "| short_foreign", "| all"]
-    assert "| all | 20.0 % (1 clips) | 0.0 % (1 clips) | — | 0/1 (0 words) |" in report
+    assert "| all | 20.0 % (1 clips) | 0.0 % (1 clips) | — | 0/1 (0 words) | 0 segments (0 words) |" in report
+    assert "| vi | 1 | 5 | 20.0 % (—) | 15 | " in report and "| en | 0 | — | — | — | — | not measurable (no clip) |" in report
+    assert "recorded 2026-10-14 … 2026-10-14; references edited from Whisper's text: 2, typed blind: 0" in report
     assert SECRET not in report and "Thank you" not in report  # numbers only
 
 
@@ -2719,6 +2942,18 @@ async def test_a_waiting_evaluation_never_goes_ahead_of_a_live_transcription(poo
                                   " ON j.id = e.job_id WHERE e.type = 'started' ORDER BY e.id")
     # The live transcription and the embedding of its moment run first, then the four evaluation jobs.
     assert [r["task_name"] for r in order] == ["transcribe_audio", "embed_moments"] + ["run_eval"] * 4
+
+
+async def test_what_a_rule_drops_from_real_speech_is_counted(pool, pki_settings, dev, jobs_open, monkeypatch):
+    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _threshold: [Region(0.0, 2.0), Region(3.0, 5.0)])
+    await _clip(pool, pki_settings, dev["device_id"], 0, golden.AudioLabel("en", False, "Yeah. Can you call me back"))
+    run = await _run(pool, pki_settings, FakeTranscriber(RegionResult("en", 0.9, [seg("Yeah.")]),
+                                                         RegionResult("en", 0.9, [seg("Can you call me back")])))
+    variants = run["results"]["asr"]["variants"]
+    assert variants["none"]["dropped"] == {"segments": 0, "words": 0}
+    assert variants["lone_phrase"]["dropped"] == {"segments": 1, "words": 1}  # a real "Yeah." is lost
+    assert variants["lone_phrase"]["languages"]["en"]["score"] == pytest.approx(1 / 6)
+    assert variants["none"]["languages"]["en"]["score"] == 0.0
 
 
 async def test_a_language_above_30_percent_is_flagged(pool, pki_settings, dev, jobs_open, one_region):
@@ -2748,7 +2983,7 @@ async def test_the_live_rules_and_the_overrides_are_what_the_run_hears_with(pool
     plain = await runner.latest_run(pool, run_id)
     assert (plain["config"]["max_gain_db"], plain["config"]["vad_threshold"]) == (30.0, 0.45)
     assert one_region[3:] == [0.45, 0.45, 0.45]
-    for bad in ({"max_gain_db": 61.0}, {"vad_threshold": 1.0}):
+    for bad in ({"max_gain_db": 31.0}, {"vad_threshold": 1.0}):  # D19: never more than 30 dB
         with pytest.raises(ValueError):
             await runner.start_run(pool, pki_settings, **bad)
 
@@ -2792,14 +3027,35 @@ async def test_recall_is_measured_through_the_hybrid_search(pool, pki_settings, 
     await questions.create_question(pool, "Chưa có câu trả lời", None, None)  # not scored
     run = await _run(pool, pki_settings, FakeTranscriber())
     recall = run["results"]["recall"]
-    assert recall["questions"] == 3 and recall["semantic"] is True
-    assert (recall["at5"], recall["at10"], recall["hit5"], recall["mrr"]) == pytest.approx((1 / 3, 1 / 3, 1 / 3, 1 / 3))
+    assert recall["questions"] == 3 and recall["semantic"] is True and recall["found5"] == 1
+    assert (recall["hit5"], recall["recall5"], recall["hit10"], recall["mrr"]) == pytest.approx((1 / 3,) * 4)
+    assert recall["hit5_ci"] == pytest.approx([0.0615, 0.7923], abs=1e-4)  # 1 of 3: a wide interval
     assert recall["meets_target"] is False
     assert [q["ranks"] for q in recall["per_question"]] == [[1], [], []]
     assert len(recall["grid"]) == len(runner.DISTANCES) * len(runner.SIMILARITIES)
+    assert {g["found5"] for g in recall["grid"]} == {1}
     report = runner.format_run(run, pki_settings.zone)
-    assert "Recall (3 questions, max distance 0.6, min similarity 0.3): @5 33.3 % (target 70 %: not met)" in report
+    assert ("hit@5 33.3 % = 1/3 (95 % 6.1–79.2 %; target 70 %, D22: not met), capped recall@5 33.3 %, hit@10 33.3 %,"
+            " MRR 0.33") in report
+    assert "each searched with the owner's days for it, not the chat's time filter" in report
+    assert "Grid: best 1/3 found in the first 5 at max distance 0.6, min similarity 0.2" in report
     assert "đi chợ" not in report.lower()
+
+
+async def test_each_question_is_embedded_once_and_a_failing_embedding_ends_recall(pool, pki_settings, dev, jobs_open):
+    market = await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, axis=0, text="Mai mình đi chợ")
+    for text in ("Khi nào đi chợ?", "Hôm đó đi chợ không?"):
+        await questions.add_answer(pool, await questions.create_question(pool, text, None, None), market)
+    ollama = FakeOllama()
+    run = await _run(pool, pki_settings, FakeTranscriber(), ollama=ollama)
+    assert run["results"]["recall"]["found5"] == 2
+    assert ollama.paths().count("/api/embed") == 2  # once per question, for the live thresholds and all 12 cells
+    ollama.error = 500  # the model fails on the first question: no recall, and no second wait
+    before = len(ollama.requests)
+    run = await _run(pool, pki_settings, FakeTranscriber(), ollama=ollama)
+    assert run["results"]["recall"] == {"questions": 2,
+                                        "error": "a question could not be embedded (the embedding model failed)"}
+    assert [p for p, _ in ollama.requests[before:]].count("/api/embed") == 1
 
 
 async def test_recall_waits_for_the_embedding_model(pool, pki_settings, dev, jobs_open):
@@ -2824,6 +3080,74 @@ async def test_one_run_at_a_time_and_a_run_whose_job_is_gone_does_not_block_the_
     assert stopped["status"] == "failed" and "start a new one" in stopped["error"]
     assert "Progress: 0/0 clips; error: the run stopped" in runner.format_run(stopped, pki_settings.zone)
     assert [r["id"] for r in await runner.list_runs(pool)] == [second, first]
+    [job] = await fetch_all(pool, "SELECT lock, args FROM procrastinate_jobs")
+    assert (job["lock"], job["args"]["final"]) == ("eval", True)  # no golden clip: straight to the numbers
+
+
+async def test_two_runs_side_by_side_give_the_noise_floor(pool, pki_settings, dev, jobs_open, one_region):
+    await _golden_clips(pool, pki_settings, dev["device_id"])
+    market = await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, axis=0, text="Mai mình đi chợ")
+    await questions.add_answer(pool, await questions.create_question(pool, "Khi nào đi chợ?", None, None), market)
+    first = await _run(pool, pki_settings, FakeTranscriber(*HEARD))
+    second = await _run(pool, pki_settings, FakeTranscriber(RegionResult("vi", 0.9, [seg("Mai mình đi chợ nhé")]),
+                                                            *HEARD[1:]))
+    text = runner.format_compare(first, second)
+    assert "| vi WER | 20.0 % | 0.0 % | -20.0 points |" in text and "| ko CER | 0.0 % | 0.0 % | +0.0 points |" in text
+    assert "| no speech: clips with invented text | 1/1 | 1/1 | +0 |" in text and SECRET not in text
+    assert "| hit@5: questions found | 1/1 | 1/1 | +0 |" in text
+    assert runner.format_compare(first, {**second, "status": "running"}) == "Both runs must be finished."
+
+
+async def test_what_the_rules_would_drop_from_the_live_transcripts_is_counted(pool, pki_settings, dev):
+    from helpers import insert_segment
+
+    d = dev["device_id"]
+    noise = await insert_item(pool, d, kind="audio", started_at=NINE)
+    await insert_segment(pool, noise, d, NINE, "Thank you.", lang="en", lang_prob=0.3)
+    await insert_segment(pool, noise, d, NINE + dt.timedelta(seconds=3), "Yeah.", lang="en", lang_prob=0.3)  # same region
+    outro = await insert_item(pool, d, kind="audio", started_at=NINE + dt.timedelta(minutes=1))
+    await insert_segment(pool, outro, d, NINE + dt.timedelta(minutes=1), "Hãy đăng ký kênh để ủng hộ mình nhé")
+    speech = await insert_item(pool, d, kind="audio", started_at=NINE + dt.timedelta(minutes=2))
+    await insert_segment(pool, speech, d, NINE + dt.timedelta(minutes=2), SECRET)
+    old = await insert_item(pool, d, kind="audio", started_at=NINE + dt.timedelta(minutes=3))
+    await insert_segment(pool, old, d, NINE + dt.timedelta(minutes=3), "Okay go", lang="en", lang_prob=None)
+    found = await runner.rules_impact(pool, dt.datetime.now(dt.UTC) - dt.timedelta(days=1))
+    assert (found["segments"], found["recordings"], found["no_probability"]) == (5, 4, 1)
+    assert found["rules"]["lone_phrase"] == {"segments": 2, "words": 3, "recordings": 1, "by_lang": {"en": 2}}
+    assert found["rules"]["short_foreign"] == {"segments": 2, "words": 3, "recordings": 1, "by_lang": {"en": 2}}
+    assert found["rules"]["outro"] == {"segments": 1, "words": 9, "recordings": 1, "by_lang": {"vi": 1}}
+    assert found["rules"]["all"]["segments"] == 3
+    text = runner.format_rules_impact(found)
+    assert "| outro | 1 | 9 | 1 | vi 1 |" in text and SECRET not in text and "Thank you" not in text
+    assert (await runner.rules_impact(pool, dt.datetime.now(dt.UTC)))["segments"] == 0
+
+
+async def test_a_clip_deleted_before_its_job_leads_straight_to_the_numbers(pool, pki_settings, dev, jobs_open):
+    await _clip(pool, pki_settings, dev["device_id"], 0, golden.AudioLabel("vi", False, SECRET))
+    run_id, _ = await runner.start_run(pool, pki_settings)
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM eval_audio")  # the owner deleted it while the job waited
+    await run_jobs(make_ctx(pool, pki_settings, transcriber=FakeTranscriber()))
+    run = await runner.latest_run(pool, run_id)
+    assert run["status"] == "done" and run["results"]["asr"]["clips"] == 0
+    jobs = await fetch_all(pool, "SELECT lock FROM procrastinate_jobs ORDER BY id")
+    assert [j["lock"] for j in jobs] == ["asr", "eval"]
+
+
+async def test_a_question_not_embedded_beforehand_is_never_waited_for():
+    class Router:
+        calls = 0
+
+        async def embed(self, task, texts):
+            Router.calls += 1
+            return texts
+
+    cached = runner._CachedEmbeddings(Router())
+    await cached.prefetch("embed", ["Khi nào đi chợ?", "Khi nào đi chợ?", " "])
+    assert Router.calls == 1  # each question once; an empty one is never asked
+    with pytest.raises(runner.ProviderUnavailable):
+        await cached.embed("embed", ["another question"])
+    assert Router.calls == 1
 
 
 async def test_an_unexpected_error_fails_the_run_without_a_retry(pool, pki_settings, jobs_open, monkeypatch):
@@ -2867,6 +3191,10 @@ def test_the_cli_starts_a_run_waits_and_shows_it(database_url, monkeypatch, caps
     assert cli.main(["eval", "show", run_id]) == 0 and "error: RuntimeError: x" in capsys.readouterr().out
     assert cli.main(["eval", "show", "01NOSUCHRUN000000000000000"]) == 1
     assert cli.main(["eval", "run", "--vad-threshold", "2"]) == 2
+    assert cli.main(["eval", "compare", run_id, "01NOSUCHRUN000000000000000"]) == 1
+    assert cli.main(["eval", "compare", run_id, run_id]) == 0 and "Both runs must be finished." in capsys.readouterr().out
+    assert cli.main(["eval", "rules-impact", "--days", "1"]) == 0
+    assert "| lone_phrase |" in capsys.readouterr().out
     with psycopg.connect(database_url, autocommit=True) as conn:
         conn.execute("TRUNCATE eval_run CASCADE")
         conn.execute("DELETE FROM procrastinate_jobs")
@@ -2882,19 +3210,22 @@ Expected: FAIL — `1 error` during collection: `ImportError: cannot import name
 Create `brain/src/loopi_brain/evaluation/runner.py`:
 
 ```python
-"""Evaluation runs (spec §13): the owner's golden set against the pipeline as it is configured now.
+"""Evaluation runs (spec §13, D22): the owner's golden set against the pipeline as it is configured now.
 
 A run transcribes every golden clip again through the live ASR path — level normalisation (D19), Silero VAD, Whisper
 and the P2a filters, with the run's gain ceiling and VAD threshold — and keeps every Whisper segment before the
 switchable rules, so that one transcription scores every rule set: the live one (LOOPI_ASR_RULES), none, each rule
-alone and all of them (``RULE_SETS``). Then it sums the owner's caption scores per caption model and asks the
-hybrid search every question that has a correct moment: recall@5, recall@10, hit@5 and MRR with the live
-thresholds, and recall@5 over a small grid of thresholds around them.
+alone and all of them (``VARIANTS``), with the segments each one would drop from real speech. Then it sums the
+owner's caption scores per caption model and asks the hybrid search every question that has a correct moment:
+hit@5 (the §14 number, D22), capped recall@5, hit@10 and MRR with the live thresholds, and hit@5 over a small grid
+of thresholds around them. Every rate comes with its sample size and a 95 % interval.
 
-One clip per job: each job holds Whisper (job lock "asr") for one clip and waits behind every live transcription
-(lowest priority, ``EVAL_PRIORITY``), so recordings keep their latency target while a run goes on (spec §14 P2);
-the last job computes the numbers. A run's results are numbers only; the segments it heard stay in the database
-next to the golden clips (deleted with them). Logs carry ids and counts, never text.
+One clip per job: each clip job holds Whisper (job lock "asr") for one clip and waits behind every live
+transcription (lowest priority, ``EVAL_PRIORITY``), so recordings keep their latency target while a run goes on
+(spec §14 P2); the last job computes the numbers under its own lock ("eval"), never holding Whisper's, and embeds
+each question once (a failing embedding ends the recall section at once instead of waiting per search). A run's
+results are numbers only; the segments it heard stay in the database next to the golden clips (deleted with them).
+Logs carry ids and counts, never text.
 """
 from __future__ import annotations
 
@@ -2912,18 +3243,21 @@ from ..pipeline import asr, jobs
 from ..pipeline.context import PipelineContext, get_context
 from ..pipeline.jobs import job_app
 from ..pipeline.state import error_text
+from ..providers.base import ProviderError, ProviderUnavailable
 from ..providers.router import Router
-from ..search import search_moments
+from ..search import QUERY_INSTRUCTION, clean_query, search_moments
 from . import metrics, questions
 
 log = logging.getLogger(__name__)
 EVAL_PRIORITY = -20  # below the chapter and recap jobs (-10): an evaluation never runs ahead of live work
-WER_LIMIT = 0.30  # spec §14 P2: above 30 %, change the model or the configuration
-RECALL_TARGET = 0.70  # spec §14 P2: recall@5 ≥ 70 %
-PRIMARY = {"vi": "wer", "en": "wer", "ko": "cer"}  # the rate the 30 % rule reads, per language
+FINAL_LOCK = "eval"  # the numbers job: not Whisper's lock ("asr"), so live transcription never waits for it
+WER_LIMIT = 0.30  # spec §14 P2 (D22): above 30 % (WER for vi and en, CER for ko), change the model or configuration
+HIT_TARGET = 0.70  # spec §14 P2 (D22): hit@5 ≥ 70 %
+MAX_GAIN_DB = 30.0  # D19: the brain never raises a recording by more than 30 dB, in a run either
+PRIMARY = {"vi": "wer", "en": "wer", "ko": "cer"}  # the rate the 30 % rule reads, per language (D22)
 DISTANCES = (0.5, 0.6, 0.7, 0.8)  # the threshold grid of the recall section
 SIMILARITIES = (0.2, 0.3, 0.4)
-RESULTS_SHOWN = 10  # recall@10 needs the first 10 results
+RESULTS_SHOWN = 10  # hit@10 needs the first 10 results
 VARIANTS = ("live", "none", *ASR_RULES, "all")  # the rule sets in the order they are shown (JSONB keeps no order)
 
 
@@ -2936,9 +3270,10 @@ def run_lock(run_id: str) -> str:
     return f"eval:{run_id}"
 
 
-async def _defer_step(conn, run_id: str) -> int:
-    return await jobs.enqueue(conn, jobs.RUN_EVAL, queue="light", lock="asr", priority=EVAL_PRIORITY,
-                              queueing_lock=run_lock(run_id), run_id=run_id)
+async def _defer_step(conn, run_id: str, final: bool) -> int:
+    """The next job of a run: a clip job (Whisper's lock) or, once no clip is left, the numbers job (its own)."""
+    return await jobs.enqueue(conn, jobs.RUN_EVAL, queue="light", lock=FINAL_LOCK if final else "asr",
+                              priority=EVAL_PRIORITY, queueing_lock=run_lock(run_id), run_id=run_id, final=final)
 
 
 async def start_run(
@@ -2950,8 +3285,8 @@ async def start_run(
     model versions are the worker's, recorded when it starts the run. One run at a time: while one waits or runs,
     its id is returned. A run whose job is gone (the worker died and the job was dead-lettered, say) is marked
     failed first."""
-    if max_gain_db is not None and not 0.0 <= max_gain_db <= 60.0:
-        raise ValueError("the gain ceiling is 0 to 60 dB")
+    if max_gain_db is not None and not 0.0 <= max_gain_db <= MAX_GAIN_DB:
+        raise ValueError("the gain ceiling is 0 to 30 dB (D19)")
     if vad_threshold is not None and not 0.0 < vad_threshold < 1.0:
         raise ValueError("the VAD threshold lies between 0 and 1")
     config = {
@@ -2975,7 +3310,8 @@ async def start_run(
             )
         run_id = devices.new_id()
         await conn.execute("INSERT INTO eval_run (id, config) VALUES (%s, %s)", (run_id, Jsonb(config)))
-        await _defer_step(conn, run_id)
+        cur = await conn.execute("SELECT EXISTS (SELECT 1 FROM eval_audio) AS clips")
+        await _defer_step(conn, run_id, final=not (await cur.fetchone())["clips"])
     log.info("evaluation run %s requested", run_id)
     return run_id, True
 
@@ -2990,43 +3326,56 @@ def _regions(results: list[tuple[asr.Region, asr.RegionResult]]) -> list[dict]:
     ]
 
 
-def hypothesis(regions: list[dict], rules: list[str]) -> str:
+def _kept(regions: list[dict], rules: list[str]) -> list[str]:
     """What the live stage would store for a clip under ``rules``: the kept segments' text, in order."""
     kept = []
     for region in regions:
         result = asr.RegionResult(region["lang"], region["lang_prob"],
                                   [asr.SegmentResult(**s) for s in region["segments"]])
         kept.extend(s.text.strip() for s in asr.kept_segments(result, frozenset(rules)))
-    return " ".join(kept)
+    return kept
+
+
+def _interval(value: tuple[float, float] | None) -> list[float] | None:
+    return list(value) if value else None
 
 
 def asr_numbers(clips: list[dict], rules: list[str]) -> dict:
-    """WER and CER per language and the no-speech check for one rule set, over the clips of a run."""
-    word: dict[str, metrics.Errors] = {}
-    char: dict[str, metrics.Errors] = {}
-    count: dict[str, int] = {}
-    silent = invented = invented_words = 0
+    """For one rule set, over the clips of a run: WER and CER per language with their clip counts and 95 % intervals
+    (resampling clips), the no-speech check (clips with invented text, Wilson interval), and what the rules drop from
+    the clips with speech beyond the P2a filters (0 segments there means the rules were not tested on real speech)."""
+    word: dict[str, list[metrics.Errors]] = {}
+    char: dict[str, list[metrics.Errors]] = {}
+    silent = with_text = invented = invented_words = dropped_segments = dropped_words = 0
     for clip in clips:
-        heard = hypothesis(clip["segments"], rules)
+        kept = _kept(clip["segments"], rules)
+        heard = " ".join(kept)
         if clip["no_speech"]:
             silent += 1
+            with_text += bool(clip.get("had_text"))
             invented += bool(metrics.words(heard))
             invented_words += len(metrics.words(heard))
             continue
-        lang = clip["lang"]
-        word[lang] = word.get(lang, metrics.Errors()) + metrics.wer(clip["reference"], heard)
-        char[lang] = char.get(lang, metrics.Errors()) + metrics.cer(clip["reference"], heard)
-        count[lang] = count.get(lang, 0) + 1
+        before = _kept(clip["segments"], [])
+        dropped_segments += len(before) - len(kept)
+        dropped_words += len(metrics.words(" ".join(before))) - len(metrics.words(heard))
+        word.setdefault(clip["lang"], []).append(metrics.wer(clip["reference"], heard))
+        char.setdefault(clip["lang"], []).append(metrics.cer(clip["reference"], heard))
     languages = {}
-    for lang in sorted(count):
-        rates = {"wer": word[lang].rate, "cer": char[lang].rate}
-        score = rates[PRIMARY.get(lang, "wer")]
-        languages[lang] = {"clips": count[lang], "words": word[lang].reference, "chars": char[lang].reference,
-                           **rates, "metric": PRIMARY.get(lang, "wer"), "score": score,
+    for lang in sorted(word):
+        words_total, chars_total = sum(word[lang], metrics.Errors()), sum(char[lang], metrics.Errors())
+        rates = {"wer": words_total.rate, "cer": chars_total.rate}
+        cis = {"wer_ci": _interval(metrics.bootstrap(word[lang])), "cer_ci": _interval(metrics.bootstrap(char[lang]))}
+        metric = PRIMARY.get(lang, "wer")
+        score = rates[metric]
+        languages[lang] = {"clips": len(word[lang]), "words": words_total.reference, "chars": chars_total.reference,
+                           **rates, **cis, "metric": metric, "score": score, "score_ci": cis[f"{metric}_ci"],
                            "over_limit": score is not None and score > WER_LIMIT}
     return {"languages": languages,
-            "no_speech": {"clips": silent, "invented": invented, "words": invented_words,
-                          "rate": invented / silent if silent else None}}
+            "no_speech": {"clips": silent, "with_text": with_text, "invented": invented, "words": invented_words,
+                          "rate": invented / silent if silent else None,
+                          "rate_ci": _interval(metrics.wilson(invented, silent))},
+            "dropped": {"segments": dropped_segments, "words": dropped_words}}
 
 
 async def caption_numbers(pool: AsyncConnectionPool) -> dict:
@@ -3043,22 +3392,31 @@ async def caption_numbers(pool: AsyncConnectionPool) -> dict:
 
 
 class _CachedEmbeddings:
-    """The router as the search sees it, with the question embeddings computed once per run (the grid asks each
-    question twelve times)."""
+    """The router as the search sees it: each question is embedded once, before any search (``prefetch``); after that
+    a question that is not in the cache fails at once (the search then reads words only), never a second wait."""
 
     def __init__(self, router: Router):
         self._router = router
         self._cache: dict[tuple[str, ...], object] = {}
+        self._frozen = False
+
+    async def prefetch(self, task: str, queries: list[str]) -> None:
+        for query in dict.fromkeys(q for q in (clean_query(q) for q in queries) if q):
+            await self.embed(task, [QUERY_INSTRUCTION + query])
+        self._frozen = True
 
     async def embed(self, task: str, texts: list[str]):
         key = (task, *texts)
         if key not in self._cache:
+            if self._frozen:
+                raise ProviderUnavailable("question not embedded before the searches")
             self._cache[key] = await self._router.embed(task, texts)
         return self._cache[key]
 
 
 async def _recall(pool, router, asked: list[dict], zone, max_distance: float, min_similarity: float) -> dict:
-    at5 = at10 = hit5 = mrr = 0.0
+    found5 = found10 = 0
+    recall5 = mrr = 0.0
     semantic = True
     per_question = []
     for question in asked:
@@ -3068,53 +3426,68 @@ async def _recall(pool, router, asked: list[dict], zone, max_distance: float, mi
         semantic = semantic and result.semantic
         ranks = questions.ranks(question["answers"], result.hits)
         relevant = len(question["answers"])
-        at5 += metrics.recall_at(ranks, relevant, 5)
-        at10 += metrics.recall_at(ranks, relevant, 10)
-        hit5 += metrics.hit_at(ranks, 5)
+        found5 += int(metrics.hit_at(ranks, 5))
+        found10 += int(metrics.hit_at(ranks, 10))
+        recall5 += metrics.recall_at(ranks, relevant, 5)
         mrr += metrics.reciprocal_rank(ranks)
         per_question.append({"id": question["id"], "relevant": relevant, "ranks": ranks})
     n = len(asked)
-    return {"at5": at5 / n, "at10": at10 / n, "hit5": hit5 / n, "mrr": mrr / n, "semantic": semantic,
+    return {"found5": found5, "hit5": found5 / n, "hit5_ci": _interval(metrics.wilson(found5, n)),
+            "recall5": recall5 / n, "hit10": found10 / n, "mrr": mrr / n, "semantic": semantic,
             "per_question": per_question}
 
 
 async def recall_numbers(pool: AsyncConnectionPool, router: Router, config: dict, zone) -> dict:
-    """Recall of the hybrid search over the answered questions, with the live thresholds and over the grid. Not
-    measured while the embedding model cannot run (words alone would understate it)."""
+    """Retrieval over the answered questions, each searched with the owner's days for it (not the chat's time
+    filter): hit@5 (D22) with its interval, capped recall@5, hit@10 and MRR with the live thresholds, and hit@5 over
+    the grid. Not measured while the embedding model cannot run or fails on a question (words alone would understate
+    it): each question is embedded once, before any search."""
     asked = await questions.answered(pool)
     if not asked:
         return {"questions": 0}
     if not router.task_ready("embed", await router.health()):
         return {"questions": len(asked), "error": "the embedding model is not available"}
     cached = _CachedEmbeddings(router)
+    try:
+        await cached.prefetch("embed", [q["text"] for q in asked])
+    except ProviderError as exc:
+        log.warning("evaluation: recall not measured, a question could not be embedded: %s", error_text(exc))
+        return {"questions": len(asked), "error": "a question could not be embedded (the embedding model failed)"}
     live = await _recall(pool, cached, asked, zone, config["max_distance"], config["min_similarity"])
     grid = []
     for distance in DISTANCES:
         for similarity in SIMILARITIES:
             found = await _recall(pool, cached, asked, zone, distance, similarity)
-            grid.append({"max_distance": distance, "min_similarity": similarity, "at5": found["at5"]})
-    return {"questions": len(asked), **live, "meets_target": live["at5"] >= RECALL_TARGET, "grid": grid}
+            grid.append({"max_distance": distance, "min_similarity": similarity, "found5": found["found5"],
+                         "hit5": found["hit5"]})
+    return {"questions": len(asked), **live, "meets_target": live["hit5"] >= HIT_TARGET, "grid": grid}
 
 
 async def _clips(pool: AsyncConnectionPool, run_id: str) -> list[dict]:
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT e.id, e.lang, e.no_speech, e.reference, r.segments, r.error FROM eval_run_audio r"
-            " JOIN eval_audio e ON e.id = r.sample_id WHERE r.run_id = %s ORDER BY e.id",
+            "SELECT e.id, e.lang, e.no_speech, e.reference, e.had_text, e.prefilled, i.started_at, r.segments, r.error"
+            " FROM eval_run_audio r JOIN eval_audio e ON e.id = r.sample_id JOIN item i ON i.id = e.item_id"
+            " WHERE r.run_id = %s ORDER BY e.id",
             (run_id,),
         )
         return await cur.fetchall()
 
 
 async def _finish(ctx: PipelineContext, run_id: str, config: dict) -> None:
+    zone = ctx.settings.zone
     clips = await _clips(ctx.pool, run_id)
     heard = [c for c in clips if c["segments"] is not None]
+    days = sorted(c["started_at"].astimezone(zone).date() for c in clips)
     results = {
         "asr": {"clips": len(clips), "failed": len(clips) - len(heard),
+                "recorded": {"first": days[0].isoformat(), "last": days[-1].isoformat()} if days else None,
+                "prefilled": sum(1 for c in clips if c["prefilled"] and not c["no_speech"]),
+                "blind": sum(1 for c in clips if not c["prefilled"] and not c["no_speech"]),
                 "variants": {name: {"rules": rules, **asr_numbers(heard, rules)}
                              for name, rules in rule_sets(config["rules"]).items()}},
         "captions": await caption_numbers(ctx.pool),
-        "recall": await recall_numbers(ctx.pool, ctx.router, config, ctx.settings.zone),
+        "recall": await recall_numbers(ctx.pool, ctx.router, config, zone),
     }
     async with ctx.pool.connection() as conn:
         await conn.execute(
@@ -3125,7 +3498,7 @@ async def _finish(ctx: PipelineContext, run_id: str, config: dict) -> None:
              len(clips) - len(heard), results["recall"]["questions"])
 
 
-async def _step(ctx: PipelineContext, run_id: str) -> str:
+async def _step(ctx: PipelineContext, run_id: str, final: bool) -> str:
     pool = ctx.pool
     async with pool.connection() as conn, conn.transaction():
         cur = await conn.execute("SELECT status, config FROM eval_run WHERE id = %s FOR UPDATE", (run_id,))
@@ -3144,13 +3517,19 @@ async def _step(ctx: PipelineContext, run_id: str) -> str:
             }
             await conn.execute("UPDATE eval_run SET status = 'running', started_at = now(), config = %s WHERE id = %s",
                                (Jsonb(config), run_id))
-        cur = await conn.execute(
-            "SELECT e.id, e.path FROM eval_audio e WHERE NOT EXISTS (SELECT 1 FROM eval_run_audio r"
-            " WHERE r.run_id = %s AND r.sample_id = e.id) ORDER BY e.id LIMIT 1",
-            (run_id,),
-        )
-        clip = await cur.fetchone()
-    if clip is None:
+        if final:
+            clip = None
+        else:
+            cur = await conn.execute(
+                "SELECT e.id, e.path FROM eval_audio e WHERE NOT EXISTS (SELECT 1 FROM eval_run_audio r"
+                " WHERE r.run_id = %s AND r.sample_id = e.id) ORDER BY e.id LIMIT 1",
+                (run_id,),
+            )
+            clip = await cur.fetchone()
+            if clip is None:  # the clip it was meant for is gone: the numbers job comes next
+                await _defer_step(conn, run_id, final=True)
+                return "clip"
+    if final:  # never transcribes: it does not hold Whisper's lock
         await _finish(ctx, run_id, config)
         return "done"
     segments = error = None
@@ -3169,15 +3548,21 @@ async def _step(ctx: PipelineContext, run_id: str) -> str:
             " SELECT %s, id, %s, %s FROM eval_audio WHERE id = %s ON CONFLICT DO NOTHING",
             (run_id, None if segments is None else Jsonb(segments), error, clip["id"]),
         )
-        await _defer_step(conn, run_id)
+        cur = await conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM eval_audio e WHERE NOT EXISTS (SELECT 1 FROM eval_run_audio r"
+            " WHERE r.run_id = %s AND r.sample_id = e.id)) AS more",
+            (run_id,),
+        )
+        await _defer_step(conn, run_id, final=not (await cur.fetchone())["more"])
     return "clip"
 
 
-async def run_step(ctx: PipelineContext, run_id: str) -> str:
-    """One job of a run: the next golden clip ("clip"), or the numbers once every clip is heard ("done"). An
-    unexpected error marks the run failed (with the error's type and message, never text from the golden set)."""
+async def run_step(ctx: PipelineContext, run_id: str, final: bool = False) -> str:
+    """One job of a run: a clip job transcribes the next golden clip ("clip"); the final job computes the numbers
+    ("done"). An unexpected error marks the run failed (with the error's type and message, never text from the golden
+    set)."""
     try:
-        return await _step(ctx, run_id)
+        return await _step(ctx, run_id, final)
     except Exception as exc:
         log.exception("evaluation run %s failed", run_id)
         async with ctx.pool.connection() as conn:
@@ -3189,8 +3574,8 @@ async def run_step(ctx: PipelineContext, run_id: str) -> str:
 
 
 @job_app.task(name=jobs.RUN_EVAL, queue="light", lock="asr", priority=EVAL_PRIORITY)
-async def run_eval_job(run_id: str) -> None:
-    await run_step(get_context(), run_id)
+async def run_eval_job(run_id: str, final: bool = False) -> None:
+    await run_step(get_context(), run_id, final)
 
 
 async def latest_run(pool: AsyncConnectionPool, run_id: str | None = None, finished: bool = False) -> dict | None:
@@ -3222,6 +3607,65 @@ def pct(value: float | None) -> str:
     return "—" if value is None else f"{100 * value:.1f} %"
 
 
+def span(interval: list[float] | None) -> str:
+    """A 95 % interval as "a–b %"; — when there is none (fewer than two clips, no sample)."""
+    return "—" if not interval else f"{100 * interval[0]:.1f}–{100 * interval[1]:.1f} %"
+
+
+def _audio_lines(audio: dict) -> list[str]:
+    recorded = audio.get("recorded")
+    lines = [f"Clips: {audio['clips']} ({audio['failed']} could not be transcribed)"
+             + (f", recorded {recorded['first']} … {recorded['last']}" if recorded else "")
+             + f"; references edited from Whisper's text: {audio['prefilled']}, typed blind: {audio['blind']}", "",
+             "| Rules | vi WER | ko CER | en WER | no speech: invented | dropped from speech |",
+             "|---|---|---|---|---|---|"]
+    for name in (v for v in VARIANTS if v in audio["variants"]):
+        variant = audio["variants"][name]
+        cells = []
+        for lang in ("vi", "ko", "en"):
+            row = variant["languages"].get(lang)
+            cells.append("—" if row is None else
+                         f"{pct(row['score'])} ({row['clips']} clips){' > 30 %' if row['over_limit'] else ''}")
+        silent, dropped = variant["no_speech"], variant["dropped"]
+        label = f"{name} ({', '.join(variant['rules']) or 'none'})" if name == "live" else name
+        lines.append(f"| {label} | {' | '.join(cells)} | {silent['invented']}/{silent['clips']} "
+                     f"({silent['words']} words) | {dropped['segments']} segments ({dropped['words']} words) |")
+    live = audio["variants"]["live"]
+    lines += ["", "Live rules, per language (95 % intervals over clips; the 30 % rule reads WER for vi and en, CER "
+                  "for ko, D22):", "", "| Language | Clips | Words | WER | Characters | CER | ≤ 30 % |",
+              "|---|---|---|---|---|---|---|"]
+    for lang in ("vi", "ko", "en"):
+        row = live["languages"].get(lang)
+        if row is None:
+            lines.append(f"| {lang} | 0 | — | — | — | — | not measurable (no clip) |")
+            continue
+        lines.append(f"| {lang} | {row['clips']} | {row['words']} | {pct(row['wer'])} ({span(row['wer_ci'])}) | "
+                     f"{row['chars']} | {pct(row['cer'])} ({span(row['cer_ci'])}) | "
+                     f"{'no' if row['over_limit'] else 'yes'} ({row['metric'].upper()}) |")
+    silent = live["no_speech"]
+    lines += ["", f"No speech: {silent['clips']} clips ({silent['with_text']} with Whisper's text when labelled), "
+                  f"invented text in {silent['invented']} ({pct(silent['rate'])}, 95 % {span(silent['rate_ci'])})"]
+    return lines
+
+
+def _recall_lines(recall: dict, config: dict) -> list[str]:
+    if "hit5" not in recall:
+        return [f"Recall: not measured ({recall.get('error', 'no question has a correct moment yet')})"]
+    n = recall["questions"]
+    lines = [
+        f"Retrieval ({n} questions, each searched with the owner's days for it, not the chat's time filter; max "
+        f"distance {config['max_distance']:g}, min similarity {config['min_similarity']:g}):",
+        f"hit@5 {pct(recall['hit5'])} = {recall['found5']}/{n} (95 % {span(recall['hit5_ci'])}; target 70 %, D22: "
+        f"{'met' if recall['meets_target'] else 'not met'}), capped recall@5 {pct(recall['recall5'])}, hit@10 "
+        f"{pct(recall['hit10'])}, MRR {recall['mrr']:.2f}"
+        + ("" if recall["semantic"] else " — words only (the embedding model failed)"),
+    ]
+    best = max(recall["grid"], key=lambda g: (g["found5"], -abs(g["max_distance"] - config["max_distance"])))
+    lines.append(f"Grid: best {best['found5']}/{n} found in the first 5 at max distance {best['max_distance']:g}, "
+                 f"min similarity {best['min_similarity']:g} (picked on these same questions)")
+    return lines
+
+
 def format_run(run: dict, zone) -> str:
     """A run's numbers as Markdown (no text from the golden set: the report and the CLI print this)."""
     when = run["requested_at"].astimezone(zone).strftime("%Y-%m-%d %H:%M %Z")
@@ -3238,41 +3682,96 @@ def format_run(run: dict, zone) -> str:
                      + (f"; error: {run['error']}" if run.get("error") else ""))
         return "\n".join(lines)
     results = run["results"]
-    audio = results["asr"]
-    lines += ["", f"Clips: {audio['clips']} ({audio['failed']} could not be transcribed)", "",
-              "| Rules | vi WER | ko CER | en WER | no speech: invented |", "|---|---|---|---|---|"]
-    for name in (v for v in VARIANTS if v in audio["variants"]):
-        variant = audio["variants"][name]
-        cells = []
-        for lang in ("vi", "ko", "en"):
-            row = variant["languages"].get(lang)
-            cells.append("—" if row is None else
-                         f"{pct(row['score'])} ({row['clips']} clips){' > 30 %' if row['over_limit'] else ''}")
-        silent = variant["no_speech"]
-        label = f"{name} ({', '.join(variant['rules']) or 'none'})" if name == "live" else name
-        lines.append(f"| {label} | {' | '.join(cells)} | {silent['invented']}/{silent['clips']} "
-                     f"({silent['words']} words) |")
-    lines += ["", "Captions (owner's scores, 1–5):"]
+    lines += ["", *_audio_lines(results["asr"]), "", "Captions (owner's scores, 1–5):"]
     for model, row in results["captions"].items():
         lines.append(f"- {model}: {row['scored']} scored, mean {row['mean']:.2f}, ≥ 4: {row['good']}; sai số người "
                      f"{row['wrong_people']}, bịa đồ vật {row['invented_objects']}, sai hoạt động "
                      f"{row['wrong_activity']}")
     if not results["captions"]:
         lines.append("- none scored")
-    recall = results["recall"]
-    lines.append("")
-    if "at5" in recall:
-        lines.append(
-            f"Recall ({recall['questions']} questions, max distance {config['max_distance']:g}, min similarity "
-            f"{config['min_similarity']:g}): @5 {pct(recall['at5'])} (target 70 %: "
-            f"{'met' if recall['meets_target'] else 'not met'}), @10 {pct(recall['at10'])}, hit@5 "
-            f"{pct(recall['hit5'])}, MRR {recall['mrr']:.2f}"
-            + ("" if recall["semantic"] else " — words only (the embedding model failed)"))
-        best = max(recall["grid"], key=lambda g: (g["at5"], -abs(g["max_distance"] - config["max_distance"])))
-        lines.append(f"Best of the grid: @5 {pct(best['at5'])} at max distance {best['max_distance']:g}, "
-                     f"min similarity {best['min_similarity']:g}")
-    else:
-        lines.append(f"Recall: not measured ({recall.get('error', 'no question has a correct moment yet')})")
+    lines += ["", *_recall_lines(results["recall"], config)]
+    return "\n".join(lines)
+
+
+def _points(a: float | None, b: float | None) -> str:
+    return "—" if a is None or b is None else f"{100 * (b - a):+.1f} points"
+
+
+def format_compare(first: dict, second: dict) -> str:
+    """Two finished runs side by side (live rules): per language, the no-speech check and hit@5 — the difference
+    between two runs of one configuration is the noise floor a tuning change must beat (Task 13)."""
+    if first["status"] != "done" or second["status"] != "done":
+        return "Both runs must be finished."
+    a, b = first["results"], second["results"]
+    lines = [f"Run {first['id']} → run {second['id']} (live rules)", "", "| | first | second | difference |",
+             "|---|---|---|---|"]
+    for lang in ("vi", "ko", "en"):
+        x = a["asr"]["variants"]["live"]["languages"].get(lang)
+        y = b["asr"]["variants"]["live"]["languages"].get(lang)
+        if x is None and y is None:
+            continue
+        metric = (x or y)["metric"].upper()
+        lines.append(f"| {lang} {metric} | {pct(x and x['score'])} | {pct(y and y['score'])} | "
+                     f"{_points(x and x['score'], y and y['score'])} |")
+    x, y = a["asr"]["variants"]["live"]["no_speech"], b["asr"]["variants"]["live"]["no_speech"]
+    lines.append(f"| no speech: clips with invented text | {x['invented']}/{x['clips']} | {y['invented']}/{y['clips']} "
+                 f"| {y['invented'] - x['invented']:+d} |")
+    x, y = a["recall"], b["recall"]
+    if "found5" in x and "found5" in y:
+        lines.append(f"| hit@5: questions found | {x['found5']}/{x['questions']} | {y['found5']}/{y['questions']} | "
+                     f"{y['found5'] - x['found5']:+d} |")
+    return "\n".join(lines)
+
+
+async def rules_impact(pool: AsyncConnectionPool, since: dt.datetime) -> dict:
+    """What each rule would drop from the live transcripts written since ``since`` (read only, numbers only). The
+    stored segments already passed the P2a filters; they are grouped back into speech regions — consecutive segments
+    of one recording with one language and language probability — and each rule is applied as the live stage would.
+    Segments stored before P2c have no language probability: ``short_foreign`` cannot judge them (counted apart)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT item_id, lang, lang_prob, text, avg_logprob, no_speech_prob FROM transcript_segment"
+            " WHERE created_at >= %s ORDER BY item_id, start_ts, id",
+            (since,),
+        )
+        rows = await cur.fetchall()
+    regions: list[tuple[str, asr.RegionResult]] = []
+    for row in rows:
+        segment = asr.SegmentResult(0.0, 0.0, row["text"], row["avg_logprob"] or 0.0, row["no_speech_prob"] or 0.0,
+                                    1.0)
+        last = regions[-1] if regions else None
+        if last and last[0] == row["item_id"] and last[1].lang == row["lang"] \
+                and last[1].lang_prob == (1.0 if row["lang_prob"] is None else row["lang_prob"]):
+            last[1].segments.append(segment)
+        else:
+            prob = 1.0 if row["lang_prob"] is None else row["lang_prob"]  # unknown: short_foreign never fires
+            regions.append((row["item_id"], asr.RegionResult(row["lang"], prob, [segment])))
+    out = {"since": since.isoformat(), "segments": len(rows), "recordings": len({r["item_id"] for r in rows}),
+           "no_probability": sum(1 for r in rows if r["lang_prob"] is None), "rules": {}}
+    for name, rules in (*((rule, [rule]) for rule in ASR_RULES), ("all", list(ASR_RULES))):
+        segments = words = 0
+        recordings: set[str] = set()
+        by_lang: dict[str, int] = {}
+        for item_id, region in regions:
+            kept = {id(s) for s in asr.kept_segments(region, frozenset(rules))}
+            gone = [s for s in region.segments if id(s) not in kept]
+            if gone:
+                segments += len(gone)
+                words += sum(len(s.text.split()) for s in gone)
+                recordings.add(item_id)
+                by_lang[region.lang] = by_lang.get(region.lang, 0) + len(gone)
+        out["rules"][name] = {"segments": segments, "words": words, "recordings": len(recordings),
+                              "by_lang": dict(sorted(by_lang.items()))}
+    return out
+
+
+def format_rules_impact(found: dict) -> str:
+    lines = [f"Live transcripts since {found['since']}: {found['segments']} segments in {found['recordings']} "
+             f"recordings ({found['no_probability']} without a language probability)", "",
+             "| Rule | Segments it would drop | Words | Recordings | By language |", "|---|---|---|---|---|"]
+    for name, row in found["rules"].items():
+        langs = ", ".join(f"{lang} {n}" for lang, n in row["by_lang"].items()) or "—"
+        lines.append(f"| {name} | {row['segments']} | {row['words']} | {row['recordings']} | {langs} |")
     return "\n".join(lines)
 ```
 
@@ -3295,7 +3794,7 @@ diff --git a/brain/src/loopi_brain/cli.py b/brain/src/loopi_brain/cli.py
  
  
  def build_parser() -> argparse.ArgumentParser:
-@@ -27,6 +29,15 @@ def build_parser() -> argparse.ArgumentParser:
+@@ -27,6 +29,20 @@ def build_parser() -> argparse.ArgumentParser:
      models = sub.add_parser("models", help="AI models")
      models_sub = models.add_subparsers(dest="models_cmd", required=True)
      models_sub.add_parser("pull", help="download the Ollama models in providers.yaml and the Whisper model")
@@ -3308,10 +3807,15 @@ diff --git a/brain/src/loopi_brain/cli.py b/brain/src/loopi_brain/cli.py
 +    run.add_argument("--timeout", type=float, default=3 * 3600, help="seconds to wait (default 3 h)")
 +    show = eval_sub.add_parser("show", help="print the numbers of a run (default: the newest)")
 +    show.add_argument("run_id", nargs="?")
++    compare = eval_sub.add_parser("compare", help="two finished runs side by side (the noise floor, a tuning change)")
++    compare.add_argument("first")
++    compare.add_argument("second")
++    impact = eval_sub.add_parser("rules-impact", help="what each rule would drop from the live transcripts (counts)")
++    impact.add_argument("--days", type=int, default=7, help="transcripts written in the last DAYS days (default 7)")
      return parser
  
  
-@@ -110,6 +121,46 @@ def _models_pull() -> int:
+@@ -110,6 +126,57 @@ def _models_pull() -> int:
      return 0
  
  
@@ -3331,6 +3835,17 @@ diff --git a/brain/src/loopi_brain/cli.py b/brain/src/loopi_brain/cli.py
 +                print("no evaluation run yet" if args.run_id is None else f"no run {args.run_id}")
 +                return 1
 +            print(runner.format_run(run, settings.zone))
++            return 0
++        if args.eval_cmd == "compare":
++            runs = [await runner.latest_run(pool, run_id) for run_id in (args.first, args.second)]
++            if None in runs:
++                print("no such run")
++                return 1
++            print(runner.format_compare(*runs))
++            return 0
++        if args.eval_cmd == "rules-impact":
++            since = dt.datetime.now(dt.UTC) - dt.timedelta(days=max(args.days, 1))
++            print(runner.format_rules_impact(await runner.rules_impact(pool, since)))
 +            return 0
 +        try:
 +            async with open_jobs(pool):
@@ -3358,7 +3873,7 @@ diff --git a/brain/src/loopi_brain/cli.py b/brain/src/loopi_brain/cli.py
  def main(argv: list[str] | None = None) -> int:
      args = build_parser().parse_args(argv)
      if args.cmd == "init-pki":
-@@ -126,4 +177,6 @@ def main(argv: list[str] | None = None) -> int:
+@@ -126,4 +193,6 @@ def main(argv: list[str] | None = None) -> int:
          return _worker_health()
      if args.cmd == "models":
          return _models_pull()
@@ -3400,10 +3915,10 @@ diff --git a/brain/src/loopi_brain/pipeline/status.py b/brain/src/loopi_brain/pi
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_eval_runner.py tests/test_cli.py tests/test_worker.py -q`
-Expected: `25 passed`.
+Expected: `31 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `753 passed, 1 skipped`, `TOTAL … 99%` (`evaluation/runner.py` 100 %).
+Expected: `762 passed, 1 skipped`, `TOTAL … 99%` (`evaluation/runner.py` 100 %).
 
 - [ ] **Step 6: Commit**
 
@@ -3413,8 +3928,9 @@ git add brain/src/loopi_brain/evaluation/runner.py brain/src/loopi_brain/pipelin
 git commit -F - <<'EOF'
 feat(brain): evaluation runs (one golden clip per job, every rule set, captions, recall) and loopi-brain eval
 
-Each job hears one golden clip through the live ASR path and waits behind live transcriptions (lock asr, priority
--20); the last job scores every rule set, the caption scores and recall@5 through the hybrid search. Numbers only.
+Each clip job hears one golden clip through the live ASR path and waits behind live transcriptions (lock asr,
+priority -20); the last job, under its own lock, scores every rule set and what it drops from real speech, the caption
+scores and hit@5 (D22) through the hybrid search, each question embedded once. Numbers only, with 95 % intervals.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
@@ -3426,16 +3942,16 @@ EOF
 
 **Files:**
 - Create: `brain/src/loopi_brain/web/eval_routes.py`
-- Create: `brain/src/loopi_brain/web/templates/eval.html`, `eval_audio.html`, `eval_captions.html`, `_eval_clip.html`, `_eval_picture.html`, `_eval_caption.html`, `_eval_score.html`
-- Modify: `brain/src/loopi_brain/app.py` (router), `brain/src/loopi_brain/web/templates/base.html` (menu)
+- Create: `brain/src/loopi_brain/web/templates/eval.html`, `eval_audio.html`, `eval_captions.html`, `_eval_candidate.html`, `_eval_clip.html`, `_eval_keyframe.html`, `_eval_picture.html`, `_eval_caption.html`, `_eval_score.html`
+- Modify: `brain/src/loopi_brain/app.py` (router), `brain/src/loopi_brain/web/templates/base.html` (menu, phone layout)
 - Test: `brain/tests/test_eval_page.py` (new)
 
 **Interfaces:**
 - Consumes: Task 4's `golden.*`, Task 5's `questions.counts`; P2b `web.routes.TEMPLATES`, `require_htmx`, the `/audio/{item}.opus` and `/thumb/{keyframe}.jpg` routes, `media.inside`, the `client`-style test app (`create_app(settings, pool=…, http_client=…, llm_client=…)`).
 - Produces:
-  - `GET /eval` (progress); `GET /eval/audio?seed=N` (proposals by language with the current transcript in a textarea, scarce languages named, the labelled clips); `POST /eval/audio` (`item_id`, `lang`, `no_speech`, `reference`) → the saved clip's form, or "Không lưu được …" (200) when the recording cannot be one, 422 for a bad label; `POST /eval/audio/{id}` (correct a label), `POST /eval/audio/{id}/delete`; `GET /eval/audio/{id}.opus` (the playback copy, else the byte copy).
-  - `GET /eval/captions?seed=N`; `POST /eval/captions` (`keyframe_id`, `score`, `wrong_people`, `invented_objects`, `wrong_activity`); `POST /eval/captions/{id}/score`; `POST /eval/captions/{id}/delete`; `GET /eval/keyframes/{id}.jpg`.
-  - Jinja globals `LANGUAGE_LABELS`, `FLAG_LABELS`; the menu gains "Đánh giá".
+  - `GET /eval` (progress, the 2–3 h estimate); `GET /eval/audio?seed=N&blind=1` (proposals from `settings.eval_audio_since` on, in groups — by language, "maybe noise" with its hint, "Whisper heard nothing" — with the current transcript in the box, or with an empty box and Whisper's text folded away when `blind`; scarce kinds named; the labelled clips); `POST /eval/audio` (`item_id`, `lang`, `no_speech`, `reference`, `prefilled` "1"/"0") → the saved clip's form, or the same proposal form with the typed text and the reason (200) when it cannot be saved; `POST /eval/audio/{id}` (correct a label; an invalid one comes back in the form with its reason), `POST /eval/audio/{id}/delete`; `GET /eval/audio/{id}.opus` (the playback copy, else the byte copy).
+  - `GET /eval/captions?seed=N`; `POST /eval/captions` (`keyframe_id`, `score`, `wrong_people`, `invented_objects`, `wrong_activity`; a missing or wrong score comes back in the form); `POST /eval/captions/{id}/score`; `POST /eval/captions/{id}/delete`; `GET /eval/keyframes/{id}.jpg`. No owner-facing eval form answers 422: every error shows next to its form.
+  - Jinja globals `LANGUAGE_LABELS`, `FLAG_LABELS`; the menu gains "Đánh giá"; `base.html` keeps fields within a phone's width and gives wide tables a `.scroll` wrapper.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3460,7 +3976,8 @@ from loopi_brain.app import create_app
 from loopi_brain.evaluation import golden
 
 HX = {"HX-Request": "true"}
-NINE = dt.datetime(2026, 10, 14, 0, 0, tzinfo=dt.UTC)  # 09:00 in Seoul
+NINE = dt.datetime(2026, 10, 20, 0, 0, tzinfo=dt.UTC)  # 09:00 in Seoul, after the device gain change (D19)
+SPEECH = "Mai mình đi chợ mua rau nhé"
 
 
 @pytest.fixture
@@ -3476,9 +3993,10 @@ async def web(pool, pki_settings, jobs_open):
         yield c
 
 
-async def _spoken(pool, settings, device_id, minutes, lang, text) -> str:
-    item = await analysed_audio(pool, settings, device_id, NINE + dt.timedelta(minutes=minutes), source=QUIET_SPEECH)
-    await insert_segment(pool, item, device_id, NINE + dt.timedelta(minutes=minutes), text, lang=lang)
+async def _spoken(pool, settings, device_id, minutes, lang, text, start=NINE) -> str:
+    at = start + dt.timedelta(minutes=minutes)
+    item = await analysed_audio(pool, settings, device_id, at, source=QUIET_SPEECH)
+    await insert_segment(pool, item, device_id, at, text, lang=lang)
     return item
 
 
@@ -3491,21 +4009,23 @@ async def test_the_evaluation_page_shows_how_far_the_labelling_is(web):
     assert page.status_code == 200
     text = _flat(page.text)
     assert '<a href="/eval">Đánh giá</a>' in text  # in the menu
-    assert "Âm thanh</a>: 0/20 đoạn" in text and "Tiếng Việt 0/6 · Tiếng Hàn 0/6 · Tiếng Anh 0/4 · Không có lời nói 0/4" in text
+    assert "Âm thanh</a>: 0/22 đoạn" in text and "khoảng 2–3 giờ" in text
+    assert ("Tiếng Việt 0/6 · Tiếng Hàn 0/6 · Tiếng Anh 0/4 · Không có lời nói (Whisper có viết chữ) 0/6" in text)
     assert "Mô tả khung hình</a>: 0/30 khung hình" in text and "Câu hỏi</a>: 0/25 câu" in text
 
 
 async def test_the_owner_labels_a_proposed_clip_and_corrects_it(pool, pki_settings, dev, web):
-    item = await _spoken(pool, pki_settings, dev["device_id"], 0, "vi", "Mai mình đi chợ")
+    item = await _spoken(pool, pki_settings, dev["device_id"], 0, "vi", SPEECH)
     page = _flat((await web.get("/eval/audio")).text)
-    assert f'src="/audio/{item}.opus"' in page and ">Mai mình đi chợ</textarea>" in page
+    assert f'src="/audio/{item}.opus"' in page and f">{SPEECH}</textarea>" in page
     assert '<input type="radio" name="lang" value="vi" checked>' in page
-    form = {"item_id": item, "lang": "vi", "reference": "Mai mình đi chợ nhé"}
+    assert "Chỉ gợi ý đoạn ghi từ 16/10/2026 08:41" in page and "đừng giữ chữ của Whisper" in page
+    form = {"item_id": item, "lang": "vi", "reference": SPEECH + " sớm"}
     assert (await web.post("/eval/audio", data=form)).status_code == 403  # no HX-Request: refused
     saved = await web.post("/eval/audio", data=form, headers=HX)
     [sample] = await golden.audio_samples(pool)
     assert saved.status_code == 200 and "Đã lưu" in saved.text and f'/eval/audio/{sample["id"]}.opus' in saved.text
-    assert sample["reference"] == "Mai mình đi chợ nhé"
+    assert (sample["reference"], sample["prefilled"]) == (SPEECH + " sớm", True)
     played = await web.get(f"/eval/audio/{sample['id']}.opus")
     assert played.status_code == 200 and played.headers["content-type"] == "audio/ogg"
     view = pki_settings.eval_dir / golden.audio_paths(sample["id"])[1]
@@ -3514,41 +4034,75 @@ async def test_the_owner_labels_a_proposed_clip_and_corrects_it(pool, pki_settin
     assert "Đã gán nhãn (1)" in page and f'name="item_id" value="{item}"' not in page
     fixed = await web.post(f"/eval/audio/{sample['id']}", data={"no_speech": "on"}, headers=HX)
     assert fixed.status_code == 200 and (await golden.audio_samples(pool))[0]["no_speech"] is True
-    assert (await web.post(f"/eval/audio/{sample['id']}", data={"lang": "ja", "reference": "x"},
-                           headers=HX)).status_code == 422
+    wrong = await web.post(f"/eval/audio/{sample['id']}", data={"lang": "ja", "reference": "chữ đã gõ"}, headers=HX)
+    assert wrong.status_code == 200 and "Chọn ngôn ngữ chính của đoạn này" in wrong.text
+    assert ">chữ đã gõ</textarea>" in wrong.text and "Đã lưu" not in wrong.text  # what was typed stays
+    assert (await golden.audio_samples(pool))[0]["no_speech"] is True  # nothing saved
     view.unlink()  # no playback copy: the copy as recorded plays
     assert (await web.get(f"/eval/audio/{sample['id']}.opus")).status_code == 200
     gone = await web.post(f"/eval/audio/{sample['id']}/delete", headers=HX)
     assert "Đã xoá" in gone.text and await golden.audio_samples(pool) == []
-    for path in (f"/eval/audio/{sample['id']}.opus",):
-        assert (await web.get(path)).status_code == 404
+    assert (await web.get(f"/eval/audio/{sample['id']}.opus")).status_code == 404
     assert (await web.post(f"/eval/audio/{sample['id']}/delete", headers=HX)).status_code == 404
     assert (await web.post(f"/eval/audio/{sample['id']}", data={"no_speech": "on"}, headers=HX)).status_code == 404
 
 
-async def test_a_clip_that_cannot_be_saved_says_why(pool, pki_settings, dev, web):
-    item = await _spoken(pool, pki_settings, dev["device_id"], 0, "vi", "x")
+async def test_the_owner_can_listen_first_and_type_without_seeing_whisper(pool, pki_settings, dev, web):
+    item = await _spoken(pool, pki_settings, dev["device_id"], 0, "vi", SPEECH)
+    page = _flat((await web.get("/eval/audio", params={"blind": "1"})).text)
+    assert 'placeholder="Gõ những gì bạn nghe được"></textarea>' in page  # the box starts empty
+    assert "Xem transcript của Whisper (sau khi đã tự gõ)" in page and 'name="prefilled" value="0"' in page
+    saved = await web.post("/eval/audio", data={"item_id": item, "lang": "vi", "reference": SPEECH,
+                                                "prefilled": "0"}, headers=HX)
+    assert "Đã lưu" in saved.text and (await golden.audio_samples(pool))[0]["prefilled"] is False
+
+
+async def test_a_clip_that_cannot_be_saved_says_why_and_keeps_what_was_typed(pool, pki_settings, dev, web):
+    item = await _spoken(pool, pki_settings, dev["device_id"], 0, "vi", SPEECH)
+    empty = await web.post("/eval/audio", data={"item_id": item, "lang": "vi", "reference": " "}, headers=HX)
+    assert empty.status_code == 200 and "Nhập những gì thật sự được nói" in empty.text
     async with pool.connection() as conn:
         await conn.execute("UPDATE item SET raw_deleted_at = now()")  # expired since the page was opened
-    answer = await web.post("/eval/audio", data={"item_id": item, "lang": "vi", "reference": "x"}, headers=HX)
-    assert answer.status_code == 200 and "Không lưu được" in answer.text
-    empty = await web.post("/eval/audio", data={"item_id": item, "lang": "vi", "reference": " "}, headers=HX)
-    assert empty.status_code == 422
+    answer = await web.post("/eval/audio", data={"item_id": item, "lang": "vi", "reference": "bản đã sửa"},
+                            headers=HX)
+    assert answer.status_code == 200 and "Không lưu được" in answer.text and ">bản đã sửa</textarea>" in answer.text
+    gone = await web.post("/eval/audio", data={"item_id": "01NOSUCH000000000000000000", "lang": "vi",
+                                               "reference": "x"}, headers=HX)
+    assert "Không lưu được" in gone.text
     assert await fetch_all(pool, "SELECT id FROM eval_audio") == []
 
 
-async def test_a_language_the_home_rarely_speaks_is_reported_not_faked(pool, pki_settings, dev, web):
-    for minutes in range(golden.AUDIO_SUGGESTED["vi"]):  # enough Vietnamese, no Korean or English at all
-        await _spoken(pool, pki_settings, dev["device_id"], minutes, "vi", "x")
+async def test_scarce_kinds_of_clip_are_reported_not_faked(pool, pki_settings, dev, web):
+    for minutes in range(golden.AUDIO_SUGGESTED["vi"]):  # enough Vietnamese, no Korean, English or noise at all
+        await _spoken(pool, pki_settings, dev["device_id"], minutes, "vi", SPEECH)
     page = _flat((await web.get("/eval/audio")).text)
     assert "Tiếng Hàn: chỉ còn 0 đoạn ghi để chọn, còn thiếu 6 so với gợi ý 6." in page
     assert "Tiếng Anh: chỉ còn 0 đoạn ghi để chọn" in page and "Tiếng Việt: chỉ còn" not in page
+    assert "Không có lời nói (Whisper có viết chữ): chỉ còn 0 đoạn ghi để chọn, còn thiếu 6" in page
+
+
+async def test_recordings_from_before_the_gain_change_are_not_proposed(pool, pki_settings, dev, web):
+    early = await _spoken(pool, pki_settings, dev["device_id"], 0, "vi", SPEECH,
+                          start=dt.datetime(2026, 10, 15, 0, 0, tzinfo=dt.UTC))
+    late = await _spoken(pool, pki_settings, dev["device_id"], 0, "vi", SPEECH)
+    page = (await web.get("/eval/audio")).text
+    assert f'value="{late}"' in page and f'value="{early}"' not in page
+
+
+async def test_maybe_noise_is_proposed_apart_with_its_hint(pool, pki_settings, dev, web):
+    noise = await _spoken(pool, pki_settings, dev["device_id"], 0, "en", "Thank you.")
+    page = _flat((await web.get("/eval/audio")).text)
+    assert "<h2>Có chữ nhưng có thể chỉ là tiếng ồn" in page and "cần ít nhất 6 đoạn như vậy" in page
+    saved = await web.post("/eval/audio", data={"item_id": noise, "no_speech": "on"}, headers=HX)
+    assert "Đã lưu" in saved.text and (await golden.progress(pool))["audio"]["none"] == 1
 
 
 async def test_the_owner_scores_a_proposed_keyframe_and_its_next_caption(pool, pki_settings, dev, web):
     kf = await captioned_keyframe(pool, pki_settings, dev["device_id"], NINE)
     page = _flat((await web.get("/eval/captions")).text)
     assert f'src="/thumb/{kf}.jpg"' in page and "A small home office with a desk by a window" in page
+    unscored = await web.post("/eval/captions", data={"keyframe_id": kf, "invented_objects": "on"}, headers=HX)
+    assert unscored.status_code == 200 and "Chọn điểm từ 1 đến 5." in unscored.text and f'value="{kf}"' in unscored.text
     saved = await web.post("/eval/captions", data={"keyframe_id": kf, "score": "4", "invented_objects": "on"},
                            headers=HX)
     [sample] = await golden.caption_samples(pool)
@@ -3562,11 +4116,13 @@ async def test_the_owner_scores_a_proposed_keyframe_and_its_next_caption(pool, p
     again = await web.post(f"/eval/captions/{sample['id']}/score", data={"score": "2", "wrong_people": "on"},
                            headers=HX)
     assert "ollama:new: 2/5 · sai số người" in _flat(again.text)
-    for bad in ({"score": "0"}, {"score": "6"}):
-        assert (await web.post(f"/eval/captions/{sample['id']}/score", data=bad, headers=HX)).status_code == 422
-    assert (await web.post("/eval/captions", data={"keyframe_id": kf, "score": "9"}, headers=HX)).status_code == 422
+    for bad in ({"score": "0"}, {"score": "6"}, {"score": "four"}):
+        answer = await web.post(f"/eval/captions/{sample['id']}/score", data=bad, headers=HX)
+        assert answer.status_code == 200 and "Chọn điểm từ 1 đến 5." in answer.text
     again = await web.post("/eval/captions", data={"keyframe_id": kf, "score": "3"}, headers=HX)
     assert "Không lưu được" in again.text  # already golden
+    assert "Không lưu được" in (await web.post("/eval/captions", data={"keyframe_id": "01NOSUCH", "score": "3"},
+                                               headers=HX)).text
     async with pool.connection() as conn:
         await conn.execute("UPDATE keyframe SET caption = NULL")
     assert "Không lưu được" in (await web.post(f"/eval/captions/{sample['id']}/score", data={"score": "3"},
@@ -3577,7 +4133,7 @@ async def test_the_owner_scores_a_proposed_keyframe_and_its_next_caption(pool, p
 
 
 async def test_transcripts_and_captions_cannot_inject_markup(pool, pki_settings, dev, web):
-    await _spoken(pool, pki_settings, dev["device_id"], 0, "en", "<script>alert(1)</script>")
+    await _spoken(pool, pki_settings, dev["device_id"], 0, "en", "<script>alert(1)</script> and more words here")
     await captioned_keyframe(pool, pki_settings, dev["device_id"], NINE, caption={
         "scene": "<img src=x onerror=alert(2)>", "activity": "x", "people_count": 0, "objects": ["<b>"],
         "text_seen": "", "notable": False})
@@ -3598,12 +4154,17 @@ async def test_golden_files_are_served_only_for_their_samples(pool, pki_settings
     assert (await web.get("/eval/audio/A1.opus")).status_code == 404
     with pytest.raises(ValueError):
         await golden.sample_exists(pool, "item", "A1")
+
+
+async def test_the_page_fits_a_phone(web):
+    css = (await web.get("/eval")).text
+    assert "textarea, input, select { max-width: 100%; box-sizing: border-box; }" in css
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd brain && uv run pytest tests/test_eval_page.py -q`
-Expected: FAIL — `6 failed, 1 passed`: no Đánh giá route exists yet (`assert 404 == 200`, `… in '{"detail":"Not Found"}'`); the one that passes only checks that unknown golden files answer 404.
+Expected: FAIL — `10 failed, 1 passed`: no Đánh giá route exists yet (`assert 404 == 200`, `… in '{"detail":"Not Found"}'`); the one that passes only checks that unknown golden files answer 404.
 
 - [ ] **Step 3: Write the routes**
 
@@ -3611,7 +4172,10 @@ Create `brain/src/loopi_brain/web/eval_routes.py`:
 
 ```python
 """The Đánh giá page (spec §13, D21): the owner labels the golden set here — clips, keyframes, questions — and
-starts evaluation runs. Everything shown comes from the database and LOOPI_EVAL_DIR; nothing is logged with text."""
+starts evaluation runs. Everything shown comes from the database and LOOPI_EVAL_DIR; nothing is logged with text.
+
+A form the owner filled in is never lost to an error: a value that cannot be saved comes back in the same form with
+the reason next to it (a phone shows no message at the top of a long page)."""
 from __future__ import annotations
 
 import logging
@@ -3625,21 +4189,29 @@ from ..evaluation.golden import GoldenError
 from .routes import TEMPLATES, require_htmx
 
 log = logging.getLogger(__name__)
-LANGUAGE_LABELS = {"vi": "Tiếng Việt", "ko": "Tiếng Hàn", "en": "Tiếng Anh", "": "Whisper không nghe thấy lời nào",
-                   golden.NO_SPEECH: "Không có lời nói"}
+LANGUAGE_LABELS = {"vi": "Tiếng Việt", "ko": "Tiếng Hàn", "en": "Tiếng Anh",
+                   golden.NOISE: "Có chữ nhưng có thể chỉ là tiếng ồn", "": "Whisper không nghe thấy lời nào",
+                   golden.NO_SPEECH: "Không có lời nói (Whisper có viết chữ)",
+                   golden.SILENT: "không có lời nói, Whisper cũng không viết gì"}
+GROUP_HINTS = {
+    golden.NOISE: "Whisper viết chữ cho các đoạn này nhưng câu rất ngắn hoặc không chắc. Nghe thử: nếu không có ai nói"
+                  " (chỉ tiếng ồn, TV, im lặng) thì đánh dấu \"Không có lời nói\" — cần ít nhất 6 đoạn như vậy để đo"
+                  " việc Whisper bịa câu. Nếu có người nói thật thì sửa transcript như mọi đoạn khác.",
+    "": "Whisper không viết gì cho các đoạn này. Chỉ chọn nếu bạn nghe thấy có người nói (để đo lời nói bị bỏ sót);"
+        " một đoạn im lặng ở đây không đo được gì.",
+}
 FLAG_LABELS = {"wrong_people": "sai số người", "invented_objects": "bịa đồ vật", "wrong_activity": "sai hoạt động"}
 NOT_SAVED = ("Không lưu được: đoạn ghi đã bị xoá, đã hết hạn, chưa phân tích xong hoặc đã có trong bộ đánh giá."
              " Tải lại trang.")
 NOT_SCORED = ("Không lưu được: khung hình đã bị xoá, chưa có mô tả (đang mô tả lại) hoặc đã có trong bộ đánh giá."
               " Tải lại trang.")
+NO_LANGUAGE = "Chọn ngôn ngữ chính của đoạn này, hoặc đánh dấu \"Không có lời nói\"."
+NO_REFERENCE = "Nhập những gì thật sự được nói, hoặc đánh dấu \"Không có lời nói\"."
+NO_SCORE = "Chọn điểm từ 1 đến 5."
 TEMPLATES.env.globals["LANGUAGE_LABELS"] = LANGUAGE_LABELS
 TEMPLATES.env.globals["FLAG_LABELS"] = FLAG_LABELS
 
 router = APIRouter()
-
-
-def _sent(text: str) -> HTMLResponse:
-    return HTMLResponse(f'<p class="err">{text}</p>')
 
 
 def _local(row: dict, key: str, zone) -> str:
@@ -3657,65 +4229,105 @@ async def eval_page(request: Request):
 
 
 def _scarce(strata: dict, progress: dict) -> list[str]:
-    """Languages that cannot reach their suggested number of clips with the recordings still kept."""
+    """Kinds of clip that cannot reach their suggested number with the recordings still proposed."""
     notes = []
-    for lang in golden.LANGUAGES:
+    for lang, group in (*((lang, lang) for lang in golden.LANGUAGES), (golden.NO_SPEECH, golden.NOISE)):
         missing = golden.AUDIO_SUGGESTED[lang] - progress["audio"][lang]
-        available = strata[lang]["available"]
+        available = strata[group]["available"]
         if missing > available:
             notes.append(f"{LANGUAGE_LABELS[lang]}: chỉ còn {available} đoạn ghi để chọn, còn thiếu {missing} so với"
                          f" gợi ý {golden.AUDIO_SUGGESTED[lang]}. Báo cáo nghiệm thu sẽ ghi đúng số đoạn có được.")
     return notes
 
 
+def _candidate_view(item: dict, zone) -> dict:
+    return {**item, "time": _local(item, "started_at", zone)}
+
+
 @router.get("/eval/audio", response_class=HTMLResponse)
-async def eval_audio_page(request: Request, seed: int = Query(default=0, ge=0, le=1_000_000)):
+async def eval_audio_page(request: Request, seed: int = Query(default=0, ge=0, le=1_000_000),
+                          blind: bool = Query(default=False)):
     state = request.app.state
     zone = state.settings.zone
-    strata = await golden.audio_candidates(state.pool, zone, seed)
+    since = state.settings.eval_audio_since
+    strata = await golden.audio_candidates(state.pool, zone, seed, since=since)
     for stratum in strata.values():
-        for item in stratum["items"]:
-            item["time"] = _local(item, "started_at", zone)
+        stratum["items"] = [_candidate_view(item, zone) for item in stratum["items"]]
     progress = await golden.progress(state.pool)
     samples = [{**s, "time": _local(s, "started_at", zone)} for s in await golden.audio_samples(state.pool)]
     return TEMPLATES.TemplateResponse(request, "eval_audio.html", {
         "strata": strata, "samples": samples, "p": progress, "scarce": _scarce(strata, progress), "seed": seed,
         "suggested": golden.AUDIO_SUGGESTED, "target": golden.AUDIO_TARGET, "languages": golden.LANGUAGES,
+        "blind": blind, "hints": GROUP_HINTS, "since": since.astimezone(zone).strftime("%d/%m/%Y %H:%M"),
     })
 
 
-def _label(lang: str, no_speech: str, reference: str) -> golden.AudioLabel:
+def _label_error(lang: str, no_speech: bool, reference: str) -> tuple[golden.AudioLabel | None, str | None]:
+    """The label, or None and what to fix (in Vietnamese)."""
+    if not no_speech and lang not in golden.LANGUAGES:
+        return None, NO_LANGUAGE
     try:
-        return golden.audio_label(lang, no_speech == "on", reference)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return golden.audio_label(lang, no_speech, reference), None
+    except ValueError:
+        return None, NO_REFERENCE
 
 
-async def _sample_view(request: Request, sample_id: str) -> HTMLResponse:
+async def _candidate(pool, zone, item_id: str) -> dict | None:
+    """A proposed recording as the page shows it (to give a form back with an error)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT i.id, i.started_at, (SELECT s.lang FROM transcript_segment s WHERE s.item_id = i.id"
+            " GROUP BY s.lang ORDER BY sum(extract(epoch FROM s.end_ts - s.start_ts)) DESC, s.lang LIMIT 1) AS lang"
+            " FROM item i WHERE i.id = %s AND i.kind = 'audio'",
+            (item_id,),
+        )
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    hour = row["started_at"].astimezone(zone).hour
+    texts = await golden.transcripts(pool, [item_id])
+    return _candidate_view({**row, "part": golden.DAY_PARTS[hour // 6], "transcript": texts.get(item_id, "")}, zone)
+
+
+async def _sample_view(request: Request, sample_id: str, typed: dict | None = None,
+                       error: str | None = None) -> HTMLResponse:
     zone = request.app.state.settings.zone
     found = [s for s in await golden.audio_samples(request.app.state.pool) if s["id"] == sample_id]
     if not found:
         raise HTTPException(status_code=404, detail="unknown golden clip")
     return TEMPLATES.TemplateResponse(request, "_eval_clip.html", {
-        "s": {**found[0], "time": _local(found[0], "started_at", zone)}, "languages": golden.LANGUAGES,
-        "saved": True})
+        "s": {**found[0], "time": _local(found[0], "started_at", zone), **(typed or {})},
+        "languages": golden.LANGUAGES, "saved": error is None, "error": error})
 
 
 @router.post("/eval/audio", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 async def add_clip(request: Request, item_id: str = Form(...), lang: str = Form(""), no_speech: str = Form(""),
-                   reference: str = Form("", max_length=20_000)):
+                   reference: str = Form("", max_length=20_000), prefilled: str = Form("1")):
     state = request.app.state
-    try:
-        sample_id = await golden.add_audio(state.pool, state.settings, item_id, _label(lang, no_speech, reference))
-    except GoldenError:
-        return _sent(NOT_SAVED)
-    return await _sample_view(request, sample_id)
+    label, error = _label_error(lang, no_speech == "on", reference)
+    if label is not None:
+        try:
+            sample_id = await golden.add_audio(state.pool, state.settings, item_id, label, prefilled=prefilled != "0")
+        except GoldenError:
+            error = NOT_SAVED
+        else:
+            return await _sample_view(request, sample_id)
+    item = await _candidate(state.pool, state.settings.zone, item_id)
+    if item is None:
+        return HTMLResponse(f'<p class="err">{NOT_SAVED}</p>')
+    return TEMPLATES.TemplateResponse(request, "_eval_candidate.html", {
+        "it": item, "group": item["lang"] or "", "languages": golden.LANGUAGES, "blind": prefilled == "0",
+        "error": error, "typed": {"reference": reference, "lang": lang, "no_speech": no_speech == "on"}})
 
 
 @router.post("/eval/audio/{sample_id}", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 async def update_clip(request: Request, sample_id: str, lang: str = Form(""), no_speech: str = Form(""),
                       reference: str = Form("", max_length=20_000)):
-    if not await golden.update_audio(request.app.state.pool, sample_id, _label(lang, no_speech, reference)):
+    label, error = _label_error(lang, no_speech == "on", reference)
+    if label is None:
+        return await _sample_view(request, sample_id, {"reference": reference, "lang": lang,
+                                                       "no_speech": no_speech == "on"}, error)
+    if not await golden.update_audio(request.app.state.pool, sample_id, label):
         raise HTTPException(status_code=404, detail="unknown golden clip")
     return await _sample_view(request, sample_id)
 
@@ -3765,39 +4377,56 @@ def _flags(wrong_people: str, invented_objects: str, wrong_activity: str) -> set
     return {name for name, value in chosen.items() if value == "on"}
 
 
-async def _picture_view(request: Request, sample_id: str) -> HTMLResponse:
+def _score(value: str) -> int | None:
+    try:
+        return golden.check_score(int(value))
+    except ValueError:
+        return None
+
+
+async def _picture_view(request: Request, sample_id: str, error: str | None = None) -> HTMLResponse:
     zone = request.app.state.settings.zone
     found = [s for s in await golden.caption_samples(request.app.state.pool) if s["id"] == sample_id]
     if not found:
         raise HTTPException(status_code=404, detail="unknown golden keyframe")
     return TEMPLATES.TemplateResponse(request, "_eval_picture.html", {
-        "s": {**found[0], "time": _local(found[0], "ts", zone)}, "saved": True})
+        "s": {**found[0], "time": _local(found[0], "ts", zone)}, "saved": error is None, "error": error})
+
+
+async def _keyframe_view(request: Request, keyframe_id: str, error: str) -> HTMLResponse:
+    async with request.app.state.pool.connection() as conn:
+        cur = await conn.execute("SELECT id, ts, caption, caption_model FROM keyframe WHERE id = %s", (keyframe_id,))
+        row = await cur.fetchone()
+    if row is None:
+        return HTMLResponse(f'<p class="err">{NOT_SCORED}</p>')
+    return TEMPLATES.TemplateResponse(request, "_eval_keyframe.html", {
+        "k": {**row, "time": _local(row, "ts", request.app.state.settings.zone)}, "error": error})
 
 
 @router.post("/eval/captions", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
-async def add_picture(request: Request, keyframe_id: str = Form(...), score: int = Form(...),
+async def add_picture(request: Request, keyframe_id: str = Form(...), score: str = Form(""),
                       wrong_people: str = Form(""), invented_objects: str = Form(""), wrong_activity: str = Form("")):
     state = request.app.state
+    chosen = _score(score)
+    if chosen is None:
+        return await _keyframe_view(request, keyframe_id, NO_SCORE)
     try:
-        sample_id = await golden.add_caption(state.pool, state.settings, keyframe_id, score,
+        sample_id = await golden.add_caption(state.pool, state.settings, keyframe_id, chosen,
                                              _flags(wrong_people, invented_objects, wrong_activity))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GoldenError:
-        return _sent(NOT_SCORED)
+        return await _keyframe_view(request, keyframe_id, NOT_SCORED)
     return await _picture_view(request, sample_id)
 
 
 @router.post("/eval/captions/{sample_id}/score", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
-async def score_picture(request: Request, sample_id: str, score: int = Form(...), wrong_people: str = Form(""),
+async def score_picture(request: Request, sample_id: str, score: str = Form(""), wrong_people: str = Form(""),
                         invented_objects: str = Form(""), wrong_activity: str = Form("")):
-    try:
-        scored = await golden.score_caption(request.app.state.pool, sample_id, score,
-                                            _flags(wrong_people, invented_objects, wrong_activity))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if not scored:
-        return _sent(NOT_SCORED)
+    chosen = _score(score)
+    if chosen is None:
+        return await _picture_view(request, sample_id, NO_SCORE)
+    if not await golden.score_caption(request.app.state.pool, sample_id, chosen,
+                                      _flags(wrong_people, invented_objects, wrong_activity)):
+        return await _picture_view(request, sample_id, NOT_SCORED)
     return await _picture_view(request, sample_id)
 
 
@@ -3824,7 +4453,7 @@ Create `brain/src/loopi_brain/web/templates/eval.html`:
 {% block content %}
 <h1>Đánh giá</h1>
 <p class="muted">Bộ đánh giá (golden set) do bạn gán nhãn: nằm trong thư mục dữ liệu và database của brain, không bao giờ
-  vào git (D21). Lần chạy đánh giá chỉ ghi lại các con số.</p>
+  vào git (D21). Lần chạy đánh giá chỉ ghi lại các con số. Tổng cộng mất khoảng 2–3 giờ; làm nhiều lần được.</p>
 <section class="card">
   <h2><a href="/eval/audio">Âm thanh</a>: {{ p.audio_total }}/{{ audio_target }} đoạn</h2>
   <p>{% for lang, n in suggested.items() %}{{ LANGUAGE_LABELS[lang] }} {{ p.audio[lang] }}/{{ n }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
@@ -3848,29 +4477,45 @@ Create `brain/src/loopi_brain/web/templates/eval_audio.html`:
 {% block content %}
 <h1>Đánh giá · Âm thanh</h1>
 <p><a href="/eval">← Đánh giá</a> · {{ p.audio_total }}/{{ target }} đoạn:
-  {% for lang, n in suggested.items() %}{{ LANGUAGE_LABELS[lang] }} {{ p.audio[lang] }}/{{ n }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
-<p class="muted">Nghe đoạn ghi (đã chuẩn hoá mức âm thanh), sửa transcript hiện tại thành đúng những gì được nói, chọn
-  ngôn ngữ chính, rồi lưu. Đoạn chỉ có tiếng ồn, TV hay im lặng: đánh dấu "Không có lời nói" (để đo việc Whisper bịa câu).</p>
+  {% for lang, n in suggested.items() %}{{ LANGUAGE_LABELS[lang] }} {{ p.audio[lang] }}/{{ n }} · {% endfor %}{{ LANGUAGE_LABELS["silent"] }}: {{ p.audio["silent"] }}</p>
+<p class="muted">Nghe đoạn ghi (đã chuẩn hoá mức âm thanh), sửa transcript thành đúng những gì được nói, chọn ngôn ngữ
+  chính, rồi lưu. Không chắc thì nghe lại; đừng giữ chữ của Whisper nếu bạn nghe khác. Đoạn chỉ có tiếng ồn, TV hay im
+  lặng: đánh dấu "Không có lời nói". Chỉ gợi ý đoạn ghi từ {{ since }} (từ khi thiết bị tăng âm lượng thu, D19).</p>
+<p>{% if blind %}<a href="/eval/audio?seed={{ seed }}">Hiện transcript của Whisper trong ô</a>{% else %}<a href="/eval/audio?seed={{ seed }}&blind=1">Nghe trước, tự gõ (ẩn transcript của Whisper)</a>{% endif %}</p>
 {% for note in scarce %}<p class="err">{{ note }}</p>{% endfor %}
-{% for lang, stratum in strata.items() %}
+{% for group, stratum in strata.items() %}
 <section>
-  <h2>{{ LANGUAGE_LABELS[lang] }} <span class="muted">({{ stratum.available }} đoạn có thể chọn)</span></h2>
-  {% for it in stratum["items"] %}
-  <form class="card" hx-post="/eval/audio" hx-target="this" hx-swap="outerHTML">
-    <input type="hidden" name="item_id" value="{{ it.id }}">
-    <p><time>{{ it.time }}</time> · {{ it.part }} <audio controls preload="none" src="/audio/{{ it.id }}.opus"></audio></p>
-    <textarea name="reference" rows="3" cols="80" maxlength="5000" placeholder="Transcript chuẩn">{{ it.transcript }}</textarea>
-    <p>{% for code in languages %}<label><input type="radio" name="lang" value="{{ code }}"{% if code == lang %} checked{% endif %}> {{ LANGUAGE_LABELS[code] }}</label> {% endfor %}
-      <label><input type="checkbox" name="no_speech"> Không có lời nói</label>
-      <button>Lưu vào bộ đánh giá</button></p>
-  </form>
+  <h2>{{ LANGUAGE_LABELS[group] }} <span class="muted">({{ stratum.available }} đoạn có thể chọn)</span></h2>
+  {% if hints[group] %}<p class="muted">{{ hints[group] }}</p>{% endif %}
+  {% for it in stratum["items"] %}{% set typed = none %}{% set error = none %}{% include "_eval_candidate.html" %}
   {% else %}<p class="muted">Không còn đoạn nào để chọn.</p>{% endfor %}
 </section>
 {% endfor %}
-<p><a href="/eval/audio?seed={{ seed + 1 }}">Gợi ý khác</a></p>
+<p><a href="/eval/audio?seed={{ seed + 1 }}{% if blind %}&blind=1{% endif %}">Gợi ý khác</a></p>
 <h2>Đã gán nhãn ({{ samples|length }})</h2>
-{% for s in samples %}{% include "_eval_clip.html" %}{% else %}<p class="muted">Chưa có đoạn nào.</p>{% endfor %}
+{% for s in samples %}{% set saved = false %}{% set error = none %}{% include "_eval_clip.html" %}{% else %}<p class="muted">Chưa có đoạn nào.</p>{% endfor %}
 {% endblock %}
+```
+
+Create `brain/src/loopi_brain/web/templates/_eval_candidate.html`:
+
+```html
+<form class="card" hx-post="/eval/audio" hx-target="this" hx-swap="outerHTML">
+  <input type="hidden" name="item_id" value="{{ it.id }}">
+  <input type="hidden" name="prefilled" value="{{ '0' if blind else '1' }}">
+  <p><time>{{ it.time }}</time> · {{ it.part }} <audio controls preload="none" src="/audio/{{ it.id }}.opus"></audio></p>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  {% set chosen = typed.lang if typed else it.lang %}
+  {% if blind %}
+  <textarea name="reference" rows="6" maxlength="5000" placeholder="Gõ những gì bạn nghe được">{{ typed.reference if typed else "" }}</textarea>
+  {% if it.transcript %}<details><summary>Xem transcript của Whisper (sau khi đã tự gõ)</summary><p>{{ it.transcript }}</p></details>{% endif %}
+  {% else %}
+  <textarea name="reference" rows="6" maxlength="5000" placeholder="Transcript chuẩn">{{ typed.reference if typed else it.transcript }}</textarea>
+  {% endif %}
+  <p>{% for code in languages %}<label><input type="radio" name="lang" value="{{ code }}"{% if code == chosen %} checked{% endif %}> {{ LANGUAGE_LABELS[code] }}</label> {% endfor %}
+    <label><input type="checkbox" name="no_speech"{% if typed and typed.no_speech %} checked{% endif %}> Không có lời nói</label>
+    <button>Lưu vào bộ đánh giá</button></p>
+</form>
 ```
 
 Create `brain/src/loopi_brain/web/templates/_eval_clip.html`:
@@ -3879,7 +4524,8 @@ Create `brain/src/loopi_brain/web/templates/_eval_clip.html`:
 <form class="card" id="clip-{{ s.id }}" hx-post="/eval/audio/{{ s.id }}" hx-target="this" hx-swap="outerHTML">
   <p><time>{{ s.time }}</time> <audio controls preload="none" src="/eval/audio/{{ s.id }}.opus"></audio>
     {% if saved %}<span class="online">Đã lưu</span>{% endif %}</p>
-  <textarea name="reference" rows="3" cols="80" maxlength="5000" placeholder="Transcript chuẩn">{{ s.reference }}</textarea>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  <textarea name="reference" rows="6" maxlength="5000" placeholder="Transcript chuẩn">{{ s.reference }}</textarea>
   <p>{% for lang in languages %}<label><input type="radio" name="lang" value="{{ lang }}"{% if s.lang == lang %} checked{% endif %}> {{ LANGUAGE_LABELS[lang] }}</label> {% endfor %}
     <label><input type="checkbox" name="no_speech"{% if s.no_speech %} checked{% endif %}> Không có lời nói</label>
     <button>Lưu</button>
@@ -3898,20 +4544,26 @@ Create `brain/src/loopi_brain/web/templates/eval_captions.html`:
 <p class="muted">Chấm mô tả từ 1 (sai hẳn) đến 5 (đúng và đủ), và đánh dấu lỗi nếu có.</p>
 <section>
   <h2>Gợi ý (mỗi ngày, mỗi khung 3 giờ một khung hình)</h2>
-  {% for k in candidates %}
-  <form class="card" hx-post="/eval/captions" hx-target="this" hx-swap="outerHTML">
-    <input type="hidden" name="keyframe_id" value="{{ k.id }}">
-    <img src="/thumb/{{ k.id }}.jpg" loading="lazy" alt="" width="320">
-    <p><time>{{ k.time }}</time> · {{ k.caption_model }}</p>
-    {% set c = k.caption %}{% include "_eval_caption.html" %}
-    {% set button = "Lưu vào bộ đánh giá" %}{% include "_eval_score.html" %}
-  </form>
+  {% for k in candidates %}{% set error = none %}{% include "_eval_keyframe.html" %}
   {% else %}<p class="muted">Không còn khung hình nào để chọn.</p>{% endfor %}
   <p><a href="/eval/captions?seed={{ seed + 1 }}">Gợi ý khác</a></p>
 </section>
 <h2>Đã chấm ({{ samples|length }})</h2>
-{% for s in samples %}{% include "_eval_picture.html" %}{% else %}<p class="muted">Chưa có khung hình nào.</p>{% endfor %}
+{% for s in samples %}{% set saved = false %}{% set error = none %}{% include "_eval_picture.html" %}{% else %}<p class="muted">Chưa có khung hình nào.</p>{% endfor %}
 {% endblock %}
+```
+
+Create `brain/src/loopi_brain/web/templates/_eval_keyframe.html`:
+
+```html
+<form class="card" hx-post="/eval/captions" hx-target="this" hx-swap="outerHTML">
+  <input type="hidden" name="keyframe_id" value="{{ k.id }}">
+  <img src="/thumb/{{ k.id }}.jpg" loading="lazy" alt="" width="320">
+  <p><time>{{ k.time }}</time> · {{ k.caption_model }}</p>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  {% set c = k.caption %}{% include "_eval_caption.html" %}
+  {% set button = "Lưu vào bộ đánh giá" %}{% include "_eval_score.html" %}
+</form>
 ```
 
 Create `brain/src/loopi_brain/web/templates/_eval_picture.html`:
@@ -3920,6 +4572,7 @@ Create `brain/src/loopi_brain/web/templates/_eval_picture.html`:
 <div class="card" id="picture-{{ s.id }}">
   <img src="/eval/keyframes/{{ s.id }}.jpg" loading="lazy" alt="" width="320">
   <p><time>{{ s.time }}</time> · {{ s.caption_model }} {% if saved %}<span class="online">Đã lưu</span>{% endif %}</p>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
   {% set c = s.caption %}{% include "_eval_caption.html" %}
   <ul>{% for x in s.scores %}<li>{{ x.model_version }}: {{ x.score }}/5{% for name, label in FLAG_LABELS.items() %}{% if x[name] %} · {{ label }}{% endif %}{% endfor %}</li>{% endfor %}</ul>
   {% if s.caption %}
@@ -3948,7 +4601,7 @@ Create `brain/src/loopi_brain/web/templates/_eval_score.html`:
   <button>{{ button }}</button></p>
 ```
 
-- [ ] **Step 5: Mount the router and add the menu entry**
+- [ ] **Step 5: Mount the router, add the menu entry and the phone layout**
 
 ```diff
 diff --git a/brain/src/loopi_brain/app.py b/brain/src/loopi_brain/app.py
@@ -3973,7 +4626,12 @@ diff --git a/brain/src/loopi_brain/app.py b/brain/src/loopi_brain/app.py
 diff --git a/brain/src/loopi_brain/web/templates/base.html b/brain/src/loopi_brain/web/templates/base.html
 --- a/brain/src/loopi_brain/web/templates/base.html
 +++ b/brain/src/loopi_brain/web/templates/base.html
-@@ -33,7 +33,7 @@
+@@ -30,10 +30,12 @@
+     .card { border: 1px solid #8886; border-radius: 8px; padding: 12px; margin: 12px 0; }
+     .online { color: #2a2; } .offline { color: #999; }
+     code { word-break: break-all; }
++    textarea, input, select { max-width: 100%; box-sizing: border-box; } textarea { width: 100%; }
++    .scroll { overflow-x: auto; }
    </style>
  </head>
  <body>
@@ -3987,25 +4645,27 @@ diff --git a/brain/src/loopi_brain/web/templates/base.html b/brain/src/loopi_bra
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_eval_page.py tests/test_web.py -q`
-Expected: `19 passed`.
+Expected: `23 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `760 passed, 1 skipped`, `TOTAL … 99%`.
+Expected: `773 passed, 1 skipped`, `TOTAL … 99%`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add brain/src/loopi_brain/web/eval_routes.py brain/src/loopi_brain/web/templates/eval.html \
   brain/src/loopi_brain/web/templates/eval_audio.html brain/src/loopi_brain/web/templates/eval_captions.html \
-  brain/src/loopi_brain/web/templates/_eval_clip.html brain/src/loopi_brain/web/templates/_eval_picture.html \
+  brain/src/loopi_brain/web/templates/_eval_candidate.html brain/src/loopi_brain/web/templates/_eval_clip.html \
+  brain/src/loopi_brain/web/templates/_eval_keyframe.html brain/src/loopi_brain/web/templates/_eval_picture.html \
   brain/src/loopi_brain/web/templates/_eval_caption.html brain/src/loopi_brain/web/templates/_eval_score.html \
   brain/src/loopi_brain/app.py brain/src/loopi_brain/web/templates/base.html brain/tests/test_eval_page.py
 git commit -F - <<'EOF'
 feat(brain): the Đánh giá page: label golden clips and score golden keyframes
 
-Proposed recordings by detected language and part of the day (a scarce language is said, never padded), proposed
-keyframes one per day and 3-hour block; the owner corrects the transcript or marks "không có lời nói", scores
-captions 1-5 with three error ticks.
+Proposed recordings from the device gain change on, by detected language and part of the day, with a group for what
+Whisper may have invented on noise (a scarce kind is said, never padded); keyframes one per day and 3-hour block. The
+owner corrects the transcript (or types it blind) or marks "không có lời nói", scores captions 1-5 with three error
+ticks; an error comes back in its form with the typed text.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
@@ -4022,10 +4682,10 @@ EOF
 - Modify: `brain/tests/test_eval_page.py`
 
 **Interfaces:**
-- Consumes: Task 5's `questions.*`, Task 6's `runner.start_run`, `runner.list_runs`, `runner.pct`, `runner.WER_LIMIT`, `runner.DISTANCES`, `runner.SIMILARITIES`, `runner.VARIANTS`; P2b `search.request_router(settings, client)`, `search_routes.hit_view`, `search_routes.KIND_LABELS`, `search_routes.OptionalDate`.
+- Consumes: Task 4's `golden.clean_text`, Task 5's `questions.*`, Task 6's `runner.start_run`, `runner.list_runs`, `runner.pct`, `runner.span`, `runner.MAX_GAIN_DB`, `runner.WER_LIMIT`, `runner.DISTANCES`, `runner.SIMILARITIES`, `runner.VARIANTS`; P2b `search.request_router(settings, client)`, `search_routes.hit_view`, `search_routes.KIND_LABELS`, `search_routes.OptionalDate`.
 - Produces:
-  - `GET /eval/questions`; `POST /eval/questions` (`text`, `from`, `to`) → `HX-Redirect: /eval/questions/{id}`; `GET /eval/questions/{id}`; `POST /eval/questions/{id}` (edit); `POST /eval/questions/{id}/delete` → `HX-Redirect: /eval/questions`; `POST /eval/questions/{id}/search` (`q`, `from`, `to`; a POST so the words stay out of URLs) → hits with "Chọn là đúng"; `POST /eval/questions/{id}/answers` (`moment_id`) and `POST /eval/questions/{id}/answers/{moment_id}/delete` → the list of correct moments.
-  - `GET /eval/runs` (the run table; it polls itself every 15 s while a run waits or runs); `POST /eval/runs` (`max_gain_db`, `vad_threshold`, both optional) → the run table; the `/eval` page shows the run form and table. Jinja filter `pct`.
+  - `GET /eval/questions` (asks for 1–3 correct moments per question, D22); `POST /eval/questions` (`text`, `from`, `to`) → `HX-Redirect: /eval/questions/{id}`, or the reason next to the form (the typed question stays); `GET /eval/questions/{id}`; `POST /eval/questions/{id}` (edit; an empty question or backwards days answer with the reason, 200); `POST /eval/questions/{id}/delete` → `HX-Redirect: /eval/questions`; `POST /eval/questions/{id}/search` (`q`, `from`, `to`; a POST so the words stay out of URLs) → hits with "Chọn là đúng"; `POST /eval/questions/{id}/answers` (`moment_id`) and `POST /eval/questions/{id}/answers/{moment_id}/delete` → the list of correct moments.
+  - `GET /eval/runs` (the run table: per language its error rate and clip count, the no-speech check, hit@5 with found/n; the details: every rule set with what it drops from real speech, WER and CER with 95 % intervals, the clips' dates, hit@5 with its interval, capped recall@5, hit@10, MRR, the grid as questions found; it polls itself every 15 s while a run waits or runs); `POST /eval/runs` (`max_gain_db` 0–30, `vad_threshold`, both optional) → the run table, with the reason on top for a value it refuses; the `/eval` page shows the run form (with "run outside 08:00–22:00") and table. Jinja filters `pct`, `span`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4048,35 +4708,36 @@ diff --git a/brain/tests/test_eval_page.py b/brain/tests/test_eval_page.py
 +from loopi_brain.evaluation import golden, questions
  
  HX = {"HX-Request": "true"}
- NINE = dt.datetime(2026, 10, 14, 0, 0, tzinfo=dt.UTC)  # 09:00 in Seoul
-@@ -154,3 +155,77 @@ async def test_golden_files_are_served_only_for_their_samples(pool, pki_settings
-     assert (await web.get("/eval/audio/A1.opus")).status_code == 404
-     with pytest.raises(ValueError):
-         await golden.sample_exists(pool, "item", "A1")
+ NINE = dt.datetime(2026, 10, 20, 0, 0, tzinfo=dt.UTC)  # 09:00 in Seoul, after the device gain change (D19)
+@@ -199,3 +200,83 @@ async def test_golden_files_are_served_only_for_their_samples(pool, pki_settings
+ async def test_the_page_fits_a_phone(web):
+     css = (await web.get("/eval")).text
+     assert "textarea, input, select { max-width: 100%; box-sizing: border-box; }" in css
 +
 +
 +async def test_the_owner_writes_a_question_and_picks_its_correct_moments(pool, pki_settings, dev, web):
 +    d = dev["device_id"]
 +    market = await insert_moment(pool, d, kind="speech", ts=NINE, axis=0, text="Mai mình đi chợ <b>sớm</b>")
 +    await insert_moment(pool, d, kind="visual", ts=NINE + dt.timedelta(hours=1), axis=3, text="A dark room")
-+    form = {"text": "Khi nào đi chợ?", "from": "2026-10-14", "to": "2026-10-14"}
++    form = {"text": "Khi nào đi chợ?", "from": "2026-10-20", "to": "2026-10-20"}
 +    assert (await web.post("/eval/questions", data=form)).status_code == 403
 +    created = await web.post("/eval/questions", data=form, headers=HX)
 +    question_id = created.headers["HX-Redirect"].rsplit("/", 1)[1]
 +    page = _flat((await web.get(f"/eval/questions/{question_id}")).text)
-+    assert 'name="q" value="Khi nào đi chợ?"' in page and 'name="from" value="2026-10-14"' in page
++    assert 'name="q" value="Khi nào đi chợ?"' in page and 'name="from" value="2026-10-20"' in page
 +    assert "Chưa chọn moment đúng nào" in page
 +    search = f"/eval/questions/{question_id}/search"
 +    assert (await web.post(search, data={"q": "đi chợ"})).status_code == 403  # a POST, so no words in any URL
-+    found = (await web.post(search, data={"q": "đi chợ", "from": "2026-10-14", "to": "2026-10-14"}, headers=HX)).text
++    found = (await web.post(search, data={"q": "đi chợ", "from": "2026-10-20", "to": "2026-10-20"}, headers=HX)).text
 +    assert "&lt;b&gt;sớm&lt;/b&gt;" in found and f'"moment_id": "{market}"' in found
 +    picked = await web.post(f"/eval/questions/{question_id}/answers", data={"moment_id": market}, headers=HX)
 +    assert "Moment đúng (1)" in picked.text and "&lt;b&gt;sớm" in picked.text
-+    browsed = (await web.post(search, data={"q": "", "from": "2026-10-14", "to": "2026-10-14"}, headers=HX)).text
++    browsed = (await web.post(search, data={"q": "", "from": "2026-10-20", "to": "2026-10-20"}, headers=HX)).text
 +    assert browsed.count("Chọn là đúng") == 2  # every moment of the day, in time order
 +    assert "Chọn ngày" in (await web.post(search, data={"q": ""}, headers=HX)).text
-+    assert (await web.post(search, data={"q": "x", "from": "2026-10-15", "to": "2026-10-14"},
-+                           headers=HX)).status_code == 422
++    backwards = await web.post(search, data={"q": "x", "from": "2026-10-21", "to": "2026-10-20"}, headers=HX)
++    assert backwards.status_code == 200 and "Ngày đầu không được sau ngày cuối." in backwards.text
++    assert "chọn 1–3 khoảnh khắc tiêu biểu" in _flat((await web.get("/eval/questions")).text)
 +    listing = _flat((await web.get("/eval/questions")).text)
 +    assert "1/25 câu hỏi, 1 đã có moment đúng" in listing and "Khi nào đi chợ?</a>" in listing
 +    dropped = await web.post(f"/eval/questions/{question_id}/answers/{market}/delete", headers=HX)
@@ -4087,9 +4748,11 @@ diff --git a/brain/tests/test_eval_page.py b/brain/tests/test_eval_page.py
 +                            headers=HX)
 +    assert "Đã lưu câu hỏi." in edited.text
 +    assert (await questions.get_question(pool, question_id))["first_day"] is None
-+    assert (await web.post(f"/eval/questions/{question_id}", data={"text": " "}, headers=HX)).status_code == 422
-+    for bad in ({"text": "x", "from": "2026-10-15", "to": "2026-10-14"}, {"text": " \x00 "}):
-+        assert (await web.post("/eval/questions", data=bad, headers=HX)).status_code == 422
++    empty = await web.post(f"/eval/questions/{question_id}", data={"text": " "}, headers=HX)
++    assert empty.status_code == 200 and "Câu hỏi cần có chữ." in empty.text
++    for bad in ({"text": "x", "from": "2026-10-21", "to": "2026-10-20"}, {"text": " \x00 "}):
++        answer = await web.post("/eval/questions", data=bad, headers=HX)
++        assert answer.status_code == 200 and "HX-Redirect" not in answer.headers and 'class="err"' in answer.text
 +    removed = await web.post(f"/eval/questions/{question_id}/delete", headers=HX)
 +    assert removed.headers["HX-Redirect"] == "/eval/questions"
 +    for gone in (web.get(f"/eval/questions/{question_id}"),
@@ -4109,8 +4772,10 @@ diff --git a/brain/tests/test_eval_page.py b/brain/tests/test_eval_page.py
 +    room = await insert_moment(pool, dev["device_id"], kind="visual", ts=NINE, axis=3, text="A dark room")
 +    await questions.add_answer(pool, missed, room)
 +    assert "Chưa chạy lần nào." in (await web.get("/eval")).text
-+    assert (await web.post("/eval/runs", data={"vad_threshold": "2"}, headers=HX)).status_code == 422
-+    assert (await web.post("/eval/runs", data={"max_gain_db": "loud"}, headers=HX)).status_code == 422
++    for bad, said in (({"vad_threshold": "2"}, "Ngưỡng VAD nằm giữa 0 và 1."), ({"max_gain_db": "31"}, "0–30 dB"),
++                      ({"max_gain_db": "loud"}, "phải là số")):
++        answer = await web.post("/eval/runs", data=bad, headers=HX)
++        assert answer.status_code == 200 and said in answer.text and "Chưa chạy lần nào." in answer.text
 +    started = await web.post("/eval/runs", data={"max_gain_db": "", "vad_threshold": "0.4"}, headers=HX)
 +    assert "đang chờ" in started.text and 'hx-trigger="every 15s"' in started.text and "vad_threshold=0.4" in started.text
 +    again = await web.post("/eval/runs", data={}, headers=HX)
@@ -4120,7 +4785,8 @@ diff --git a/brain/tests/test_eval_page.py b/brain/tests/test_eval_page.py
 +    await run_jobs(make_ctx(pool, pki_settings, transcriber=FakeTranscriber(heard)))
 +    page = _flat((await web.get("/eval")).text)
 +    assert "xong" in page and "20.0 % <span class=\"muted\">(1 đoạn)</span>" in page
-+    assert "Recall (1 câu hỏi): @5 0.0 % (mục tiêu 70 %)" in page
++    assert "hit@5 0.0 % = 0/1 (95 % 0.0–79.3 %; mục tiêu 70 %, D22)" in page and "(0/1)</span>" in page
++    assert "WER (95 %)" in page and "ghi từ 2026-10-20 đến 2026-10-20" in page and "0 đoạn (0 từ)" in page
 +    assert "Chưa có moment đúng trong 5 kết quả đầu:</p><ul><li>Phòng tối lúc nào?</li>" in page
 +    order = [page.index(f"<tr><td>{name}") for name in ("live", "none", "outro", "lone_phrase", "short_foreign", "all")]
 +    assert order == sorted(order)
@@ -4132,7 +4798,7 @@ diff --git a/brain/tests/test_eval_page.py b/brain/tests/test_eval_page.py
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd brain && uv run pytest tests/test_eval_page.py -q`
-Expected: FAIL — `2 failed, 7 passed`: the question routes do not exist (`assert 404 == 403`) and `/eval` has no run table (`assert 'Chưa chạy lần nào.' in …`).
+Expected: FAIL — `2 failed, 11 passed`: the question routes do not exist (`assert 404 == 403`) and `/eval` has no run table (`assert 'Chưa chạy lần nào.' in …`).
 
 - [ ] **Step 3: Add the routes**
 
@@ -4140,8 +4806,8 @@ Expected: FAIL — `2 failed, 7 passed`: the question routes do not exist (`asse
 diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/web/eval_routes.py
 --- a/brain/src/loopi_brain/web/eval_routes.py
 +++ b/brain/src/loopi_brain/web/eval_routes.py
-@@ -2,15 +2,17 @@
- starts evaluation runs. Everything shown comes from the database and LOOPI_EVAL_DIR; nothing is logged with text."""
+@@ -5,15 +5,17 @@ A form the owner filled in is never lost to an error: a value that cannot be sav
+ the reason next to it (a phone shows no message at the top of a long page)."""
  from __future__ import annotations
  
 +import datetime as dt
@@ -4159,8 +4825,8 @@ diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/we
 +from .search_routes import KIND_LABELS, OptionalDate, hit_view
  
  log = logging.getLogger(__name__)
- LANGUAGE_LABELS = {"vi": "Tiếng Việt", "ko": "Tiếng Hàn", "en": "Tiếng Anh", "": "Whisper không nghe thấy lời nào",
-@@ -40,7 +42,7 @@ async def eval_page(request: Request):
+ LANGUAGE_LABELS = {"vi": "Tiếng Việt", "ko": "Tiếng Hàn", "en": "Tiếng Anh",
+@@ -51,7 +53,7 @@ async def eval_page(request: Request):
      return TEMPLATES.TemplateResponse(request, "eval.html", {
          "p": await golden.progress(pool), "q": await questions.counts(pool), "suggested": golden.AUDIO_SUGGESTED,
          "audio_target": golden.AUDIO_TARGET, "caption_target": golden.CAPTION_TARGET,
@@ -4169,7 +4835,7 @@ diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/we
      })
  
  
-@@ -201,3 +203,147 @@ async def picture_file(request: Request, sample_id: str):
+@@ -269,3 +271,163 @@ async def picture_file(request: Request, sample_id: str):
      if not await golden.sample_exists(request.app.state.pool, "eval_caption", sample_id):
          raise HTTPException(status_code=404, detail="unknown golden keyframe")
      return _eval_file(request, golden.keyframe_path(sample_id), "image/jpeg")
@@ -4177,10 +4843,20 @@ diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/we
 +
 +# ---- questions -----------------------------------------------------------------------------------------------------
 +
-+def _days(first: dt.date | None, last: dt.date | None) -> tuple[dt.date | None, dt.date | None]:
++DAYS_BACKWARDS = "Ngày đầu không được sau ngày cuối."
++NO_QUESTION = "Câu hỏi cần có chữ."
++RUN_VALUES = {"gain": "Gain tối đa là 0–30 dB (D19).", "vad": "Ngưỡng VAD nằm giữa 0 và 1.",
++              "number": "Gain và ngưỡng VAD phải là số (hoặc để trống)."}
++
++
++def _question_error(text: str, first: dt.date | None, last: dt.date | None) -> str | None:
 +    if first and last and first > last:
-+        raise HTTPException(status_code=422, detail="the first day must not be after the last")
-+    return first, last
++        return DAYS_BACKWARDS
++    return None if golden.clean_text(text, questions.TEXT_MAX) else NO_QUESTION
++
++
++def _error(text: str, tag: str = "p") -> HTMLResponse:
++    return HTMLResponse(f'<{tag} class="err" role="alert">{text}</{tag}>')
 +
 +
 +@router.get("/eval/questions", response_class=HTMLResponse)
@@ -4196,10 +4872,10 @@ diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/we
 +async def new_question(request: Request, text: str = Form(..., max_length=2000),
 +                       first: OptionalDate = Form(default=None, alias="from"),
 +                       last: OptionalDate = Form(default=None, alias="to")):
-+    try:
-+        question_id = await questions.create_question(request.app.state.pool, text, *_days(first, last))
-+    except ValueError as exc:
-+        raise HTTPException(status_code=422, detail=str(exc)) from exc
++    error = _question_error(text, first, last)
++    if error:  # shown next to the form, which keeps what was typed
++        return _error(error)
++    question_id = await questions.create_question(request.app.state.pool, text, first, last)
 +    return HTMLResponse("", headers={"HX-Redirect": f"/eval/questions/{question_id}"})
 +
 +
@@ -4223,11 +4899,10 @@ diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/we
 +async def edit_question(request: Request, question_id: str, text: str = Form(..., max_length=2000),
 +                        first: OptionalDate = Form(default=None, alias="from"),
 +                        last: OptionalDate = Form(default=None, alias="to")):
-+    try:
-+        found = await questions.update_question(request.app.state.pool, question_id, text, *_days(first, last))
-+    except ValueError as exc:
-+        raise HTTPException(status_code=422, detail=str(exc)) from exc
-+    if not found:
++    error = _question_error(text, first, last)
++    if error:
++        return _error(error, "span")
++    if not await questions.update_question(request.app.state.pool, question_id, text, first, last):
 +        raise HTTPException(status_code=404, detail="unknown question")
 +    return HTMLResponse('<span class="online">Đã lưu câu hỏi.</span>')
 +
@@ -4251,8 +4926,10 @@ diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/we
 +):
 +    state = request.app.state
 +    zone = state.settings.zone
++    if first and last and first > last:
++        return _error(DAYS_BACKWARDS)
 +    hits = await questions.label_search(state.pool, search.request_router(state.settings, state.llm), q,
-+                                        *_days(first, last), zone)
++                                        first, last, zone)
 +    return TEMPLATES.TemplateResponse(request, "_eval_hits.html", {
 +        "question_id": question_id, "hits": [hit_view(hit, zone) for hit in hits], "browsing": not search.clean_query(q),
 +    })
@@ -4276,9 +4953,10 @@ diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/we
 +# ---- runs ----------------------------------------------------------------------------------------------------------
 +
 +TEMPLATES.env.filters["pct"] = runner.pct
++TEMPLATES.env.filters["span"] = runner.span
 +
 +
-+async def _runs_context(request: Request) -> dict:
++async def _runs_context(request: Request, error: str | None = None) -> dict:
 +    state = request.app.state
 +    zone = state.settings.zone
 +    runs = await runner.list_runs(state.pool)
@@ -4293,7 +4971,7 @@ diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/we
 +        views.append(view)
 +    return {"runs": views, "active": any(r["status"] in ("waiting", "running") for r in runs),
 +            "settings": state.settings, "wer_limit": runner.WER_LIMIT, "distances": runner.DISTANCES,
-+            "similarities": runner.SIMILARITIES, "variants": runner.VARIANTS}
++            "similarities": runner.SIMILARITIES, "variants": runner.VARIANTS, "error": error}
 +
 +
 +@router.get("/eval/runs", response_class=HTMLResponse)
@@ -4302,21 +4980,25 @@ diff --git a/brain/src/loopi_brain/web/eval_routes.py b/brain/src/loopi_brain/we
 +
 +
 +def _optional_float(value: str) -> float | None:
-+    try:
-+        return float(value) if value.strip() else None
-+    except ValueError as exc:
-+        raise HTTPException(status_code=422, detail="not a number") from exc
++    return float(value) if value.strip() else None
 +
 +
 +@router.post("/eval/runs", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 +async def start_run(request: Request, max_gain_db: str = Form(""), vad_threshold: str = Form("")):
 +    state = request.app.state
++    error = None
 +    try:
-+        await runner.start_run(state.pool, state.settings, max_gain_db=_optional_float(max_gain_db),
-+                               vad_threshold=_optional_float(vad_threshold))
-+    except ValueError as exc:
-+        raise HTTPException(status_code=422, detail=str(exc)) from exc
-+    return TEMPLATES.TemplateResponse(request, "_eval_runs.html", await _runs_context(request))
++        gain, vad = _optional_float(max_gain_db), _optional_float(vad_threshold)
++    except ValueError:
++        error = RUN_VALUES["number"]
++    else:
++        if gain is not None and not 0.0 <= gain <= runner.MAX_GAIN_DB:
++            error = RUN_VALUES["gain"]
++        elif vad is not None and not 0.0 < vad < 1.0:
++            error = RUN_VALUES["vad"]
++        else:
++            await runner.start_run(state.pool, state.settings, max_gain_db=gain, vad_threshold=vad)
++    return TEMPLATES.TemplateResponse(request, "_eval_runs.html", await _runs_context(request, error))
 ```
 
 - [ ] **Step 4: Write the templates**
@@ -4328,22 +5010,24 @@ Create `brain/src/loopi_brain/web/templates/eval_questions.html`:
 {% block content %}
 <h1>Đánh giá · Câu hỏi</h1>
 <p><a href="/eval">← Đánh giá</a> · {{ q.questions }}/{{ target }} câu hỏi, {{ q.answered }} đã có moment đúng</p>
-<p class="muted">Viết câu hỏi như khi hỏi trang Tìm kiếm, rồi chọn (các) khoảnh khắc trả lời đúng câu đó. "Hôm qua",
-  "sáng nay" trong câu hỏi: chọn ngày mà câu hỏi nói tới.</p>
-<form class="card" hx-post="/eval/questions">
+<p class="muted">Viết câu hỏi như khi hỏi trang Tìm kiếm, rồi chọn 1–3 khoảnh khắc tiêu biểu trả lời đúng câu đó (một
+  câu hỏi được tính là tìm thấy khi ít nhất một khoảnh khắc đúng nằm trong 5 kết quả đầu, D22). "Hôm qua", "sáng nay"
+  trong câu hỏi: chọn ngày mà câu hỏi nói tới.</p>
+<form class="card" hx-post="/eval/questions" hx-target="#question-result">
   <input name="text" required maxlength="500" size="60" placeholder="Ví dụ: Hôm qua mình hẹn đi đâu?">
   <label>Từ ngày <input type="date" name="from"></label>
   <label>đến ngày <input type="date" name="to"></label>
   <button>Thêm câu hỏi</button>
+  <div id="question-result"></div>
 </form>
-<table>
+<div class="scroll"><table>
   <tr><th>Câu hỏi</th><th>Ngày</th><th>Moment đúng</th></tr>
   {% for row in questions %}
   <tr><td><a href="/eval/questions/{{ row.id }}">{{ row.text }}</a></td>
     <td>{% if row.first_day or row.last_day %}{{ row.first_day or "…" }} – {{ row.last_day or "…" }}{% else %}—{% endif %}</td>
     <td>{% if row.answers %}{{ row.answers }}{% else %}<span class="err">chưa chọn</span>{% endif %}</td></tr>
   {% else %}<tr><td colspan="3" class="muted">Chưa có câu hỏi nào.</td></tr>{% endfor %}
-</table>
+</table></div>
 {% endblock %}
 ```
 
@@ -4368,7 +5052,8 @@ Create `brain/src/loopi_brain/web/templates/eval_question.html`:
   <label>Từ ngày <input type="date" name="from" value="{{ question.first_day or '' }}"></label>
   <label>đến ngày <input type="date" name="to" value="{{ question.last_day or '' }}"></label>
   <button>Tìm</button>
-  <p class="muted">Tìm rộng hơn trang Tìm kiếm (tối đa 50 kết quả). Để trống ô chữ và chọn ngày để xem mọi khoảnh khắc của ngày đó theo giờ.</p>
+  <p class="muted">Tìm rộng hơn trang Tìm kiếm (tối đa 50 kết quả). Để trống ô chữ và chọn ngày để xem mọi khoảnh khắc của ngày đó theo giờ.
+    Chọn 1–3 khoảnh khắc tiêu biểu là đủ.</p>
 </form>
 <div id="hits"></div>
 {% endblock %}
@@ -4408,9 +5093,10 @@ Create `brain/src/loopi_brain/web/templates/_eval_runs.html`:
 
 ```html
 <div id="runs"{% if active %} hx-get="/eval/runs" hx-trigger="every 15s" hx-swap="outerHTML"{% endif %}>
-  <table>
+  {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  <div class="scroll"><table>
     <tr><th>Lần chạy</th><th>Trạng thái</th><th>Tiếng Việt (WER)</th><th>Tiếng Hàn (CER)</th><th>Tiếng Anh (WER)</th>
-      <th>Không lời: bịa câu</th><th>Recall@5</th></tr>
+      <th>Không lời: bịa câu</th><th>Hit@5</th></tr>
     {% for r in runs %}
     {% set live = r.results.asr.variants.live if r.results else none %}
     <tr>
@@ -4421,30 +5107,39 @@ Create `brain/src/loopi_brain/web/templates/_eval_runs.html`:
       <td>{% if row %}{% if row.over_limit %}<strong class="err">{{ row.score|pct }}</strong>{% else %}{{ row.score|pct }}{% endif %} <span class="muted">({{ row.clips }} đoạn)</span>{% else %}—{% endif %}</td>
       {% endfor %}
       <td>{% if live and live.no_speech.clips %}{{ live.no_speech.invented }}/{{ live.no_speech.clips }}{% else %}—{% endif %}</td>
-      <td>{% if r.results and r.results.recall.at5 is defined %}{{ r.results.recall.at5|pct }}{% elif r.results %}<span class="muted">chưa đo</span>{% else %}—{% endif %}</td>
+      <td>{% if r.results and r.results.recall.hit5 is defined %}{{ r.results.recall.hit5|pct }} <span class="muted">({{ r.results.recall.found5 }}/{{ r.results.recall.questions }})</span>{% elif r.results %}<span class="muted">chưa đo</span>{% else %}—{% endif %}</td>
     </tr>
     {% if r.results %}
     <tr><td colspan="7"><details><summary>Chi tiết</summary>
+      {% set a = r.results.asr %}
       <p>ASR {{ r.config.models.asr if r.config.models else "" }}, gain ≤ {{ r.config.max_gain_db }} dB, VAD {{ r.config.vad_threshold }},
-        luật đang bật: {{ r.config.rules|join(", ") or "không" }}. Lỗi trên {{ (wer_limit * 100)|round|int }} % thì phải đổi model hoặc cấu hình (§14).</p>
-      <table><tr><th>Luật lọc</th><th>vi</th><th>ko</th><th>en</th><th>Không lời: bịa câu (số từ)</th></tr>
-      {% for name in variants if name in r.results.asr.variants %}{% set v = r.results.asr.variants[name] %}
+        luật đang bật: {{ r.config.rules|join(", ") or "không" }}. {{ a.clips }} đoạn{% if a.recorded %}, ghi từ {{ a.recorded.first }} đến {{ a.recorded.last }}{% endif %};
+        transcript chuẩn sửa từ chữ của Whisper: {{ a.prefilled }}, tự gõ sau khi nghe: {{ a.blind }}.
+        Lỗi trên {{ (wer_limit * 100)|round|int }} % (WER cho tiếng Việt, tiếng Anh; CER cho tiếng Hàn, D22) thì phải đổi model hoặc cấu hình (§14).</p>
+      <div class="scroll"><table><tr><th>Luật lọc</th><th>vi</th><th>ko</th><th>en</th><th>Không lời: bịa câu (số từ)</th><th>Bỏ khỏi lời nói thật</th></tr>
+      {% for name in variants if name in a.variants %}{% set v = a.variants[name] %}
         <tr><td>{{ name }}{% if name == "live" %} ({{ v.rules|join(", ") or "không" }}){% endif %}</td>
         {% for lang in ("vi", "ko", "en") %}{% set row = v.languages.get(lang) %}<td>{{ row.score|pct if row else "—" }}</td>{% endfor %}
-        <td>{{ v.no_speech.invented }}/{{ v.no_speech.clips }} ({{ v.no_speech.words }})</td></tr>
-      {% endfor %}</table>
+        <td>{{ v.no_speech.invented }}/{{ v.no_speech.clips }} ({{ v.no_speech.words }})</td>
+        <td>{{ v.dropped.segments }} đoạn ({{ v.dropped.words }} từ)</td></tr>
+      {% endfor %}</table></div>
+      <div class="scroll"><table><tr><th>Ngôn ngữ</th><th>Số đoạn</th><th>WER (95 %)</th><th>CER (95 %)</th></tr>
+      {% for lang in ("vi", "ko", "en") %}{% set row = live.languages.get(lang) %}
+        <tr><td>{{ lang }}</td>{% if row %}<td>{{ row.clips }}</td><td>{{ row.wer|pct }} ({{ row.wer_ci|span }})</td><td>{{ row.cer|pct }} ({{ row.cer_ci|span }})</td>{% else %}<td colspan="3">chưa đo được (không có đoạn nào)</td>{% endif %}</tr>
+      {% endfor %}</table></div>
+      <p>Không có lời nói: {{ live.no_speech.clips }} đoạn ({{ live.no_speech.with_text }} đoạn Whisper có viết chữ lúc gán nhãn), bịa câu ở {{ live.no_speech.invented }} ({{ live.no_speech.rate|pct }}, 95 % {{ live.no_speech.rate_ci|span }}).</p>
       <p>Mô tả khung hình: {% for model, c in r.results.captions.items() %}{{ model }}: {{ c.scored }} khung hình, điểm trung bình {{ "%.2f"|format(c.mean) }}, ≥ 4: {{ c.good }}; sai số người {{ c.wrong_people }}, bịa đồ vật {{ c.invented_objects }}, sai hoạt động {{ c.wrong_activity }}. {% else %}chưa chấm. {% endfor %}</p>
       {% set rc = r.results.recall %}
-      {% if rc.at5 is defined %}
-      <p>Recall ({{ rc.questions }} câu hỏi): @5 {{ rc.at5|pct }} (mục tiêu 70 %), @10 {{ rc.at10|pct }}, hit@5 {{ rc.hit5|pct }}, MRR {{ "%.2f"|format(rc.mrr) }}{% if not rc.semantic %} — chỉ tìm theo chữ{% endif %}.</p>
-      <table><tr><th>Khoảng cách tối đa</th>{% for s in similarities %}<th>độ giống chữ ≥ {{ s }}</th>{% endfor %}</tr>
-      {% for d in distances %}<tr><td>{{ d }}</td>{% for g in rc.grid if g.max_distance == d %}<td>{{ g.at5|pct }}</td>{% endfor %}</tr>{% endfor %}</table>
+      {% if rc.hit5 is defined %}
+      <p>Tìm kiếm ({{ rc.questions }} câu hỏi, mỗi câu tìm trong các ngày bạn đã chọn, không qua bộ lọc thời gian của chat): hit@5 {{ rc.hit5|pct }} = {{ rc.found5 }}/{{ rc.questions }} (95 % {{ rc.hit5_ci|span }}; mục tiêu 70 %, D22), recall@5 có giới hạn {{ rc.recall5|pct }}, hit@10 {{ rc.hit10|pct }}, MRR {{ "%.2f"|format(rc.mrr) }}{% if not rc.semantic %} — chỉ tìm theo chữ{% endif %}.</p>
+      <div class="scroll"><table><tr><th>Khoảng cách tối đa</th>{% for s in similarities %}<th>độ giống chữ ≥ {{ s }}</th>{% endfor %}</tr>
+      {% for d in distances %}<tr><td>{{ d }}</td>{% for g in rc.grid if g.max_distance == d %}<td>{{ g.found5 }}/{{ rc.questions }}</td>{% endfor %}</tr>{% endfor %}</table></div>
       {% if r.missed %}<p>Chưa có moment đúng trong 5 kết quả đầu:</p><ul>{% for text in r.missed %}<li>{{ text }}</li>{% endfor %}</ul>{% endif %}
-      {% else %}<p>Recall: chưa đo ({{ rc.error or "chưa có câu hỏi nào có moment đúng" }}).</p>{% endif %}
+      {% else %}<p>Tìm kiếm: chưa đo ({{ rc.error or "chưa có câu hỏi nào có moment đúng" }}).</p>{% endif %}
     </details></td></tr>
     {% endif %}
     {% else %}<tr><td colspan="7" class="muted">Chưa chạy lần nào.</td></tr>{% endfor %}
-  </table>
+  </table></div>
 </div>
 ```
 
@@ -4454,19 +5149,20 @@ Apply to `brain/src/loopi_brain/web/templates/eval.html`:
 diff --git a/brain/src/loopi_brain/web/templates/eval.html b/brain/src/loopi_brain/web/templates/eval.html
 --- a/brain/src/loopi_brain/web/templates/eval.html
 +++ b/brain/src/loopi_brain/web/templates/eval.html
-@@ -16,4 +16,15 @@
+@@ -16,4 +16,16 @@
    <h2><a href="/eval/questions">Câu hỏi</a>: {{ q.questions }}/{{ question_target }} câu</h2>
    <p>Đã chọn moment đúng: {{ q.answered }}</p>
  </section>
 +<section class="card" id="evaluation-runs">
 +  <h2>Chạy đánh giá</h2>
 +  <form hx-post="/eval/runs" hx-target="#runs" hx-swap="outerHTML">
-+    <label>Gain tối đa (dB) <input type="number" name="max_gain_db" min="0" max="60" step="0.5" placeholder="{{ settings.asr_max_gain_db }}"></label>
++    <label>Gain tối đa (dB) <input type="number" name="max_gain_db" min="0" max="30" step="0.5" placeholder="{{ settings.asr_max_gain_db }}"></label>
 +    <label>Ngưỡng VAD <input type="number" name="vad_threshold" min="0.05" max="0.95" step="0.05" placeholder="{{ settings.asr_vad_threshold }}"></label>
 +    <button>Chạy đánh giá</button>
 +  </form>
 +  <p class="muted">Nhận dạng lại mọi đoạn trong bộ đánh giá bằng đường ASR hiện tại (để trống = cấu hình đang chạy), chấm mọi bộ
-+    luật lọc, tổng hợp điểm mô tả và đo recall. Worker làm từng đoạn một, sau mọi việc đang chờ, nên mất vài phút.</p>
++    luật lọc, tổng hợp điểm mô tả và đo tìm kiếm. Worker làm từng đoạn một, sau mọi việc đang chờ, nên mất vài phút;
++    nên chạy ngoài 08:00–22:00 để không chiếm CPU lúc đang ghi.</p>
 +  {% include "_eval_runs.html" %}
 +</section>
  {% endblock %}
@@ -4475,10 +5171,10 @@ diff --git a/brain/src/loopi_brain/web/templates/eval.html b/brain/src/loopi_bra
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_eval_page.py -q`
-Expected: `9 passed`.
+Expected: `13 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `762 passed, 1 skipped`, `TOTAL … 99%`.
+Expected: `775 passed, 1 skipped`, `TOTAL … 99%`.
 
 - [ ] **Step 6: Commit**
 
@@ -4505,8 +5201,8 @@ EOF
 - Test: `brain/tests/test_acceptance.py` (new)
 
 **Interfaces:**
-- Consumes: Task 6's `runner.latest_run(pool, finished=True)`, `runner.pct`, `runner.asr_numbers` (tests); P2b `days.day_bounds_utc`, `days.local_now`; tables `keyframe`, `item`, `moment`, `day_recap`, `transcript_segment`.
-- Produces (`loopi_brain.acceptance`): `LATENCY_TARGET_S = 900`, `DAY_HOURS = (8, 22)`; `window(zone, days, now=None) -> (dates, start, end)` (the last `days` complete local days; ValueError below 1); `latency(pool, zone, days, now=None) -> {"days", "video", "audio", "video_by_day", "audio_by_day"}` (each `{"n", "avg", "p95"}` in seconds); `recaps(pool, zone, days, now=None) -> [{"day", "moments", "recap_at", "stale"}]`; `per_day(pool, zone, days, now=None) -> [{"day", "keyframes", "speech_min"}]`; `CpuSample(service, at, usage_usec, started)`; `parse_cpu(text) -> (samples, peaks)`; `cpu_per_day(samples) -> {service: {"first", "last", "hours", "restarted", "cpu_s", "per_day_s"}}`; `report(pool, zone, days, samples_text=None, now=None) -> str` (Markdown). CLI: `loopi-brain acceptance [--days 7] [--cpu-samples FILE|-]` (exit 2 for `--days` < 1).
+- Consumes: Task 6's `runner.latest_run(pool, finished=True)`, `runner.pct`, `runner.span`, `runner.asr_numbers` (tests); P2b `days.day_bounds_utc`, `days.local_now`; tables `keyframe`, `item`, `moment`, `day_recap`, `transcript_segment`.
+- Produces (`loopi_brain.acceptance`): `LATENCY_TARGET_S = 900`, `DAY_HOURS = (8, 22)`, `LATE_S = 21600`; `window(zone, days, now=None) -> (dates, start, end)` (the last `days` complete local days; ValueError below 1); `latency(pool, zone, days, now=None, exclude=()) -> {"days", "excluded", "video", "audio", "video_by_day", "audio_by_day"}` (each `{"n", "avg", "p95", "late"}` in seconds; `late` = delays over 6 h; days in `exclude` left out); `recaps(pool, zone, days, now=None) -> [{"day", "moments", "recap_at", "stale"}]`; `per_day(pool, zone, days, now=None) -> [{"day", "keyframes", "speech_min"}]`; `CpuSample(service, at, usage_usec, started)`; `parse_cpu(text) -> (samples, peaks)`; `cpu_per_day(samples) -> {service: {"first", "last", "hours", "restarted", "cpu_s", "per_day_s"}}`; `report(pool, zone, days, samples_text=None, now=None, exclude=()) -> str` (Markdown: WER and CER for every language with n and intervals, "not measurable" for a language without a clip, the clips' dates, hit@5 with its interval and the owner's-days caveat). CLI: `loopi-brain acceptance [--days 7] [--cpu-samples FILE|-] [--exclude-day YYYY-MM-DD …]` (exit 2 for `--days` < 1).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4572,11 +5268,12 @@ async def _evaluated(pool) -> None:
 
     clips = [clip("vi", "một hai ba bốn", "một hai ba"), clip("ko", "네 알겠어요", "네 알겠어요")]
     results = {
-        "asr": {"clips": 2, "failed": 0, "variants": {"live": {"rules": [], **runner.asr_numbers(clips, [])}}},
+        "asr": {"clips": 2, "failed": 0, "recorded": {"first": "2026-10-16", "last": "2026-10-20"}, "prefilled": 1,
+                "blind": 1, "variants": {"live": {"rules": [], **runner.asr_numbers(clips, [])}}},
         "captions": {"ollama:minicpm-v4.6:1b": {"scored": 30, "mean": 3.5, "good": 18, "wrong_people": 2,
                                                 "invented_objects": 4, "wrong_activity": 1}},
-        "recall": {"questions": 25, "at5": 0.72, "at10": 0.8, "hit5": 0.84, "mrr": 0.61, "semantic": True,
-                   "meets_target": True, "per_question": [], "grid": []},
+        "recall": {"questions": 25, "found5": 18, "hit5": 0.72, "hit5_ci": [0.5242, 0.8572], "recall5": 0.68,
+                   "hit10": 0.8, "mrr": 0.61, "semantic": True, "meets_target": True, "per_question": [], "grid": []},
     }
     async with pool.connection() as conn:
         await conn.execute("INSERT INTO eval_run (id, status, config, results, requested_at) VALUES"
@@ -4599,6 +5296,12 @@ async def test_the_latency_counts_recordings_that_ended_between_8_and_22(pool, p
     assert (found["video"]["n"], found["video"]["avg"], found["video"]["p95"]) == (2, 180.0, pytest.approx(234.0))
     assert (found["audio"]["n"], found["audio"]["avg"], found["audio"]["p95"]) == (2, 60.0, pytest.approx(87.0))
     assert set(found["video_by_day"]) == {dt.date(2026, 10, 15)} and set(found["audio_by_day"]) == {dt.date(2026, 10, 16)}
+    await _transcribed(pool, d, local(16, 11), 7 * 3600)  # re-transcribed a week later: a reprocess, not latency
+    found = await acceptance.latency(pool, SEOUL, 2, now=NOW)
+    assert (found["audio"]["n"], found["audio"]["late"]) == (3, 1)
+    found = await acceptance.latency(pool, SEOUL, 2, now=NOW, exclude=[dt.date(2026, 10, 16)])
+    assert found["audio"]["n"] == 0 and found["video"]["n"] == 2 and found["excluded"] == [dt.date(2026, 10, 16)]
+    assert "Left out (reprocessed): 2026-10-16" in acceptance._latency_lines(found)
     with pytest.raises(ValueError):
         acceptance.window(SEOUL, 0)
 
@@ -4646,13 +5349,16 @@ async def test_the_report_holds_the_numbers_and_never_the_text(pool, pki_setting
     await _evaluated(pool)
     text = await acceptance.report(pool, SEOUL, 2, CPU, now=NOW)
     assert text.startswith("## P2 acceptance numbers (spec §14) — 2026-10-15 … 2026-10-16 (2 days, Asia/Seoul)")
-    assert "| video → caption | 1 | 1.0 min | 1.0 min | met |" in text
-    assert "| audio → transcript | 1 | 0.5 min | 0.5 min | met |" in text
+    assert "| video → caption | 1 | 1.0 min | 1.0 min | 0 | met |" in text
+    assert "| audio → transcript | 1 | 0.5 min | 0.5 min | 0 | met |" in text
     assert "### ASR (evaluation run R1," in text
-    assert "| vi | 1 | WER | 25.0 % | yes |" in text and "| ko | 1 | CER | 0.0 % | yes |" in text
-    assert "| en | 0 | — | — | no clip |" in text
+    assert "Golden clips: 2, recorded 2026-10-16 … 2026-10-20; references edited from Whisper's text: 1" in text
+    assert "| vi | 1 | 4 | 25.0 % (—) | 11 | 27.3 % (—) | yes (WER) |" in text and "| yes (WER) |" in text and "| yes (CER) |" in text
+    assert "| en | 0 | — | — | — | — | not measurable (no clip) |" in text
+    assert "Baseline measured for: vi, ko; not measurable (no clip): en" in text
     assert "- ollama:minicpm-v4.6:1b: 30 keyframes, mean 3.50/5, ≥ 4: 18" in text
-    assert "72.0 % over 25 questions (met); @10 80.0 %, hit@5 84.0 %, MRR 0.61" in text
+    assert ("hit@5 72.0 %: 18 of 25 questions (95 % 52.4–85.7 %; met); capped recall@5 68.0 %, hit@10 80.0 %,"
+            " MRR 0.61. Each question was searched with the owner's days for it") in text
     assert "| 2026-10-16 | 1 | 2 min |" in text  # keyframes and speech of the day
     assert "bí mật" not in text and "một hai" not in text  # numbers only
 
@@ -4672,19 +5378,23 @@ def test_the_cli_prints_the_report(database_url, monkeypatch, capsys, tmp_path):
     assert out.startswith("## P2 acceptance numbers") and "| worker |" in out
     monkeypatch.setattr("sys.stdin", io.StringIO(CPU))
     assert cli.main(["acceptance", "--cpu-samples", "-"]) == 0 and "| models |" in capsys.readouterr().out
+    assert cli.main(["acceptance", "--days", "2", "--exclude-day", "2026-10-15", "--exclude-day", "2026-10-16"]) == 0
+    assert "Left out (reprocessed): 2026-10-15, 2026-10-16" in capsys.readouterr().out
     assert cli.main(["acceptance", "--days", "0"]) == 2
     assert _rows(database_url) == before  # read only
 
 
 def test_what_the_last_run_could_not_measure_is_said():
     run = {"id": "R", "requested_at": NOW, "results": {
-        "asr": {"variants": {"live": {"rules": ["outro"], "languages": {},
-                                      "no_speech": {"clips": 0, "invented": 0, "words": 0, "rate": None}}}},
+        "asr": {"clips": 0, "variants": {"live": {"rules": ["outro"], "languages": {},
+                                                  "no_speech": {"clips": 0, "with_text": 0, "invented": 0, "words": 0,
+                                                                "rate": None, "rate_ci": None}}}},
         "captions": {}, "recall": {"questions": 0}}}
     lines = acceptance._evaluation_lines(run, SEOUL)
     assert lines[0] == "### ASR (evaluation run R, 2026-10-17 10:00; rules: outro)"
     assert "- none scored" in lines and lines[-1] == "Not measured: no question with a correct moment"
-    assert "No-speech clips: 0, with invented text: 0 (—, 0 words)" in lines
+    assert "No-speech clips: 0 (0 with Whisper's text when labelled), with invented text: 0 (—, 95 % —; 0 words)" in lines
+    assert "Baseline measured for: none; not measurable (no clip): vi, ko, en" in lines
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -4701,10 +5411,14 @@ Create `brain/src/loopi_brain/acceptance.py`:
 
 - Latency from recording to caption (a video segment's end → its keyframe's caption) and to transcript (an audio
   segment's end → its transcription) for recordings that ended between 08:00 and 22:00 local time, over the last
-  N complete local days: average and p95, overall and per day. Target: average ≤ 15 minutes.
+  N complete local days: average and p95, overall and per day. Target: average ≤ 15 minutes. A day the owner
+  reprocessed is left out on request (its captions and transcripts were redone days later), and delays over 6 h are
+  counted apart so a reprocess or a backlog shows.
 - A recap every evening: for each of those days with recorded moments, whether its recap exists and when it was
   written.
-- WER/CER per language (the 30 % rule) and recall@5 (target 70 %) from the newest finished evaluation run.
+- From the newest finished evaluation run (D22): WER and CER for every language with clip counts and 95 % intervals
+  (the 30 % rule reads WER for vi and en, CER for ko), the no-speech check, and hit@5 (target 70 %) with its interval,
+  capped recall@5, hit@10 and MRR; a language without a clip is "not measurable", never a pass.
 - CPU time per day from two cgroup samples per service, taken on the host as the P2a measurement window did
   (``<service> <UTC time> usage_usec <n> started=<container start>`` and ``<service> memory.peak <bytes>`` lines).
 - For context (spec §9.6): keyframes and minutes of transcribed speech per day.
@@ -4727,7 +5441,9 @@ _IN_HOURS = (
     "{ended} >= %(start)s AND {ended} < %(end)s"
     " AND extract(hour FROM {ended} AT TIME ZONE %(tz)s) >= %(first_hour)s"
     " AND extract(hour FROM {ended} AT TIME ZONE %(tz)s) < %(last_hour)s"
+    " AND NOT (({ended} AT TIME ZONE %(tz)s)::date = ANY(%(exclude)s::date[]))"
 )
+LATE_S = 6 * 3600  # a delay this long is a reprocess or a backlog, not live latency: counted apart
 VIDEO_DELAYS = (
     "SELECT (i.ended_at AT TIME ZONE %(tz)s)::date AS day, extract(epoch FROM k.captioned_at - i.ended_at)::float8 AS s"
     " FROM keyframe k JOIN item i ON i.id = k.item_id WHERE k.captioned_at IS NOT NULL AND "
@@ -4739,8 +5455,8 @@ AUDIO_DELAYS = (
     + _IN_HOURS.format(ended="ended_at")
 )
 _SUMMARY = (
-    "SELECT {by} count(*) AS n, avg(s) AS avg, percentile_cont(0.95) WITHIN GROUP (ORDER BY s) AS p95"
-    " FROM ({delays}) t {group}"
+    "SELECT {by} count(*) AS n, avg(s) AS avg, percentile_cont(0.95) WITHIN GROUP (ORDER BY s) AS p95,"
+    " count(*) FILTER (WHERE s > %(late)s) AS late FROM ({delays}) t {group}"
 )
 
 
@@ -4753,11 +5469,14 @@ def window(zone, days: int, now: dt.datetime | None = None) -> tuple[list[dt.dat
     return dates, day_bounds_utc(dates[0], zone)[0], day_bounds_utc(dates[-1], zone)[1]
 
 
-async def latency(pool: AsyncConnectionPool, zone, days: int, now: dt.datetime | None = None) -> dict:
-    """Recording → caption ("video") and recording → transcript ("audio") delays in seconds, overall and per day."""
+async def latency(pool: AsyncConnectionPool, zone, days: int, now: dt.datetime | None = None,
+                  exclude: list[dt.date] | tuple = ()) -> dict:
+    """Recording → caption ("video") and recording → transcript ("audio") delays in seconds, overall and per day,
+    without the days in ``exclude``; ``late`` counts the delays over 6 h."""
     dates, start, end = window(zone, days, now)
-    params = {"tz": str(zone), "start": start, "end": end, "first_hour": DAY_HOURS[0], "last_hour": DAY_HOURS[1]}
-    out: dict = {"days": dates}
+    params = {"tz": str(zone), "start": start, "end": end, "first_hour": DAY_HOURS[0], "last_hour": DAY_HOURS[1],
+              "exclude": list(exclude), "late": LATE_S}
+    out: dict = {"days": dates, "excluded": sorted(exclude)}
     async with pool.connection() as conn:
         for name, delays in (("video", VIDEO_DELAYS), ("audio", AUDIO_DELAYS)):
             cur = await conn.execute(_SUMMARY.format(by="", delays=delays, group=""), params)
@@ -4846,11 +5565,14 @@ def _minutes(seconds: float | None) -> str:
 def _latency_lines(found: dict) -> list[str]:
     lines = [f"### Latency, recordings that ended {DAY_HOURS[0]:02d}:00–{DAY_HOURS[1]:02d}:00 "
              "(target: average ≤ 15 min)", "",
-             "| Path | Recordings | Average | p95 | Target |", "|---|---|---|---|---|"]
+             "| Path | Recordings | Average | p95 | Over 6 h | Target |", "|---|---|---|---|---|---|"]
     for name, label in (("video", "video → caption"), ("audio", "audio → transcript")):
         row = found[name]
         verdict = "—" if not row["n"] else ("met" if row["avg"] <= LATENCY_TARGET_S else "not met")
-        lines.append(f"| {label} | {row['n']} | {_minutes(row['avg'])} | {_minutes(row['p95'])} | {verdict} |")
+        lines.append(f"| {label} | {row['n']} | {_minutes(row['avg'])} | {_minutes(row['p95'])} | {row['late']} | "
+                     f"{verdict} |")
+    if found["excluded"]:
+        lines += ["", f"Left out (reprocessed): {', '.join(str(day) for day in found['excluded'])}"]
     lines += ["", "| Day | video avg | video p95 | audio avg | audio p95 |", "|---|---|---|---|---|"]
     for day in found["days"]:
         video, audio = found["video_by_day"].get(day), found["audio_by_day"].get(day)
@@ -4875,28 +5597,46 @@ def _evaluation_lines(run: dict | None, zone) -> list[str]:
     if run is None:
         return ["### Evaluation", "", "No finished evaluation run yet (`loopi-brain eval run`)."]
     results = run["results"]
-    live = results["asr"]["variants"]["live"]
+    audio = results["asr"]
+    live = audio["variants"]["live"]
     when = run["requested_at"].astimezone(zone).strftime("%Y-%m-%d %H:%M")
+    recorded = audio.get("recorded")
     lines = [f"### ASR (evaluation run {run['id']}, {when}; rules: {', '.join(live['rules']) or 'none'})", "",
-             "| Language | Clips | Metric | Rate | ≤ 30 % |", "|---|---|---|---|---|"]
+             f"Golden clips: {audio['clips']}"
+             + (f", recorded {recorded['first']} … {recorded['last']}" if recorded else "")
+             + f"; references edited from Whisper's text: {audio.get('prefilled', 0)}, typed blind: "
+               f"{audio.get('blind', 0)}. The 30 % rule reads WER for vi and en, CER for ko (D22); 95 % intervals "
+               "resample whole clips.", "",
+             "| Language | Clips | Words | WER (95 %) | Characters | CER (95 %) | ≤ 30 % |",
+             "|---|---|---|---|---|---|---|"]
+    measured, missing = [], []
     for lang in ("vi", "ko", "en"):
         row = live["languages"].get(lang)
         if row is None:
-            lines.append(f"| {lang} | 0 | — | — | no clip |")
+            missing.append(lang)
+            lines.append(f"| {lang} | 0 | — | — | — | — | not measurable (no clip) |")
             continue
-        lines.append(f"| {lang} | {row['clips']} | {row['metric'].upper()} | {runner.pct(row['score'])} | "
-                     f"{'no — change the model or the configuration' if row['over_limit'] else 'yes'} |")
+        measured.append(lang)
+        verdict = "no — change the model or the configuration" if row["over_limit"] else "yes"
+        lines.append(f"| {lang} | {row['clips']} | {row['words']} | {runner.pct(row['wer'])} "
+                     f"({runner.span(row['wer_ci'])}) | {row['chars']} | {runner.pct(row['cer'])} "
+                     f"({runner.span(row['cer_ci'])}) | {verdict} ({row['metric'].upper()}) |")
     silent = live["no_speech"]
-    lines += ["", f"No-speech clips: {silent['clips']}, with invented text: {silent['invented']} "
-                  f"({runner.pct(silent['rate'])}, {silent['words']} words)", "", "### Captions (owner's scores)", ""]
+    lines += ["", f"Baseline measured for: {', '.join(measured) or 'none'}"
+                  + (f"; not measurable (no clip): {', '.join(missing)}" if missing else ""),
+              "", f"No-speech clips: {silent['clips']} ({silent['with_text']} with Whisper's text when labelled), "
+                  f"with invented text: {silent['invented']} ({runner.pct(silent['rate'])}, 95 % "
+                  f"{runner.span(silent['rate_ci'])}; {silent['words']} words)", "", "### Captions (owner's scores)", ""]
     lines += [f"- {model}: {row['scored']} keyframes, mean {row['mean']:.2f}/5, ≥ 4: {row['good']}"
               for model, row in results["captions"].items()] or ["- none scored"]
     recall = results["recall"]
-    lines += ["", "### Recall@5 (target ≥ 70 %)", ""]
-    if "at5" in recall:
-        lines.append(f"{runner.pct(recall['at5'])} over {recall['questions']} questions "
-                     f"({'met' if recall['meets_target'] else 'not met'}); @10 {runner.pct(recall['at10'])}, "
-                     f"hit@5 {runner.pct(recall['hit5'])}, MRR {recall['mrr']:.2f}")
+    lines += ["", "### Recall@5 = hit@5 (D22; target ≥ 70 %)", ""]
+    if "hit5" in recall:
+        lines.append(f"hit@5 {runner.pct(recall['hit5'])}: {recall['found5']} of {recall['questions']} questions "
+                     f"(95 % {runner.span(recall['hit5_ci'])}; {'met' if recall['meets_target'] else 'not met'}); "
+                     f"capped recall@5 {runner.pct(recall['recall5'])}, hit@10 {runner.pct(recall['hit10'])}, "
+                     f"MRR {recall['mrr']:.2f}. Each question was searched with the owner's days for it, not the "
+                     "chat's time filter.")
     else:
         lines.append(f"Not measured: {recall.get('error', 'no question with a correct moment')}")
     return lines
@@ -4923,11 +5663,11 @@ def _cpu_lines(samples_text: str | None) -> list[str]:
 
 
 async def report(pool: AsyncConnectionPool, zone, days: int, samples_text: str | None = None,
-                 now: dt.datetime | None = None) -> str:
-    """The P2 acceptance numbers as Markdown."""
+                 now: dt.datetime | None = None, exclude: list[dt.date] | tuple = ()) -> str:
+    """The P2 acceptance numbers as Markdown (``exclude``: days left out of the latency, e.g. reprocessed ones)."""
     dates, _start, _end = window(zone, days, now)
     lines = [f"## P2 acceptance numbers (spec §14) — {dates[0]} … {dates[-1]} ({days} days, {zone})", ""]
-    lines += _latency_lines(await latency(pool, zone, days, now)) + [""]
+    lines += _latency_lines(await latency(pool, zone, days, now, exclude)) + [""]
     lines += _recap_lines(await recaps(pool, zone, days, now)) + [""]
     lines += _evaluation_lines(await runner.latest_run(pool, finished=True), zone) + [""]
     lines += _cpu_lines(samples_text) + [""]
@@ -4943,17 +5683,19 @@ async def report(pool: AsyncConnectionPool, zone, days: int, samples_text: str |
 diff --git a/brain/src/loopi_brain/cli.py b/brain/src/loopi_brain/cli.py
 --- a/brain/src/loopi_brain/cli.py
 +++ b/brain/src/loopi_brain/cli.py
-@@ -38,6 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
-     run.add_argument("--timeout", type=float, default=3 * 3600, help="seconds to wait (default 3 h)")
-     show = eval_sub.add_parser("show", help="print the numbers of a run (default: the newest)")
-     show.add_argument("run_id", nargs="?")
+@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
+     compare.add_argument("second")
+     impact = eval_sub.add_parser("rules-impact", help="what each rule would drop from the live transcripts (counts)")
+     impact.add_argument("--days", type=int, default=7, help="transcripts written in the last DAYS days (default 7)")
 +    acceptance = sub.add_parser("acceptance", help="print the P2 acceptance numbers (spec §14) as Markdown")
 +    acceptance.add_argument("--days", type=int, default=7, help="complete local days before today (default 7)")
 +    acceptance.add_argument("--cpu-samples", help="the cgroup CPU samples of the measurement window ('-': stdin)")
++    acceptance.add_argument("--exclude-day", action="append", default=[], type=dt.date.fromisoformat,
++                            help="a local day (YYYY-MM-DD) left out of the latency, e.g. one reprocessed (repeatable)")
      return parser
  
  
-@@ -161,6 +164,29 @@ async def _eval(args: argparse.Namespace) -> int:
+@@ -177,6 +182,29 @@ async def _eval(args: argparse.Namespace) -> int:
          await pool.close()
  
  
@@ -4974,7 +5716,7 @@ diff --git a/brain/src/loopi_brain/cli.py b/brain/src/loopi_brain/cli.py
 +    pool = make_pool(settings.database_url)
 +    await pool.open()
 +    try:
-+        print(await report(pool, settings.zone, args.days, samples), end="")
++        print(await report(pool, settings.zone, args.days, samples, exclude=args.exclude_day), end="")
 +    finally:
 +        await pool.close()
 +    return 0
@@ -4983,7 +5725,7 @@ diff --git a/brain/src/loopi_brain/cli.py b/brain/src/loopi_brain/cli.py
  def main(argv: list[str] | None = None) -> int:
      args = build_parser().parse_args(argv)
      if args.cmd == "init-pki":
-@@ -179,4 +205,6 @@ def main(argv: list[str] | None = None) -> int:
+@@ -195,4 +223,6 @@ def main(argv: list[str] | None = None) -> int:
          return _models_pull()
      if args.cmd == "eval":
          return asyncio.run(_eval(args))
@@ -4998,7 +5740,7 @@ Run: `cd brain && uv run pytest tests/test_acceptance.py tests/test_cli.py -q`
 Expected: `9 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `768 passed, 1 skipped`, `TOTAL … 99%` (`acceptance.py` 100 %).
+Expected: `781 passed, 1 skipped`, `TOTAL … 99%` (`acceptance.py` 100 %).
 
 - [ ] **Step 6: Commit**
 
@@ -5007,8 +5749,9 @@ git add brain/src/loopi_brain/acceptance.py brain/src/loopi_brain/cli.py brain/t
 git commit -F - <<'EOF'
 feat(brain): loopi-brain acceptance prints the P2 acceptance numbers
 
-Latency 08:00-22:00 (average and p95, per day), a recap for every evening with recordings, WER/CER with the 30 %
-rule and recall@5 from the newest finished run, CPU time per day from two cgroup samples. Numbers only.
+Latency 08:00-22:00 (average and p95, per day, reprocessed days left out on request), a recap for every evening
+with recordings, WER and CER with intervals and the 30 % rule (D22), hit@5 from the newest finished run, CPU time per
+day from two cgroup samples. Numbers only.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
@@ -5024,7 +5767,7 @@ EOF
 
 **Interfaces:**
 - Consumes: Tasks 1–9 (setting names, commands, pages).
-- Produces: `LOOPI_EVAL_DIR: /srv/loopi/eval` in the `api` and `worker` environments (under the data-dir mount); no `LOOPI_ASR_RULES` / `LOOPI_ASR_VAD_THRESHOLD` pass-through (an empty variable would override a default the golden set chose); README section "Evaluation and acceptance (P2c)", including the CPU-sample loop Task 14 uses.
+- Produces: `LOOPI_EVAL_DIR: /srv/loopi/eval` in the `api` and `worker` environments (under the data-dir mount); no `LOOPI_ASR_RULES` / `LOOPI_ASR_VAD_THRESHOLD` pass-through (an empty variable would override a default the golden set chose); README section "Evaluation and acceptance (P2c)": the labelling guidance (cut-off date, ≥ 6 no-speech clips with Whisper's text, 1–3 moments per question), runs at night, `eval compare` and `eval rules-impact`, and the CPU-sample loop Task 14 uses (api, worker, models and db; a fresh dated file per window).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -5034,7 +5777,7 @@ Apply to `brain/tests/test_deploy.py`:
 diff --git a/brain/tests/test_deploy.py b/brain/tests/test_deploy.py
 --- a/brain/tests/test_deploy.py
 +++ b/brain/tests/test_deploy.py
-@@ -102,3 +102,18 @@ def test_the_anthropic_key_is_optional_and_comes_only_from_the_env_file():
+@@ -102,3 +102,19 @@ def test_the_anthropic_key_is_optional_and_comes_only_from_the_env_file():
          while route:
              assert route["provider"] != "anthropic", f"{task} routes to anthropic; keep the examples commented out"
              route = route.get("fallback")
@@ -5052,7 +5795,8 @@ diff --git a/brain/tests/test_deploy.py b/brain/tests/test_deploy.py
 +    assert not {"LOOPI_ASR_RULES", "LOOPI_ASR_VAD_THRESHOLD"} & set(SERVICES["worker"]["environment"])
 +    readme = (DEPLOY / "README.md").read_text()
 +    assert "## Evaluation and acceptance (P2c)" in readme and "loopi-brain eval run" in readme
-+    assert "loopi-brain acceptance" in readme
++    assert "loopi-brain acceptance" in readme and "for s in api worker models db; do" in readme
++    assert "loopi-brain eval compare" in readme and "loopi-brain eval rules-impact" in readme
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -5066,7 +5810,7 @@ Expected: FAIL — `1 failed, 8 passed`: `KeyError: 'LOOPI_EVAL_DIR'`.
 diff --git a/deploy/README.md b/deploy/README.md
 --- a/deploy/README.md
 +++ b/deploy/README.md
-@@ -91,3 +91,34 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
+@@ -91,3 +91,42 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
    A cloud fallback (e.g. `recap: ollama → anthropic`) is used whenever the local step fails, not only when Ollama is
    down: also when the local model errors or runs past `LOOPI_LLM_TIMEOUT_S` (15 minutes by default) under load, so
    on a busy CPU that task's text (for a recap: the day's transcripts and captions) goes to Anthropic.
@@ -5077,7 +5821,11 @@ diff --git a/deploy/README.md b/deploy/README.md
 +  hear, correct the current transcript into what was really said, or tick "Không có lời nói" for silence, TV or
 +  noise), 30 keyframes (score the caption 1–5, tick "sai số người", "bịa đồ vật", "sai hoạt động") and 25 questions
 +  (write the question, then pick its correct moments with the page's wider search, or browse a day's moments). It can
-+  be done in several sittings; recordings are proposed only while their raw audio is kept (7 days, D20).
++  be done in several sittings (2–3 h in all); recordings are proposed only while their raw audio is kept (7 days,
++  D20) and only from `LOOPI_EVAL_AUDIO_SINCE` on (default 2026-10-16 08:41 KST, when the device's +20 dB gain went
++  live). The no-speech clips that count are the ones where Whisper wrote something (the "Có chữ nhưng có thể chỉ là
++  tiếng ồn" group): at least 6. Pick 1–3 correct moments per question; a question counts when one of them is in the
++  first 5 results (hit@5, D22).
 +- The golden set is **never in git**: the database holds the labels and questions, `$LOOPI_DATA_DIR/eval` the copies
 +  (`audio/<id>.opus` as recorded, `audio/<id>.view.opus` to listen to, `keyframes/<id>.jpg`). Retention never deletes
 +  them; "Quên khoảng thời gian" deletes the samples of its range with their copies. A `pg_dump` holds the labels but
@@ -5086,20 +5834,24 @@ diff --git a/deploy/README.md b/deploy/README.md
 +  prints the numbers; `--vad-threshold 0.35` or `--max-gain-db 24` try other ASR settings for that run only;
 +  `loopi-brain eval show [run id]` prints a finished one). The worker transcribes every golden clip again, one per job
 +  and after every waiting live job, then scores WER (Vietnamese, English) and CER (Korean) for every hallucination rule
-+  set, the invented text on the no-speech clips, the caption scores per model and recall@5 through the search (with a
-+  small grid of search thresholds). Runs keep numbers only.
++  set, the invented text on the no-speech clips, what each rule drops from real speech, the caption scores per model
++  and hit@5 through the search (with a small grid of search thresholds), each with its sample size and a 95 %
++  interval. Runs keep numbers only; run them outside 08:00–22:00 (they take Whisper's CPU between live recordings).
++  `loopi-brain eval compare <run> <run>` shows two runs side by side (two runs of one configuration give the noise
++  floor), `loopi-brain eval rules-impact --days 7` counts what each rule would drop from the live transcripts.
 +- The hallucination rules (`outro`, `lone_phrase`, `short_foreign`) are off until the golden set's numbers say
 +  otherwise; switching one on is a change of the brain's default (`LOOPI_ASR_RULES`), committed with those numbers.
-+- `docker compose -p deploy exec -T api loopi-brain acceptance --days 7 --cpu-samples - < ~/loopi-backups/p2-cpu-samples.txt`
++- `docker compose -p deploy exec -T api loopi-brain acceptance --days 7 --cpu-samples - < ~/loopi-backups/p2-cpu-samples-<date>.txt`
 +  prints the spec §14 P2 numbers as Markdown: latency 08:00–22:00, a recap each evening, WER/CER with the 30 % rule,
 +  recall@5 and CPU time per day. It prints no transcript, caption or question. The CPU samples are two lines per
-+  container, taken at least 24 h apart with no restart in between (`deploy/` as the working directory):
++  container, taken at least 24 h apart with no restart and no evaluation run in between, into a fresh file for each
++  window (`deploy/` as the working directory):
 +
 +  ```bash
-+  for s in api worker models; do
++  for s in api worker models db; do
 +    echo "$s $(date -u +%FT%TZ) $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/cpu.stat | grep usage_usec)" \
 +         "started=$(docker inspect -f '{{.State.StartedAt}}' deploy-$s-1)"
-+  done >> ~/loopi-backups/p2-cpu-samples.txt
++  done >> ~/loopi-backups/p2-cpu-samples-$(date +%F).txt
 +  ```
 diff --git a/deploy/docker-compose.yml b/deploy/docker-compose.yml
 --- a/deploy/docker-compose.yml
@@ -5129,7 +5881,7 @@ Run: `cd brain && uv run pytest tests/test_deploy.py -q`
 Expected: `9 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `769 passed, 1 skipped`, `TOTAL … 99%`.
+Expected: `782 passed, 1 skipped`, `TOTAL … 99%`.
 
 - [ ] **Step 5: Commit**
 
@@ -5167,7 +5919,7 @@ docker compose -p deploy exec -T db psql -U loopi -d loopi -c "DELETE FROM procr
 cd /home/soul/loopi-p2 && git checkout --detach "$ROLLBACK" && cd deploy && docker compose -p deploy up -d --build
 ```
 
-The P2b worker does not know `run_eval` and would dead-letter it; P2b ignores the `eval_*` tables and the new column, so no restore is needed (restore the Step 3 dump only if the migrated database itself must go). Back on P2c later: `git -C /home/soul/loopi-p2 checkout feat/phase2` and `up -d --build`.
+The P2b worker does not know `run_eval` and would dead-letter it; P2b ignores the `eval_*` tables and the new column, so no restore is needed (restore the Step 3 dump only if the migrated database itself must go). Back on P2c later: `git -C /home/soul/loopi-p2 checkout feat/phase2` and `up -d --build`. A "Quên khoảng thời gian" made while P2b runs deletes the golden rows of its range (foreign-key cascades) but not their copies under `eval/`: P2c's 03:00 sweep removes them once P2c is back; until then they stay on the brain's disk (never served, never in git) — tell the owner if a forget happens during a rollback.
 
 - [ ] **Step 1: Preconditions**
 
@@ -5253,7 +6005,7 @@ Expected: every new segment has a probability; latency as before the deploy (P2b
 
 ### Task 12: The owner labels the golden set; the baseline run (controller-executed)
 
-The owner's own time (1–2 h, possibly several sittings). Nothing here is committed; the golden set never leaves the brain.
+The owner's own time (2–3 h, possibly several sittings). Nothing here is committed; the golden set never leaves the brain.
 
 **Files:**
 - Live only: the `eval_*` rows and `LOOPI_EVAL_DIR` (written by the owner through the page); `~/loopi-backups/` (local backups); the ledger (numbers)
@@ -5264,7 +6016,7 @@ The owner's own time (1–2 h, possibly several sittings). Nothing here is commi
 
 - [ ] **Step 1: Tell the owner what to do**
 
-Say (Vietnamese): "Trang Đánh giá đã sẵn sàng ở `https://<IP LAN>:8443/eval`. Bạn làm được nhiều lần, tổng cộng khoảng 1–2 giờ: (1) **Âm thanh**: khoảng 20 đoạn — gợi ý 6 tiếng Việt, 6 tiếng Hàn, 4 tiếng Anh, 4 không có lời nói. Nghe từng đoạn, sửa transcript cho đúng từng chữ đã nói, chọn ngôn ngữ chính, hoặc đánh dấu "Không có lời nói" nếu chỉ có tiếng ồn, TV hay im lặng. (2) **Mô tả khung hình**: 30 khung hình, chấm 1–5 và đánh dấu lỗi nếu có. (3) **Câu hỏi**: 25 câu hỏi tiếng Việt như khi hỏi trang Tìm kiếm; với mỗi câu, chọn (các) khoảnh khắc trả lời đúng (có thể để trống ô chữ và chọn ngày để xem mọi khoảnh khắc). Đoạn ghi chỉ được gợi ý khi audio thô còn giữ (7 ngày). Ngôn ngữ nào ít khi nói ở nhà thì cứ để thiếu, báo cáo sẽ ghi đúng số có được. Dữ liệu này nằm trong máy brain, không đưa vào git. Xong thì nhắn mình."
+Say (Vietnamese): "Trang Đánh giá đã sẵn sàng ở `https://<IP LAN>:8443/eval`. Bạn làm được nhiều lần, tổng cộng khoảng 2–3 giờ: (1) **Âm thanh**: khoảng 22 đoạn — gợi ý 6 tiếng Việt, 6 tiếng Hàn, 4 tiếng Anh và ít nhất 6 đoạn không có lời nói lấy từ nhóm "Có chữ nhưng có thể chỉ là tiếng ồn" (Whisper đã viết chữ cho đoạn đó; nghe thấy không có ai nói thì đánh dấu "Không có lời nói"). Nghe từng đoạn, sửa transcript cho đúng từng chữ đã nói, chọn ngôn ngữ chính; không chắc thì nghe lại, đừng giữ chữ của Whisper nếu bạn nghe khác. Muốn tránh bị chữ của Whisper dẫn dắt thì bấm "Nghe trước, tự gõ". (2) **Mô tả khung hình**: 30 khung hình, chấm 1–5 và đánh dấu lỗi nếu có. (3) **Câu hỏi**: 25 câu hỏi tiếng Việt như khi hỏi trang Tìm kiếm; với mỗi câu, chọn 1–3 khoảnh khắc tiêu biểu trả lời đúng (có thể để trống ô chữ và chọn ngày để xem mọi khoảnh khắc). Đoạn ghi chỉ được gợi ý từ 16/10 08:41 (khi thiết bị đã tăng âm lượng thu) và khi audio thô còn giữ. Ngôn ngữ nào ít khi nói ở nhà thì cứ để thiếu, báo cáo sẽ ghi đúng số có được — nếu gần như không có tiếng Anh thật, báo cáo sẽ ghi là chưa đo được tiếng Anh. Dữ liệu này nằm trong máy brain, không đưa vào git. Xong thì nhắn mình."
 
 - [ ] **Step 2: Stop and wait for the owner**
 
@@ -5273,7 +6025,8 @@ While waiting, progress is read as counts only (never text):
 ```bash
 cd /home/soul/loopi-p2/deploy
 docker compose -p deploy exec -T db psql -U loopi -d loopi <<'SQL'
-SELECT coalesce(lang, 'none') AS lang, count(*) FROM eval_audio GROUP BY 1 ORDER BY 1;
+SELECT CASE WHEN NOT no_speech THEN lang WHEN had_text THEN 'none' ELSE 'silent' END AS kind, count(*),
+       count(*) FILTER (WHERE NOT prefilled) AS typed_blind FROM eval_audio GROUP BY 1 ORDER BY 1;
 SELECT count(*) AS keyframes, (SELECT count(*) FROM eval_caption_score) AS scores FROM eval_caption;
 SELECT count(*) AS questions,
        count(*) FILTER (WHERE EXISTS (SELECT 1 FROM eval_answer a WHERE a.question_id = q.id)) AS answered
@@ -5293,13 +6046,17 @@ ls -l ~/loopi-backups/
 
 Expected: two new, non-empty files. They hold the owner's private recordings and text: never copy them into a repository or a scratch file that is shared.
 
-- [ ] **Step 4: The baseline run**
+- [ ] **Step 4: The baseline run, twice (the noise floor)**
+
+After 22:00 (the runs take Whisper's CPU between live recordings; at night there is little to wait behind):
 
 ```bash
 docker compose -p deploy exec -T api loopi-brain eval run      # waits; prints the numbers when the worker is done
+docker compose -p deploy exec -T api loopi-brain eval run      # the same configuration again
+docker compose -p deploy exec -T api loopi-brain eval compare <first run id> <second run id>
 ```
 
-While it runs, read the live latency query of Task 11 Step 5 once: recordings keep their latency (the run waits behind every live job). Expected: `Evaluation run <id> — done`, the rule-set table, the caption scores and the recall line. Copy the printed numbers (they are numbers only) into the ledger with the run id. If it prints `— failed`, read `loopi-brain eval show <id>` and `docker compose -p deploy logs --since 1h worker | grep -i "evaluation run"`, fix test-first if it is a bug, and run again.
+While the first runs, read the live latency query of Task 11 Step 5 once: recordings keep their latency (each clip job waits behind every live job; the numbers job does not hold Whisper's lock). Expected: `Evaluation run <id> — done` twice, each with the rule-set table (with what each rule drops from real speech), WER and CER per language with clip counts and 95 % intervals, the no-speech line, the caption scores and the hit@5 line; the compare table shows the difference per language, in invented-text clips and in questions found. That difference is the **noise floor** (Whisper's temperature fallback samples on unsure clips): record it in the ledger with both run ids and the numbers (numbers only). If a run prints `— failed`, read `loopi-brain eval show <id>` and `docker compose -p deploy logs --since 1h worker | grep -i "evaluation run"`, fix test-first if it is a bug, and run again.
 
 - [ ] **Step 5: Show the owner**
 
@@ -5317,24 +6074,25 @@ Ask the owner to open `/eval` → "Chi tiết" of the run in the browser: the ru
 - Consumes: Task 12's golden set and baseline run; the runner's per-run overrides; the rule-set variants of every run; the recall grid.
 - Produces: the configuration P2 is accepted with, each change backed by before/after numbers and the owner's yes.
 
-- [ ] **Step 1: Runs for the knobs**
+- [ ] **Step 1: Runs for the knobs (after 22:00)**
 
 ```bash
 cd /home/soul/loopi-p2/deploy
 docker compose -p deploy exec -T api loopi-brain eval run --vad-threshold 0.35
 docker compose -p deploy exec -T api loopi-brain eval run --vad-threshold 0.65
+docker compose -p deploy exec -T api loopi-brain eval run --max-gain-db 20
 docker compose -p deploy exec -T api loopi-brain eval run --max-gain-db 24
-docker compose -p deploy exec -T api loopi-brain eval run --max-gain-db 36
+docker compose -p deploy exec -T api loopi-brain eval rules-impact --days 7
 ```
 
-Each run transcribes every golden clip again (about 20 × a few seconds of CPU, one clip per job). Record each run's id and numbers in the ledger.
+Each run transcribes every golden clip again (about 22 × a few seconds of CPU, one clip per job). The gain stays within D19's 30 dB ceiling (the runner refuses more). `rules-impact` counts, per rule, the segments, words and recordings it would drop from the live transcripts of the last 7 days (read only; transcripts written before the P2c deploy have no language probability, so `short_foreign` cannot judge them — the line says how many). Record every run id and number in the ledger.
 
 - [ ] **Step 2: Apply the written decision rules**
 
 From the baseline run and Step 1 (numbers only), build the proposal table:
-- **Hallucination rules:** a rule set is proposed as the new default only if, compared with `none`, the no-speech clips with invented text go down and no language's score rises by more than 1 percentage point (it must not drop real speech). Prefer `all` if it qualifies; otherwise the single rules that qualify (two qualifying single rules are proposed together and confirmed by the run after the switch, since their union is not a measured variant).
-- **VAD threshold / gain ceiling:** proposed only if a run lowers the worst language's score by at least 2 points without more invented text.
-- **Search thresholds:** proposed only if the grid's best recall@5 beats the live thresholds by at least 4 points (one question in 25); keep the live pair on a tie.
+- **Hallucination rules:** a rule set is proposed as the new default only if, compared with `none` in the same run, the no-speech clips with invented text go down by more than the noise floor, no language's score rises by more than 1 percentage point, and its "dropped from speech" count is known: a rule that dropped 0 segments of real speech was not tested on real speech, so `rules-impact` must also show it dropping only a small share of the live segments (and the owner may listen to a few of those recordings on the day page before saying yes). Prefer `all` if it qualifies; otherwise the single rules that qualify (two qualifying single rules are proposed together and confirmed by the run after the switch, since their union is not a measured variant).
+- **VAD threshold / gain ceiling:** proposed only if a run lowers the worst language's score by at least 2 points **and** by more than the noise floor, without more invented text. A default gain above 30 dB is out of scope (it would change D19).
+- **Search thresholds:** proposed only if a grid cell finds at least 2 more questions (hit@5) than the live thresholds, more than the noise floor, and the report then says the accepted hit@5 was tuned on the same 25 questions; keep the live pair otherwise.
 - **Keyframe thresholds:** the golden set holds no truth about missed moments; report keyframes per day against §9.6's 100–300 (Task 14) and change nothing unless the owner asks.
 
 - [ ] **Step 3: Ask the owner**
@@ -5360,7 +6118,7 @@ cd /home/soul/loopi-p2/deploy && docker compose -p deploy up -d --build --no-dep
 docker compose -p deploy exec -T api loopi-brain eval run      # confirmation: "live rules" = the new default
 ```
 
-Expected: the confirmation run's `live` row equals the variant the decision was taken on (± one clip's rounding).
+Expected: the confirmation run's `live` row equals the variant the decision was taken on, within the noise floor of Task 12 Step 4.
 
 - [ ] **Step 5: The 30 % rule**
 
@@ -5381,28 +6139,30 @@ If, with the accepted configuration, any language's score (WER for vi and en, CE
 
 - [ ] **Step 1: Start the 24 h CPU window after the last restart**
 
-Write `scratchpad/p2-cpu-sample.sh` (it samples now — at least 30 minutes after the last `up -d`, when the backlog of the restart is gone — and again 24 h later; read only):
+Write `scratchpad/p2-cpu-sample.sh` (it samples now — at least 30 minutes after the last `up -d`, when the backlog of the restart is gone — and again 24 h later, into a fresh file named after the day the window starts; read only). Start no evaluation run inside the window (a run's Whisper CPU is not daily load):
 
 ```bash
 #!/usr/bin/env bash
 # The P2 CPU window (P2c Task 14): two cgroup samples per container, 24 h apart. Read only.
 set -u
 cd /home/soul/loopi-p2/deploy || exit 1
+out=~/loopi-backups/p2-cpu-samples-$(date +%F).txt
+[ -e "$out" ] && { echo "$out exists: one window per file"; exit 1; }
 sample() {
-  for s in api worker models; do
+  for s in api worker models db; do
     echo "$s $(date -u +%FT%TZ) $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/cpu.stat | grep usage_usec)" \
          "started=$(docker inspect -f '{{.State.StartedAt}}' deploy-$s-1)"
-  done | tee -a ~/loopi-backups/p2-cpu-samples.txt
-  for s in api worker models; do
+  done | tee -a "$out"
+  for s in api worker models db; do
     echo "$s memory.peak $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/memory.peak)"
-  done | tee -a ~/loopi-backups/p2-cpu-samples.txt
+  done | tee -a "$out"
 }
 sample
 sleep $((24 * 3600))
 sample
 ```
 
-Run it in the background and wait with a Monitor (until-loop on the line count of `~/loopi-backups/p2-cpu-samples.txt` reaching 12). No restart of any container in between (a restart makes that container's number unusable; then start the window again).
+Run it in the background and wait with a Monitor (until-loop on the line count of that file reaching 16). No restart of any container and no evaluation run in between (a restart makes that container's number unusable; then start a new window, in a new file).
 
 - [ ] **Step 2: The P2a window, for comparison (perception only)**
 
@@ -5415,19 +6175,20 @@ Only its "CPU time per day" section is meaningful (worker and models, 2026-10-16
 
 - [ ] **Step 3: The acceptance numbers**
 
-Once the window is complete: N = the number of complete local days since the P2b deploy, at most 7.
+Once the window is complete: N = the number of complete local days since the P2b deploy, at most 7. Ask the owner whether any of those days was reprocessed on Cài đặt ("Xử lý lại"); each such day is left out of the latency with `--exclude-day` (its captions and transcripts were redone days later).
 
 ```bash
 docker compose -p deploy exec -T api loopi-brain acceptance --days "$N" --cpu-samples - \
-  < ~/loopi-backups/p2-cpu-samples.txt > ~/loopi-backups/p2-acceptance-$(date +%F).md
+  [--exclude-day YYYY-MM-DD …] < ~/loopi-backups/p2-cpu-samples-<window start>.txt \
+  > ~/loopi-backups/p2-acceptance-$(date +%F).md
 cat ~/loopi-backups/p2-acceptance-$(date +%F).md
 ```
 
-Expected: the latency table (both paths "met" if the averages are ≤ 15 min), a recap for every day with recordings ("missing: none"), the ASR table with the 30 % column, the caption scores, recall@5 with "met"/"not met", the CPU table, keyframes and speech per day. A missing recap or a "not met" is a finding: tell the owner, record it, and do not hide it in the report.
+Expected: the latency table (both paths "met" if the averages are ≤ 15 min; the "over 6 h" column near 0 — a large count means a reprocess or a backlog to explain), a recap for every day with recordings ("missing: none"), the ASR table with WER and CER per language, clip counts, 95 % intervals and the 30 % column (D22), "Baseline measured for: …", the no-speech line, the caption scores, hit@5 with found/n, its interval and "met"/"not met", the CPU table (api, worker, models, db), keyframes and speech per day. A missing recap or a "not met" is a finding: tell the owner, record it, and do not hide it in the report.
 
 - [ ] **Step 4: Write the report**
 
-Create `docs/measurements/2026-10-p2-acceptance.md`: a header (date, the `feat/phase2` commit, the window, the time zone), a verdict table with one row per §14 P2 criterion (latency, recap every evening, WER/CER baseline with the 30 % rule, recall@5 ≥ 70 %, CPU time per day) giving the number and met / not met, the command's output from Step 3 verbatim, the golden set's size per language (and the owner's reason for any short language), the tuning decisions of Task 13 with their before/after numbers and run ids, the P2a CPU window of Step 2, and what remains (P3: MCP, vlog). **Numbers only**: no transcript, caption, question or file name from the golden set; an example sentence only with the owner's explicit approval. Then ask the owner (Vietnamese): "Báo cáo nghiệm thu P2 chỉ có các con số (không có câu nào từ ghi âm, mô tả hay câu hỏi). Mình commit vào repo nhé?" Commit only on yes.
+Create `docs/measurements/2026-10-p2-acceptance.md`: a header (date, the `feat/phase2` commit, the window, the time zone), a verdict table with one row per §14 P2 criterion (latency, recap every evening, WER/CER baseline with the 30 % rule — WER for vi and en, CER for ko, D22 —, hit@5 ≥ 70 %, CPU time per day) giving the number, **its sample size and 95 % interval**, and met / not met / not measurable (a language with 0 clips reads "baseline vi/ko; en not measurable (0 clips)", never "met"), the command's output from Step 3 verbatim, the golden set's size per language and the clips' recording dates (and the owner's reason for any short language), the notes that references were post-edited from Whisper's text (with the count typed blind), that retrieval was measured with the owner's day filter and not the chat's time filter, and — if Task 13 changed search thresholds — that hit@5 was tuned on the same questions, the noise floor of Task 12, the tuning decisions of Task 13 with their before/after numbers and run ids, the P2a CPU window of Step 2, and what remains (P3: MCP, vlog). **Numbers only**: no transcript, caption, question or file name from the golden set; an example sentence only with the owner's explicit approval. Then ask the owner (Vietnamese): "Báo cáo nghiệm thu P2 chỉ có các con số (không có câu nào từ ghi âm, mô tả hay câu hỏi). Mình commit vào repo nhé?" Commit only on yes.
 
 - [ ] **Step 5: Ledger, handoff, commit**
 
@@ -5455,13 +6216,13 @@ Copy these into the ledger before Task 1. Each: decision — why — cost if wro
 - **R1** The code lives in `brain/src/loopi_brain/evaluation/` (package `evaluation`, not `eval`, which would shadow Python's builtin wherever it is imported by name); no `brain/eval/` directory is created — D21 allows only code or format docs there, and the format is documented in the module docstrings, migration 005 and `deploy/README.md`; the D21 text in the spec names the real path — cost if wrong: none (a path in the spec).
 - **R2** A golden clip is one whole audio recording (the agent cuts audio at 60 s), copied byte for byte: the runner must hear exactly what the live stage heard, and the D19 level gain is computed over the whole file, so a cut-out piece would be normalised differently — cost if wrong: a reference covers up to 60 s of speech (more typing for the owner).
 - **R3** Each clip has one main language chosen by the owner (vi, ko or en); a clip mixing Vietnamese and Korean is scored with its main language's metric — cost if wrong: code-switching raises that language's error rate.
-- **R4** WER for Vietnamese and English on words after NFC, lower case and punctuation/symbols-as-spaces (a Vietnamese word is a syllable, so this is the syllable error rate); CER for Korean on characters without spaces (Whisper's Korean spacing is no error); both rates are computed for every language; corpus rates (errors summed over the clips); no number normalisation ("2" vs "hai" is an error) — cost if wrong: numbers and spelling variants raise vi/en WER a little.
-- **R5** The 30 % rule reads WER for vi and en and CER for ko — the spec says "WER > 30 %", but Korean WER over eojeol is not a meaningful ASR measure; both are reported — cost if wrong: if the owner meant Korean WER, the flag fires later than he expects.
-- **R6** recall@5 is the macro-average over answered questions of (correct moments in the first 5 results) / (correct moments); hit@5, recall@10 and MRR are shown next to it; acceptance reads recall@5 — cost if wrong: stricter than hit@5 when a question has several correct moments.
+- **R4** WER for Vietnamese and English on words after NFC, lower case, punctuation/symbols-as-spaces and one Vietnamese tone-mark placement (R42) (a Vietnamese word is a syllable, so this is the syllable error rate); CER for Korean on characters without spaces (Whisper's Korean spacing is no error); both rates are computed for every language; corpus rates (errors summed over the clips); no number normalisation ("2" vs "hai" is an error) — cost if wrong: numbers and spelling variants raise vi/en WER a little.
+- **R5** (confirmed by the owner as D22) The 30 % rule reads WER for vi and en and CER for ko; both are reported for every language — cost if wrong: none (owner decision).
+- **R6** (replaced by D22) The §14 number is hit@5 — a question counts when one of its correct moments is in the first 5 results; capped recall@5 (÷ min(n, 5)), hit@10 and MRR are shown next to it — cost if wrong: none (owner decision).
 - **R7** A correct moment is kept with its source besides its id — the keyframe (pictures), the recording and the time ± 2 s (speech), the marker item — because reprocessing gives moments new ids — cost if wrong: a re-transcribed region whose start moves more than 2 s outside the answer's span is counted as not found.
 - **R8** The labelling search is the hybrid search with loose thresholds (cosine distance ≤ 1.0, word similarity ≥ 0.1, 100 candidates per search, 50 results) or, without words, every moment of the chosen days in time order (≤ 200): the owner's truth must not depend on what the live retrieval finds — cost if wrong: more scrolling for the owner.
 - **R9** A question stores the local days it is about (the search page's filter) and the runner searches with them; it never asks the chat model for a time filter: recall@5 measures retrieval (§10.4 step 2), and "hôm qua" must not drift with the evaluation date — cost if wrong: the time-filter step (§10.4 step 1) is not measured (Deferred).
-- **R10** A run is a chain of `run_eval` jobs — one golden clip per job, queue `light`, lock `asr`, priority −20, queueing lock `eval:<run id>` — and a last job computes the numbers; one run at a time; a run whose job is gone is marked failed when the next one is asked for — cost if wrong: about 20 job round trips per run (seconds each).
+- **R10** A run is a chain of `run_eval` jobs — one golden clip per job, queue `light`, lock `asr`, priority −20, queueing lock `eval:<run id>` — and a last job computes the numbers under lock `eval` (R39); one run at a time; a run whose job is gone is marked failed when the next one is asked for — cost if wrong: about 20 job round trips per run (seconds each).
 - **R11** A run transcribes each clip once and scores every rule set (live, none, each rule alone, all) from the stored segments; the VAD threshold and the gain ceiling are per-run overrides (CLI flags and page fields), measured by separate runs — cost if wrong: a union of two rules other than "all" is measured only after it is switched on (Task 13 confirms it).
 - **R12** An unexpected error fails the run (no Procrastinate retry: the next run is one click); a clip Whisper cannot read is counted as failed and the run goes on; recall is "not measured" while the embedding model is unavailable (a words-only number would understate it); a run's job dead-lettered by repeated worker deaths shows on "Xử lý" as "Chạy đánh giá" with a retry button — cost if wrong: a transient database error costs a new run.
 - **R13** The hallucination rules ship off (`LOOPI_ASR_RULES` empty); a default changes only in Task 13 with the owner's yes and the numbers; the rules and the VAD threshold are not passed through compose, because an empty variable from `${VAR:-}` would override a default the golden set chose — cost if wrong: a helpful rule reaches live data only after Task 13's deploy.
@@ -5473,22 +6234,48 @@ Copy these into the ledger before Task 1. Each: decision — why — cost if wro
 - **R19** Golden keyframes are copied although retention never deletes keyframes: D21 names "keyframe copies", and a copy keeps the set intact if keyframe files are ever cleaned up — cost if wrong: about 30 × 0.3 MB.
 - **R20** Caption scores are kept per caption model; after "Xử lý lại → mô tả khung hình" with another model the page asks for a new score; the runner never re-captions (a caption has no automatic reference) — cost if wrong: comparing caption models needs the owner's rescoring.
 - **R21** Proposals: recordings by the language Whisper heard most in them (and "Whisper heard nothing") × 4 parts of the day, 2 each, in a stable pseudo-random order (`md5(id || seed)`, "Gợi ý khác" takes the next seed); keyframes one per local day and 3-hour block, 12 at a time — cost if wrong: the strata follow Whisper's language detection (a Korean clip heard as Vietnamese is proposed under Vietnamese; the owner sets the language).
-- **R22** The target of 20 clips is suggested as 6 vi, 6 ko, 4 en, 4 without speech; the page names a language that cannot reach its suggestion with the recordings still kept; nothing is enforced and the report prints the real counts — cost if wrong: none.
+- **R22** (revised, R44) The target is 22 clips — 6 vi, 6 ko, 4 en and 6 without speech on which Whisper wrote text (§13's 20 plus room for the no-speech check); the page names a kind that cannot reach its suggestion with the recordings still proposed; nothing is enforced and the report prints the real counts — cost if wrong: two more clips to label.
 - **R23** The labelling search is a POST: question words never appear in a URL, so never in uvicorn's access log — cost if wrong: a labelling search cannot be bookmarked.
 - **R24** The acceptance window is the last N complete local days (default 7); latency counts recordings that ended between 08:00 and 21:59 local time; recording → caption is the segment's end → its keyframe's caption (every keyframe counts), recording → transcript the segment's end → its transcription (silent recordings count too) — the same definitions as the "Xử lý" page — cost if wrong: minutes with several new keyframes weigh more.
 - **R25** "Recap mỗi tối" is checked as: every day of the window with moments has a recap; its writing time is printed (a recap written after midnight for a backlog day still counts as present) — cost if wrong: none (the times are in the report).
-- **R26** CPU per day comes from two host-side cgroup samples per container (the P2a format), 24 h apart with no restart, parsed by `loopi-brain acceptance`; the P2a window (perception only) is reported next to a new window taken after Task 13's last deploy (the whole of P2: chapters, recaps, evaluation) — cost if wrong: the report waits a day longer.
+- **R26** CPU per day comes from two host-side cgroup samples per container (the P2a format; api, worker, models and db), 24 h apart with no restart and no evaluation run, in a fresh dated file per window, parsed by `loopi-brain acceptance`; the P2a window (perception only) is reported next to a new window taken after Task 13's last deploy (the whole of P2: chapters, recaps, evaluation) — cost if wrong: the report waits a day longer.
 - **R27** The report's numbers come from `loopi-brain acceptance` (Markdown, numbers only); the controller writes `docs/measurements/2026-10-p2-acceptance.md` from it with the verdicts and decisions — cost if wrong: none.
 - **R28** `range_utc` moves from `web/search_routes.py` to `days.py` (P2b deferred minor: the chat duplicated it; questions need it too) and stays importable from `web/search_routes.py` — cost if wrong: none.
 - **R29** Earlier tests changed on purpose (nothing removed): `test_db.py` (005 in the migration lists, the new tables and indexed foreign keys; Task 1), `test_config.py` (new settings; Tasks 1, 3), `conftest.py` (truncation list, `settings.eval_dir`; Task 1), `helpers.py` (three new helpers; Task 4), `test_asr.py` and `test_worker.py` (the `speech_regions` stand-ins take the threshold; Task 3), `test_days.py` (`range_utc`; Task 5), `test_deploy.py` (the eval dir; Task 10) — cost if wrong: none; each change is shown as a diff in its task.
 - **R30** Keyframe thresholds are not tuned from the golden set (it holds no truth about missed moments); the report shows keyframes per day against §9.6's 100–300 and a change is the owner's call — cost if wrong: none.
-- **R31** Written bars for Task 13 (always with the owner's yes): a rule set becomes the default only if invented text on no-speech clips goes down and no language worsens by more than 1 point; a VAD threshold or gain only if the worst language improves by at least 2 points without more invented text; search thresholds only if recall@5 improves by at least 4 points (one question in 25) — cost if wrong: a real improvement smaller than its bar is left for later.
+- **R31** (revised, R41) Written bars for Task 13 (always with the owner's yes): every change must beat the noise floor of two baseline runs; a rule set becomes the default only if invented text on no-speech clips goes down, no language worsens by more than 1 point, and what it drops from real speech is known (the run's "dropped" count and `eval rules-impact` on the live transcripts); a VAD threshold or gain only if the worst language improves by at least 2 points without more invented text (gain ≤ 30 dB, D19); search thresholds only if a grid cell finds at least 2 more questions (hit@5) — cost if wrong: a real improvement smaller than its bar is left for later.
 - **R32** D21 is written into the spec's §3 table, "Sửa đổi", §10.6 (the Đánh giá page), §13 (the golden set and how a run works) and §17 (`evaluation/`) — cost if wrong: none.
 - **R33** WER or CER above 30 % after Task 13: the controller writes the options and their costs (PhoWhisper, a Korean fine-tune, non-turbo large-v3, decoding settings, an initial prompt, cloud ASR only with `allow_cloud_audio`) and stops for the owner; P2c changes no model (brief item 8) — cost if wrong: none.
 - **R34** Execution: subagent-driven, one implementer and one reviewer per task for Tasks 1–10, then a final whole-branch review and one fix wave before Task 11, as in P2a and P2b — cost if wrong: none.
 - **R35** Tasks 11–14 start only after P2b is live (its Task 14 done) and with the owner's yes; `feat/phase2` is merged into `feat/p2c` first when P2b's Task 14 moved it — cost if wrong: none.
 
+### Rulings on the independent plan review (2026-10-16, "Ready with fixes"; owner decision D22 and controller rulings applied)
+
+- **R36 (D22)** Task 1 adds D22 to the spec next to D21: "Recall@5 ≥ 70 %" is hit@5, the 30 % rule reads CER for Korean and WER for Vietnamese and English, every number carries its sample size and 95 % interval; the §14 P2 row says so — cost if wrong: none (owner decision).
+- **R37 (I1)** One retrieved moment finds at most one correct moment (`questions.ranks` assigns hits in rank order); capped recall@5 divides by min(n, 5); the question pages ask for 1–3 representative correct moments — cost if wrong: none.
+- **R38 (I1, D22)** `meets_target` reads hit@5; the run stores `found5` and a Wilson interval; the grid is reported as questions found — cost if wrong: none.
+- **R39 (I4)** The numbers job runs under lock `eval`, never `asr`, so live transcription never waits for it; a clip job never computes the numbers and the numbers job never transcribes (a `final` job argument); each question is embedded once before the 13 searches, and a failing embedding ends the recall section at once ("not measured") — cost if wrong: none.
+- **R40 (I4, M13)** Evaluation runs keep the lowest priority and are made outside 08:00–22:00 in Tasks 12 and 13 (the page and the README say so) — cost if wrong: a daytime run competes with captions for CPU (live ASR still goes first).
+- **R41 (I3)** Task 12 runs the baseline twice; `loopi-brain eval compare` prints the difference, the noise floor every Task 13 bar must exceed; a confirmation run is expected within it; a search-threshold change needs ≥ 2 more questions found, and the report says when hit@5 was tuned on the same questions — cost if wrong: a small real improvement is left out.
+- **R42 (I7)** `metrics.normalise` writes the tone mark of an open "oa", "oe", "uy" on its second vowel (hoà, khoẻ, tuỳ) before WER and CER; closed syllables, "qu" words and other diphthongs stay — cost if wrong: a rare word written another way still counts as an error.
+- **R43 (I5)** Clips are proposed only from `LOOPI_EVAL_AUDIO_SINCE` on (default 2026-10-16 08:41 KST, when smoke8 with the +20 dB gain went live; a UTC offset is required); runs and the report print the clips' recording dates — cost if wrong: the first days of P2 recordings never enter the golden set.
+- **R44 (I2)** The proposals have a group "Có chữ nhưng có thể chỉ là tiếng ồn" (a transcript of ≤ 4 words or an average log probability below −0.7) for the no-speech check; at least 6 no-speech clips with Whisper's text are asked for; `eval_audio.had_text` records which ones had text; the "Whisper heard nothing" group is for missed speech — cost if wrong: an unsure but real sentence is proposed in the noise group (the owner labels it as speech).
+- **R45 (I2)** Each rule set reports the segments and words it drops from the clips with speech beyond the P2a filters (0 = untested on real speech); `loopi-brain eval rules-impact --days N` counts, read only and numbers only, what each rule would drop from the live transcripts (regions rebuilt from consecutive segments with one language and probability; rows without a probability are counted apart) — cost if wrong: the live counts approximate the regions (the stored segments carry no region id).
+- **R46 (I6)** Error rates carry a 95 % interval from a clip bootstrap (2000 resamples, fixed seed; none under two clips), proportions (hit@5, invented-text clips) a Wilson interval; the report prints n and the interval for every criterion and the caveat that retrieval used the owner's days — cost if wrong: none.
+- **R47 (M2)** No owner-facing eval form answers 422: a bad label, score, question, day range or run value comes back next to its form, keeping what was typed — cost if wrong: none.
+- **R48 (M1)** `base.html` keeps text fields within the screen width and wraps wide tables in `.scroll` — cost if wrong: none (layout only, every page).
+- **R49 (M9)** "Nghe trước, tự gõ" shows the proposals with an empty box (Whisper's text folded away); `eval_audio.prefilled` records which references were post-edited, and the report states the counts — cost if wrong: none.
+- **R50 (M3)** `loopi-brain acceptance --exclude-day` leaves reprocessed days out of the latency (Task 14 asks the owner which), and delays over 6 h are counted apart — cost if wrong: an unknown reprocess still shows, as a count over 6 h.
+- **R51 (M4, M5)** The CPU loops sample api, worker, models and db into a fresh dated file per window; no evaluation run inside the window — cost if wrong: none.
+- **R52 (M6)** A run's gain override is limited to 0–30 dB and the knob runs use 20 and 24 dB: a default above D19's 30 dB ceiling is out of scope — cost if wrong: a possibly better higher gain is not measured.
+- **R53 (M7)** Test fixtures carry no real person's or channel's name (a placeholder name in the newscast sign-off, "kênh ABC") — cost if wrong: none.
+- **R54 (M8, M10, M11, M12)** The rollback note covers copies a forget leaves while P2b runs; the owner is told 2–3 h; the report reads "not measurable (no clip)" for a language without clips and says so in the verdict; the forget preview says the owner's questions stay — cost if wrong: none.
+- **R55** `runner.hypothesis` is folded into `_kept` (nothing else used it) — cost if wrong: none.
+
 ## Deferred (out of scope for P2c)
+
+- Detecting a reprocessed day automatically (P2b's reprocess leaves no durable mark): the owner names such days for `--exclude-day` (R50), and delays over 6 h are counted.
+- Staged English recordings to get an English baseline when the household speaks almost none (M11's option): the owner's call at Task 12; without them the report says "en not measurable".
 
 - Measuring the chat model's time filter (§10.4 step 1) and the answers themselves; recall@5 measures retrieval only (R9).
 - Vietnamese search without diacritics (`unaccent` or a normalised text column; P2b deferred): do it if Task 12's missed questions show it, as a new plan item with its own recall numbers.
