@@ -1,7 +1,7 @@
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from loopi_brain.days import day_bounds_utc, hm, local_day, local_now
+from loopi_brain.days import day_bounds_utc, hm, local_day, local_now, range_utc
 
 SEOUL = ZoneInfo("Asia/Seoul")
 
@@ -28,3 +28,11 @@ def test_local_day_and_now_follow_the_zone():
 def test_hm_is_the_local_clock_time_zero_padded():
     assert hm(dt.datetime(2026, 10, 14, 23, 5, tzinfo=dt.UTC), SEOUL) == "08:05"
     assert hm(dt.datetime(2026, 10, 15, 6, 45, tzinfo=dt.UTC), ZoneInfo("Europe/Berlin")) == "08:45"
+
+
+def test_a_range_of_local_days_in_utc():
+    day = dt.date(2026, 10, 15)
+    assert range_utc(day, day, SEOUL) == day_bounds_utc(day, SEOUL)
+    assert range_utc(None, day, SEOUL) == (None, dt.datetime(2026, 10, 15, 15, 0, tzinfo=dt.UTC))
+    assert range_utc(day, None, SEOUL) == (dt.datetime(2026, 10, 14, 15, 0, tzinfo=dt.UTC), None)
+    assert range_utc(None, None, SEOUL) == (None, None)

@@ -112,12 +112,14 @@ async def search_moments(
     limit: int = 8,
     max_distance: float = 0.6,
     min_similarity: float = 0.3,
+    candidates: int = CANDIDATES,
 ) -> SearchResult:
-    """The ``limit`` most relevant moments for ``query`` with ts_start in [start, end) (either bound optional)."""
+    """The ``limit`` most relevant moments for ``query`` with ts_start in [start, end) (either bound optional);
+    each of the two searches keeps its ``candidates`` best before they are merged."""
     query = clean_query(query)
     if not query:
         return SearchResult([], semantic=router is not None)
-    params = {"start": start, "end": end, "limit": CANDIDATES}
+    params = {"start": start, "end": end, "limit": candidates}
     meaning = await _by_meaning(pool, router, query, params, max_distance) if router is not None else None
     words = await _by_words(pool, query, params, min_similarity)
     rows: dict[str, dict] = {}

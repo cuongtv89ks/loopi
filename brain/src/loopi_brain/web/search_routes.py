@@ -13,7 +13,7 @@ from markupsafe import Markup, escape
 from pydantic import BeforeValidator
 
 from .. import chat, search
-from ..days import day_bounds_utc
+from ..days import range_utc
 from ..pipeline import moments as moment_rules
 from .routes import MARKER_LABEL, TEMPLATES, require_htmx
 
@@ -50,13 +50,6 @@ def hit_view(hit: search.Hit, zone) -> dict:
         "keyframe_id": hit.keyframe_id,
         "link": f"/?day={local.date().isoformat()}#m-{hit.id}",
     }
-
-
-def range_utc(first: dt.date | None, last: dt.date | None, zone) -> tuple[dt.datetime | None, dt.datetime | None]:
-    """Local days [first, last] (either optional) as a UTC range [start, end)."""
-    start = day_bounds_utc(first, zone)[0] if first else None
-    end = day_bounds_utc(last, zone)[1] if last else None
-    return start, end
 
 
 @router.get("/search", response_class=HTMLResponse)

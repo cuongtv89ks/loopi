@@ -13,6 +13,15 @@ def day_bounds_utc(day: dt.date, zone: ZoneInfo) -> tuple[dt.datetime, dt.dateti
     return start.astimezone(dt.UTC), end.astimezone(dt.UTC)
 
 
+def range_utc(
+    first: dt.date | None, last: dt.date | None, zone: ZoneInfo
+) -> tuple[dt.datetime | None, dt.datetime | None]:
+    """Local days [first, last] (either optional) as a UTC range [start, end)."""
+    start = day_bounds_utc(first, zone)[0] if first else None
+    end = day_bounds_utc(last, zone)[1] if last else None
+    return start, end
+
+
 def local_day(ts: dt.datetime, zone: ZoneInfo) -> dt.date:
     """The local day an aware timestamp falls on."""
     return ts.astimezone(zone).date()
