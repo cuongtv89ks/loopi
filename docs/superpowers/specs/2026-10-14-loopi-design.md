@@ -281,14 +281,14 @@ Media lưu trên filesystem (`/srv/loopi/media/raw/<device_id>/YYYY/MM/DD/`, `ke
 1. Chuẩn hoá mức âm thanh (D19): phân vị 99,9 của biên độ lên −6 dBFS, tối đa +30 dB, không giảm, nền nhiễu không quá −40 dBFS. Chỉ bản trong bộ nhớ được chuẩn hoá, file thô không đổi.
 2. Silero VAD tìm các đoạn có tiếng nói.
 3. faster-whisper large-v3-turbo (int8, CPU) tự nhận ngôn ngữ cho từng đoạn và trả transcript kèm timestamp.
-4. Giữ audio thô 7 ngày như video, sau đó job lưu trữ mới xoá (D20; chỉnh được trong trang Cài đặt).
+4. Giữ audio thô 7 ngày như video, sau đó job lưu trữ mới xoá, nếu đã bật trong Cài đặt (D20; chỉnh được trong trang Cài đặt).
 
 **Hợp nhất:** mỗi caption hoặc đoạn transcript thành một `moment` (khoảng thời gian, loại, text, liên kết tới keyframe/transcript). Sau đó embed text bằng Qwen3-Embedding-0.6B.
 
 **Job định kỳ:**
 - Mỗi giờ: chia chương cho phần dữ liệu mới.
 - 23:30: recap cuối ngày, trích việc cần làm, dựng vlog.
-- 03:00: áp dụng chính sách lưu trữ.
+- 03:00: áp dụng chính sách lưu trữ (nếu đã bật trong Cài đặt).
 
 ### 9.3 Provider router
 
@@ -407,7 +407,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 | Job lỗi | Thử lại 3 lần, sau đó chuyển sang dead-letter hiện trên UI, có nút xử lý lại |
 | Ollama hoặc cloud lỗi | Job tự thử lại; router chuyển sang fallback; ingest không bị ảnh hưởng |
 | Đổi model | Mỗi kết quả lưu `model_version`; có lệnh xử lý lại theo ngày |
-| Đĩa brain đầy | Ingest trả `507`, thiết bị giữ hàng đợi, UI cảnh báo, job lưu trữ dọn dẹp |
+| Đĩa brain đầy | Ingest trả `507`, thiết bị giữ hàng đợi, UI cảnh báo, job lưu trữ dọn dẹp (nếu đã bật trong Cài đặt) |
 
 ---
 

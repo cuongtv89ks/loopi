@@ -67,10 +67,11 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - **Tìm kiếm** (`/search`): plain search by meaning and by words; "Hỏi" answers from the matching moments only, cites
   them, and streams the answer (on a CPU the first words take tens of seconds). No matching moment: "Không tìm thấy".
 - **Cài đặt** (`/settings`): providers (read only; edit `deploy/providers.yaml`, then
-  `docker compose -p deploy up -d --force-recreate api worker`: the file is bind-mounted, so plain `up -d` sees no
-  change and the worker only reads it at start), how many days raw video and audio are kept (7 and 7 by default, spec D20),
-  "Quên khoảng thời gian" (preview, then permanent deletion of everything recorded in the range, at most 7 days at a
-  time; an audit row keeps the range and the counts, never content), and reprocessing a day with the current models.
+  `docker compose -p deploy up -d --force-recreate --no-deps api worker`: the file is bind-mounted, so plain `up -d`
+  sees no change and the worker only reads it at start; `--no-deps` leaves `db` untouched),
+  how many days raw video and audio are kept (7 and 7 by default, spec D20), "Quên khoảng thời gian" (preview, then
+  permanent deletion of everything recorded in the range, at most 7 days at a time; an audit row keeps the range and
+  the counts, never content), and reprocessing a day with the current models.
 - Retention is **off** after installing: Cài đặt shows how many recordings (and GB) it would delete; once turned on
   there, it runs at 03:00 local time: raw files (and their MP4/playback copies) of finished recordings older than the
   kept days are deleted and the pages say "đã hết hạn". Keyframes, transcripts, chapters and recaps stay. The same
