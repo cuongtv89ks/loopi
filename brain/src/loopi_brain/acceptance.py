@@ -4,7 +4,8 @@
   segment's end → its transcription) for recordings that ended between 08:00 and 22:00 local time, over the last
   N complete local days: average and p95, overall and per day. Target: average ≤ 15 minutes. A day the owner
   reprocessed is left out on request (its captions and transcripts were redone days later), and delays over 6 h are
-  counted apart so a reprocess or a backlog shows.
+  counted apart so a reprocess or a backlog shows. Recordings with no caption or transcript yet (waiting, failed) are
+  counted next to the delays: they are in none of them. A left-out day that is not in the window is said to be outside.
 - A recap every evening: for each of those days with recorded moments, whether its recap exists and when it was
   written.
 - From the newest finished evaluation run (D22): WER and CER for every language with clip counts and 95 % intervals
@@ -12,6 +13,7 @@
   capped recall@5, hit@10 and MRR; a language without a clip is "not measurable", never a pass.
 - CPU time per day from two cgroup samples per service, taken on the host as the P2a measurement window did
   (``<service> <UTC time> usage_usec <n> started=<container start>`` and ``<service> memory.peak <bytes>`` lines).
+  A window shorter than 24 h gives a per-day figure that is extrapolated, and the report says so.
 - For context (spec §9.6): keyframes and minutes of transcribed speech per day.
 - Which run the evaluation numbers come from, and its gain, VAD threshold and rules; a run with overrides is flagged
   first of all (R-I2).
@@ -36,6 +38,7 @@ _IN_HOURS = (
     " AND extract(hour FROM {ended} AT TIME ZONE %(tz)s) < %(last_hour)s"
     " AND NOT (({ended} AT TIME ZONE %(tz)s)::date = ANY(%(exclude)s::date[]))"
 )
+DAY_H = 24  # a CPU window shorter than this gives a per-day figure that is extrapolated
 LATE_S = 6 * 3600  # a delay this long is a reprocess or a backlog, not live latency: counted apart
 VIDEO_DELAYS = (
     "SELECT (i.ended_at AT TIME ZONE %(tz)s)::date AS day, extract(epoch FROM k.captioned_at - i.ended_at)::float8 AS s"
@@ -46,6 +49,19 @@ AUDIO_DELAYS = (
     "SELECT (ended_at AT TIME ZONE %(tz)s)::date AS day, extract(epoch FROM analyzed_at - ended_at)::float8 AS s"
     " FROM item WHERE kind = 'audio' AND analysis_state = 'done' AND analyzed_at IS NOT NULL AND "
     + _IN_HOURS.format(ended="ended_at")
+)
+# Recordings of the same population (window, hours, left-out days) that have no caption or transcript yet: waiting, or
+# failed (their job is on the dead-letter list, as the Xử lý page counts them).
+_UNANALYSED_ITEMS = (
+    "SELECT count(*) FILTER (WHERE j.id IS NULL) AS waiting, count(*) FILTER (WHERE j.id IS NOT NULL) AS failed"
+    " FROM item i LEFT JOIN procrastinate_jobs j ON j.id = i.analysis_job_id AND j.status = 'failed'"
+    " WHERE i.kind = %(kind)s AND i.analysis_state = 'pending' AND " + _IN_HOURS.format(ended="i.ended_at")
+)
+_UNCAPTIONED_KEYFRAMES = (
+    "SELECT count(*) FILTER (WHERE j.id IS NULL) AS waiting, count(*) FILTER (WHERE j.id IS NOT NULL) AS failed"
+    " FROM keyframe k JOIN item i ON i.id = k.item_id"
+    " LEFT JOIN procrastinate_jobs j ON j.id = k.caption_job_id AND j.status = 'failed'"
+    " WHERE k.caption IS NULL AND " + _IN_HOURS.format(ended="i.ended_at")
 )
 _SUMMARY = (
     "SELECT {by} count(*) AS n, avg(s) AS avg, percentile_cont(0.95) WITHIN GROUP (ORDER BY s) AS p95,"
@@ -65,11 +81,14 @@ def window(zone, days: int, now: dt.datetime | None = None) -> tuple[list[dt.dat
 async def latency(pool: AsyncConnectionPool, zone, days: int, now: dt.datetime | None = None,
                   exclude: list[dt.date] | tuple = ()) -> dict:
     """Recording → caption ("video") and recording → transcript ("audio") delays in seconds, overall and per day,
-    without the days in ``exclude``; ``late`` counts the delays over 6 h."""
+    without the days in ``exclude``; ``late`` counts the delays over 6 h. ``excluded`` are the days of ``exclude`` that
+    lie in the window, ``outside`` the others (nothing was left out for those); ``unanalysed`` counts the recordings of
+    the window that have no caption or transcript yet (waiting, failed): they are in none of the delays."""
     dates, start, end = window(zone, days, now)
     params = {"tz": str(zone), "start": start, "end": end, "first_hour": DAY_HOURS[0], "last_hour": DAY_HOURS[1],
               "exclude": list(exclude), "late": LATE_S}
-    out: dict = {"days": dates, "excluded": sorted(exclude)}
+    out: dict = {"days": dates, "excluded": sorted(day for day in set(exclude) if day in dates),
+                 "outside": sorted(day for day in set(exclude) if day not in dates)}
     async with pool.connection() as conn:
         for name, delays in (("video", VIDEO_DELAYS), ("audio", AUDIO_DELAYS)):
             cur = await conn.execute(_SUMMARY.format(by="", delays=delays, group=""), params)
@@ -77,6 +96,14 @@ async def latency(pool: AsyncConnectionPool, zone, days: int, now: dt.datetime |
             cur = await conn.execute(_SUMMARY.format(by="day,", delays=delays, group="GROUP BY day ORDER BY day"),
                                      params)
             out[f"{name}_by_day"] = {r["day"]: r for r in await cur.fetchall()}
+        out["unanalysed"] = {}
+        for name, queries in (("video", (_UNANALYSED_ITEMS, _UNCAPTIONED_KEYFRAMES)), ("audio", (_UNANALYSED_ITEMS,))):
+            counts = {"waiting": 0, "failed": 0}
+            for query in queries:
+                cur = await conn.execute(query, {**params, "kind": name})
+                row = await cur.fetchone()
+                counts = {key: counts[key] + row[key] for key in counts}
+            out["unanalysed"][name] = counts
     return out
 
 
@@ -164,12 +191,22 @@ def _latency_lines(found: dict) -> list[str]:
         verdict = "—" if not row["n"] else ("met" if row["avg"] <= LATENCY_TARGET_S else "not met")
         lines.append(f"| {label} | {row['n']} | {_minutes(row['avg'])} | {_minutes(row['p95'])} | {row['late']} | "
                      f"{verdict} |")
+    pending = found["unanalysed"]
+    lines += ["", "Without a caption or transcript yet, so in none of the numbers above: "
+              f"video {pending['video']['waiting']} waiting, {pending['video']['failed']} failed "
+              "(keyframes without a caption, segments not yet analysed); "
+              f"audio {pending['audio']['waiting']} waiting, {pending['audio']['failed']} failed (segments)"]
     if found["excluded"]:
         lines += ["", f"Left out (reprocessed): {', '.join(str(day) for day in found['excluded'])}"]
-    lines += ["", "| Day | video avg | video p95 | audio avg | audio p95 |", "|---|---|---|---|---|"]
+    if found["outside"]:
+        lines += ["", "Not in the window, so nothing was left out for it: "
+                      f"{', '.join(str(day) for day in found['outside'])}"]
+    lines += ["", "| Day | video n | video avg | video p95 | audio n | audio avg | audio p95 |",
+              "|---|---|---|---|---|---|---|"]
     for day in found["days"]:
         video, audio = found["video_by_day"].get(day), found["audio_by_day"].get(day)
-        lines.append(f"| {day} | {_minutes(video and video['avg'])} | {_minutes(video and video['p95'])} | "
+        lines.append(f"| {day} | {video['n'] if video else 0} | {_minutes(video and video['avg'])} | "
+                     f"{_minutes(video and video['p95'])} | {audio['n'] if audio else 0} | "
                      f"{_minutes(audio and audio['avg'])} | {_minutes(audio and audio['p95'])} |")
     return lines
 
@@ -270,14 +307,18 @@ def _cpu_lines(samples_text: str | None) -> list[str]:
             why = "restarted in between" if row["restarted"] else "needs two samples"
             lines.append(f"| {service} | {span} | — ({why}) | — | {peak} |")
         else:
-            lines.append(f"| {service} | {span} | {row['cpu_s'] / 3600:.1f} CPU-h | "
-                         f"{row['per_day_s']:.0f} s ({row['per_day_s'] / 3600:.1f} CPU-h) | {peak} |")
+            extrapolated = row["hours"] < DAY_H
+            per_day = (f"{'≈ ' * extrapolated}{row['per_day_s']:.0f} s ({'≈ ' * extrapolated}"
+                       f"{row['per_day_s'] / 3600:.1f} CPU-h)"
+                       + (f", extrapolated from {row['hours']:.1f} h" if extrapolated else ""))
+            lines.append(f"| {service} | {span} | {row['cpu_s'] / 3600:.1f} CPU-h | {per_day} | {peak} |")
     return lines
 
 
 async def report(pool: AsyncConnectionPool, zone, days: int, samples_text: str | None = None,
                  now: dt.datetime | None = None, exclude: list[dt.date] | tuple = ()) -> str:
     """The P2 acceptance numbers as Markdown (``exclude``: days left out of the latency, e.g. reprocessed ones)."""
+    now = local_now(zone, now)  # read once: a report built across midnight must not mix two windows
     dates, _start, _end = window(zone, days, now)
     run = await runner.latest_run(pool, finished=True)
     lines = [f"## P2 acceptance numbers (spec §14) — {dates[0]} … {dates[-1]} ({days} days, {zone})", ""]

@@ -1,5 +1,6 @@
 import datetime as dt
 import io
+import re
 from zoneinfo import ZoneInfo
 
 import psycopg
@@ -8,7 +9,9 @@ from psycopg.types.json import Jsonb
 
 from helpers import insert_item, insert_keyframe, insert_moment, insert_segment, paired_device
 from loopi_brain import acceptance, cli
+from loopi_brain.config import Settings
 from loopi_brain.evaluation import runner
+from loopi_brain.pipeline import dispatch
 
 SEOUL = ZoneInfo("Asia/Seoul")
 NOW = dt.datetime(2026, 10, 17, 10, 0, tzinfo=SEOUL)  # the window is 15 and 16 October (complete days)
@@ -174,8 +177,10 @@ def test_the_cli_prints_the_report(database_url, monkeypatch, capsys, tmp_path):
     assert out.startswith("## P2 acceptance numbers") and "| worker |" in out
     monkeypatch.setattr("sys.stdin", io.StringIO(CPU))
     assert cli.main(["acceptance", "--cpu-samples", "-"]) == 0 and "| models |" in capsys.readouterr().out
-    assert cli.main(["acceptance", "--days", "2", "--exclude-day", "2026-10-15", "--exclude-day", "2026-10-16"]) == 0
-    assert "Left out (reprocessed): 2026-10-15, 2026-10-16" in capsys.readouterr().out
+    today = dt.datetime.now(Settings().zone).date()  # the window is the last two complete days before today
+    first, second = today - dt.timedelta(days=2), today - dt.timedelta(days=1)
+    assert cli.main(["acceptance", "--days", "2", "--exclude-day", str(first), "--exclude-day", str(second)]) == 0
+    assert f"Left out (reprocessed): {first}, {second}" in capsys.readouterr().out
     assert cli.main(["acceptance", "--days", "0"]) == 2
     assert _rows(database_url) == before  # read only
 
@@ -210,3 +215,89 @@ def test_a_run_that_recorded_no_settings_says_so():
     assert acceptance._run_lines(run, SEOUL) == [
         "Evaluation numbers from run R (2026-10-17 10:00): gain not recorded, VAD threshold not recorded, "
         "rules: not recorded, overrides: none"]
+
+
+TWO_HOURS = """\
+worker 2026-10-15T19:28:10Z usage_usec 47672930298 started=2026-10-15T14:51:34.148257075Z
+worker 2026-10-15T21:28:10Z usage_usec 54872930298 started=2026-10-15T14:51:34.148257075Z
+worker memory.peak 4500000000
+"""
+
+
+def test_a_cpu_window_shorter_than_a_day_is_marked_as_extrapolated():
+    lines = acceptance._cpu_lines(TWO_HOURS)
+    assert ("| worker | 2026-10-15 19:28 → 2026-10-15 21:28 UTC (2.0 h) | 2.0 CPU-h | "
+            "≈ 86400 s (≈ 24.0 CPU-h), extrapolated from 2.0 h | 4.50 GB |") in lines
+    # 24 h or more: a measured day, no marker (the same two samples 30 h apart)
+    thirty_hours = TWO_HOURS.replace("2026-10-15T21:28:10Z", "2026-10-17T01:28:10Z")
+    long = acceptance._cpu_lines(thirty_hours)
+    assert any("(30.0 h)" in line for line in long) and not any("extrapolated" in line for line in long)
+    assert not any("extrapolated" in line for line in acceptance._cpu_lines(CPU))  # exactly 24.0 h
+
+
+async def test_every_section_uses_the_window_of_one_clock_reading(pool, monkeypatch):
+    # The clock passes local midnight while the report is built: a section that read it again would take another window.
+    ticks = iter([local(17, 23, 59), *[local(18, 0, 1)] * 20])
+    monkeypatch.setattr(acceptance, "local_now", lambda zone, now=None: (now or next(ticks)).astimezone(zone))
+    text = await acceptance.report(pool, SEOUL, 2)
+    assert text.startswith("## P2 acceptance numbers (spec §14) — 2026-10-15 … 2026-10-16 (2 days, Asia/Seoul)")
+    assert {day for day in re.findall(r"^\| (2026-\d\d-\d\d) \|", text, re.M)} == {"2026-10-15", "2026-10-16"}
+
+
+async def test_the_per_day_latency_shows_how_many_recordings_each_day_rests_on(pool, pki_settings, dev):
+    d = dev["device_id"]
+    for hour, delay in ((9, 60), (10, 120), (11, 180)):
+        await _captioned(pool, pki_settings, d, local(15, hour), delay)
+    await _transcribed(pool, d, local(16, 10), 30)
+    lines = acceptance._latency_lines(await acceptance.latency(pool, SEOUL, 2, now=NOW))
+    assert "| Day | video n | video avg | video p95 | audio n | audio avg | audio p95 |" in lines
+    assert "| 2026-10-15 | 3 | 2.0 min | 2.9 min | 0 | — | — |" in lines
+    assert "| 2026-10-16 | 0 | — | — | 1 | 0.5 min | 0.5 min |" in lines
+
+
+async def _fail_job(pool, job_id: int) -> None:
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE procrastinate_jobs SET status = 'failed', attempts = 4 WHERE id = %s", (job_id,))
+
+
+async def test_recordings_still_waiting_or_failed_are_counted_apart(pool, pki_settings, dev, jobs_open):
+    d = dev["device_id"]
+    # audio: one waiting, one dead-lettered; a night one and a done one do not count
+    await insert_item(pool, d, kind="audio", started_at=local(16, 9))
+    broken = await insert_item(pool, d, kind="audio", started_at=local(16, 10))
+    await _fail_job(pool, await dispatch.defer_item(pool, broken))
+    queued = await insert_item(pool, d, kind="audio", started_at=local(16, 11))
+    assert await dispatch.defer_item(pool, queued) is not None  # a job that is still queued: waiting
+    await insert_item(pool, d, kind="audio", started_at=local(16, 23))
+    await _transcribed(pool, d, local(16, 12), 30)
+    # video: a segment not analysed yet, and keyframes of an analysed one without a caption (one dead-lettered)
+    await insert_item(pool, d, kind="video", started_at=local(15, 9))
+    seen = await insert_item(pool, d, kind="video", started_at=local(15, 13))
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET analysis_state = 'done' WHERE id = %s", (seen,))
+    await insert_keyframe(pool, pki_settings, seen, d, local(15, 13, 0))
+    stuck = await insert_keyframe(pool, pki_settings, seen, d, local(15, 13, 1))
+    await _fail_job(pool, await dispatch.defer_keyframe(pool, stuck))
+    captioned = await insert_keyframe(pool, pki_settings, seen, d, local(15, 13, 2))
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE keyframe SET caption = '{}', captioned_at = %s WHERE id = %s",
+                           (local(15, 14), captioned))  # captioned: not waiting
+    found = await acceptance.latency(pool, SEOUL, 2, now=NOW)
+    assert found["unanalysed"] == {"video": {"waiting": 2, "failed": 1}, "audio": {"waiting": 2, "failed": 1}}
+    lines = acceptance._latency_lines(found)
+    assert ("Without a caption or transcript yet, so in none of the numbers above: video 2 waiting, 1 failed "
+            "(keyframes without a caption, segments not yet analysed); audio 2 waiting, 1 failed (segments)") in lines
+    found = await acceptance.latency(pool, SEOUL, 2, now=NOW, exclude=[dt.date(2026, 10, 16)])
+    assert found["unanalysed"]["audio"] == {"waiting": 0, "failed": 0}  # a left-out day leaves its waiting ones out too
+
+
+async def test_a_left_out_day_outside_the_window_is_said_to_be_outside(pool):
+    found = await acceptance.latency(pool, SEOUL, 2, now=NOW,
+                                     exclude=[dt.date(2026, 10, 16), dt.date(2026, 10, 20), dt.date(2026, 10, 16)])
+    assert found["excluded"] == [dt.date(2026, 10, 16)] and found["outside"] == [dt.date(2026, 10, 20)]
+    lines = acceptance._latency_lines(found)
+    assert "Left out (reprocessed): 2026-10-16" in lines
+    assert "Not in the window, so nothing was left out for it: 2026-10-20" in lines
+    lines = acceptance._latency_lines(await acceptance.latency(pool, SEOUL, 2, now=NOW, exclude=[dt.date(2026, 9, 1)]))
+    assert not any(line.startswith("Left out") for line in lines)
+    assert "Not in the window, so nothing was left out for it: 2026-09-01" in lines
