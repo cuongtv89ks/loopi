@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Tìm kiếm & Chat</h1>
+<form method="get" action="/search" class="card">
+  <input type="search" name="q" value="{{ q }}" placeholder="Tìm trong ký ức…" required maxlength="500" size="40">
+  <label>Từ ngày <input type="date" name="from" value="{{ first or '' }}"></label>
+  <label>đến ngày <input type="date" name="to" value="{{ last or '' }}"></label>
+  <button>Tìm</button>
+</form>
+{% if hits is not none %}
+  {% if not semantic %}<p class="muted">Đang chỉ tìm theo chữ: máy chủ model chưa sẵn sàng nên chưa tìm được theo nghĩa.</p>{% endif %}
+  {% if hits %}
+  <ul class="hits">{% for h in hits %}{% include "_hit.html" %}{% endfor %}</ul>
+  {% else %}<p>Không tìm thấy khoảnh khắc nào.</p>{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,5 @@
+<li class="hit" id="hit-{{ h.id }}">
+  {% if h.keyframe_id %}<a href="{{ h.link }}"><img src="/thumb/{{ h.keyframe_id }}.jpg" loading="lazy" alt="" width="160"></a>{% endif %}
+  <div><a href="{{ h.link }}"><time>{{ h.time }}</time></a> · {{ h.kind_label }}{% if h.lang and h.kind == "speech" %} <span class="lang">{{ h.lang|upper }}</span>{% endif %}
+    <p>{{ h.text }}</p></div>
+</li>

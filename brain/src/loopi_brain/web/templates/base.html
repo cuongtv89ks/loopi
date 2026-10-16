@@ -20,6 +20,8 @@
     .commitment { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
     .commitment.done span:first-child, .commitment.dismissed span:first-child { text-decoration: line-through; color: #888; }
     form.inline { display: inline; }
+    .hits { padding: 0; } .hit { display: flex; gap: 12px; list-style: none; padding: 6px 0; border-bottom: 1px solid #8884; }
+    .hit p { margin: 4px 0; }
     .frames figcaption, .muted { font-size: 0.85rem; color: #888; }
     .lang { font-size: 0.75rem; border: 1px solid #8886; border-radius: 4px; padding: 0 4px; }
     table { border-collapse: collapse; width: 100%; }
@@ -31,7 +33,7 @@
   </style>
 </head>
 <body>
-  <header><nav><a href="/">Hôm nay</a><a href="/pipeline">Xử lý</a><a href="/devices">Thiết bị</a></nav></header>
+  <header><nav><a href="/">Hôm nay</a><a href="/search">Tìm kiếm</a><a href="/pipeline">Xử lý</a><a href="/devices">Thiết bị</a></nav></header>
   <div id="hx-error" class="err" role="alert"></div>
   <main>{% block content %}{% endblock %}</main>
   <script>

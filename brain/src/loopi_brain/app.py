@@ -14,8 +14,10 @@ from .api.device_routes import router as device_router
 from .config import Settings
 from .db import make_pool
 from .pipeline.jobs import open_jobs
+from .providers.ollama import DEFAULT_TIMEOUT
 from .web.day_routes import router as day_router
 from .web.routes import router as web_router
+from .web.search_routes import router as search_router
 
 log = logging.getLogger(__name__)
 
@@ -28,11 +30,16 @@ def create_app(
     settings: Settings,
     pool: AsyncConnectionPool | None = None,
     http_client: httpx.AsyncClient | None = None,
+    llm_client: httpx.AsyncClient | None = None,
 ) -> FastAPI:
+    """``http_client`` asks the model server for its health (short timeout); ``llm_client`` carries search
+    embeddings and chat answers (CPU inference: long timeout)."""
     owns_pool = pool is None
     active_pool = pool if pool is not None else make_pool(settings.database_url)
     owns_http = http_client is None
     http = http_client if http_client is not None else httpx.AsyncClient(timeout=STATUS_HTTP_TIMEOUT)
+    owns_llm = llm_client is None
+    llm = llm_client if llm_client is not None else httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -54,6 +61,8 @@ def create_app(
         finally:
             if owns_http:
                 await http.aclose()
+            if owns_llm:
+                await llm.aclose()
             if owns_pool:
                 await active_pool.close()
 
@@ -61,6 +70,7 @@ def create_app(
     app.state.settings = settings
     app.state.pool = active_pool
     app.state.http = http
+    app.state.llm = llm
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:
@@ -69,6 +79,7 @@ def create_app(
     app.include_router(device_router)
     app.include_router(web_router)
     app.include_router(day_router)
+    app.include_router(search_router)
     settings.media_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=settings.media_root), name="media")
     app.mount(
