@@ -2,6 +2,7 @@ import base64
 import datetime as dt
 import io
 import json
+import traceback
 
 import psycopg
 import pytest
@@ -111,6 +112,42 @@ async def test_invalid_answers_raise_and_keep_the_job(pool, pki_settings, keyfra
     assert kf["caption"] is None and kf["caption_job_id"] is not None
     assert kf["caption_error"].startswith("CaptionInvalid: ")
     assert await fetch_all(pool, "SELECT id FROM moment") == []
+
+
+# What a caption model can see in a home: a legible paper, a name on a screen. None of it may reach an error text.
+PRIVATE_CAPTION = {**DEFAULT_CAPTION, "scene": "Mẹ đọc đơn thuốc của bác sĩ Lan", "text_seen": "Huyết áp 150/95"}
+PRIVATE_WORDS = ("Mẹ", "đơn thuốc", "bác sĩ", "Lan", "Huyết", "150/95")
+WRONG_TYPES = [
+    pytest.param(json.dumps(PRIVATE_CAPTION, ensure_ascii=False)[:60],
+                 "the answer is not JSON (Unterminated string starting at, character 57)", id="cut-off"),
+    pytest.param({**PRIVATE_CAPTION, "people_count": "Mẹ và bác sĩ Lan"},
+                 "the answer does not fit (people_count: int_parsing)", id="wrong-number"),
+    pytest.param({**PRIVATE_CAPTION, "objects": "đơn thuốc"},
+                 "the answer does not fit (objects: list_type)", id="wrong-list"),
+]
+
+
+@pytest.mark.parametrize(("answer", "message"), WRONG_TYPES)
+def test_an_invalid_caption_says_where_and_why_but_never_quotes_the_answer(answer, message):
+    text = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    with pytest.raises(CaptionInvalid) as caught:
+        caption.parse_caption(text)
+    assert str(caught.value) == f"{message}; answer of {len(text)} characters"
+    assert caught.value.__cause__ is None and caught.value.__context__ is None  # nothing chained that quotes it
+    printed = "".join(traceback.format_exception(caught.value))
+    assert not any(word in printed for word in PRIVATE_WORDS)
+
+
+@pytest.mark.parametrize(("answer", "message"), WRONG_TYPES)
+async def test_an_invalid_caption_is_stored_without_the_answer(pool, pki_settings, keyframe, jobs_open, answer, message):
+    await dispatch.defer_keyframe(pool, keyframe)
+    with pytest.raises(CaptionInvalid) as caught:
+        await caption.caption_keyframe(make_ctx(pool, pki_settings, ollama=FakeOllama(caption=answer)), keyframe)
+    stored = (await fetch_one(pool, "SELECT caption_error FROM keyframe WHERE id = %s", (keyframe,)))["caption_error"]
+    assert stored.startswith(f"CaptionInvalid: {message}; answer of ")
+    assert not any(word in stored for word in PRIVATE_WORDS)
+    printed = "".join(traceback.format_exception(caught.value))  # what the worker logs
+    assert not any(word in printed for word in PRIVATE_WORDS)
 
 
 async def test_a_retried_caption_job_samples_instead_of_repeating_itself(pool, pki_settings, keyframe, jobs_open):

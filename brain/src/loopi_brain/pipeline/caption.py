@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import io
-import json
 import logging
 from pathlib import Path
 from typing import Annotated
@@ -11,9 +10,10 @@ import anyio
 from PIL import Image
 from procrastinate import JobContext
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator
 
 from .. import devices
+from ..llm import parse_answer
 from ..providers.base import ProviderUnavailable
 from . import dispatch, jobs
 from .context import PipelineContext, get_context
@@ -88,10 +88,9 @@ class CaptionInvalid(Exception):
 
 
 def parse_caption(text: str) -> Caption:
-    try:
-        return Caption.model_validate(json.loads(text))
-    except (ValueError, ValidationError) as exc:  # JSONDecodeError is a ValueError
-        raise CaptionInvalid(f"{exc}; got {text[:200]!r}") from exc
+    """The caption model's JSON answer; CaptionInvalid says where and why it is not one, never what it said
+    (the error is stored on the keyframe, shown on "Xử lý" and logged: a caption describes the home)."""
+    return parse_answer(text, Caption, CaptionInvalid)
 
 
 def caption_text(c: Caption) -> str:

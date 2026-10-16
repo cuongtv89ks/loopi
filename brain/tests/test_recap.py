@@ -216,12 +216,34 @@ async def test_a_chapter_without_a_summary_yet_is_still_listed(pool, dev, pki_se
     assert material.chapters == ["09:00–10:00 (no summary yet)", "11:00–12:00 Nấu ăn: Hai người nấu ăn trong bếp."]
 
 
-async def test_a_dropped_commitment_logs_its_source_and_day_but_never_its_text(pool, dev, ctx, caplog):
+async def test_a_dropped_commitment_logs_its_day_but_never_its_text_or_its_source(pool, dev, ctx, caplog):
     await _day(pool, dev["device_id"])
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG)
     await recap.write_recap(ctx, DAY)  # ANSWER cites "S99" for "Một việc bịa ra"
-    assert "S99" in caplog.text and "2026-10-14" in caplog.text
+    assert "2026-10-14" in caplog.text and "a commitment was dropped" in caplog.text
+    assert "looks like a reference" in caplog.text  # S99 is shaped like one; that is all the log says of it
+    assert "S99" not in caplog.text
     assert "Một việc bịa ra" not in caplog.text and "khám răng" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("source", "described"),
+    [
+        ("S3: Mẹ hẹn bác sĩ", "source of 17 characters, not a reference"),
+        ("  [m12] ", "source of 8 characters, looks like a reference"),
+        ("", "source of 0 characters, not a reference"),
+    ],
+)
+def test_a_dropped_source_is_described_by_its_length_and_shape_never_by_its_characters(source, described, caplog):
+    answer = recap.RecapAnswer(
+        main_events=[], memorable=[], commitments=[recap.CommitmentAnswer(text="Một việc bịa ra", source=source)]
+    )
+    caplog.set_level(logging.DEBUG)
+    assert recap.sourced(answer, {"S1": ("moment", NINE)}, DAY) == []
+    [record] = [r for r in caplog.records if "dropped" in r.getMessage()]
+    assert record.getMessage() == f"recap of 2026-10-14: a commitment was dropped, {described}"
+    for fragment in ("S3", "Mẹ", "hẹn", "bác sĩ", "m12", "M12", "Một việc"):
+        assert fragment not in caplog.text
 
 
 async def test_the_planner_writes_today_at_23_30_and_earlier_days_once_settled(pool, dev, ctx, pki_settings, jobs_open):

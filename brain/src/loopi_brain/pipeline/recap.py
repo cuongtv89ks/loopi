@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from dataclasses import dataclass, field
 
 from procrastinate import JobContext
@@ -45,6 +46,7 @@ CHAPTER_BUDGET = 3500
 MARKER_BUDGET = 1000
 PROMPT_BUDGET = 9000
 MIN_SUMMARY = 40
+REF_SHAPE = re.compile(r"\[?[SM]\d+\]?", re.IGNORECASE)  # how a source cites a line: S3, [M1]
 REF_ROOM = "[S99] "  # the longest reference a line can carry (at most MAX_SPEECH_LINES lines)
 STATUSES = ("open", "done", "dismissed")
 HEADINGS = ("Diễn biến chính", "Khoảnh khắc đáng nhớ", "Việc cần làm hoặc đã hứa")
@@ -211,12 +213,16 @@ def sourced(
     answer: RecapAnswer, refs: dict[str, tuple[str, dt.datetime]], day: dt.date | None = None
 ) -> list[tuple[str, str, dt.datetime]]:
     """(text, moment id, time) of each commitment whose source is a line of the material; others are dropped
-    (logged by day and source only: what the model wrote is private speech and never goes to the logs)."""
+    (logged by day, length and shape only: what the model wrote, its ``source`` too, is private speech and none
+    of its characters goes to the logs)."""
     out, seen = [], set()
     for c in answer.commitments:
         ref = c.source.strip().strip("[]").upper()
         if ref not in refs:
-            log.info("recap of %s: a commitment was dropped, unknown source %r", day, clip(c.source, 20))
+            log.info(
+                "recap of %s: a commitment was dropped, source of %d characters, %s", day, len(c.source),
+                "looks like a reference" if REF_SHAPE.fullmatch(c.source.strip()) else "not a reference",
+            )
             continue
         moment_id, ts = refs[ref]
         key = (moment_id, c.text.strip().lower())

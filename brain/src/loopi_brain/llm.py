@@ -45,8 +45,9 @@ def _misfit(exc: ValidationError) -> str:
     return f"the answer does not fit ({', '.join(shown)})"
 
 
-def parse_answer(text: str, model: type[M]) -> M:
-    """The model's JSON answer as ``model``; AnswerInvalid if it is not JSON or does not fit.
+def parse_answer(text: str, model: type[M], invalid: type[Exception] = AnswerInvalid) -> M:
+    """The model's JSON answer as ``model``; ``invalid`` (AnswerInvalid unless a task has its own) if it is not JSON
+    or does not fit.
 
     The error says where and why, and how long the answer was, but never quotes any of it: it is stored on job
     rows shown on the Day and Xử lý pages, logged with its traceback, and may concern a range that is forgotten
@@ -60,7 +61,7 @@ def parse_answer(text: str, model: type[M]) -> M:
             return model.model_validate(data)
         except ValidationError as exc:
             problem = _misfit(exc)
-    raise AnswerInvalid(f"{problem}; answer of {len(text)} characters")
+    raise invalid(f"{problem}; answer of {len(text)} characters")
 
 
 def clip(text: str, limit: int) -> str:
