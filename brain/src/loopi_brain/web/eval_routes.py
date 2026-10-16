@@ -35,6 +35,7 @@ NOT_SCORED = ("Không lưu được: khung hình đã bị xoá, chưa có mô t
 NO_LANGUAGE = "Chọn ngôn ngữ chính của đoạn này, hoặc đánh dấu \"Không có lời nói\"."
 NO_REFERENCE = "Nhập những gì thật sự được nói, hoặc đánh dấu \"Không có lời nói\"."
 NO_SCORE = "Chọn điểm từ 1 đến 5."
+REFERENCE_TOO_LONG = f"Transcript dài tối đa {golden.REFERENCE_MAX} ký tự."
 TEMPLATES.env.globals["LANGUAGE_LABELS"] = LANGUAGE_LABELS
 TEMPLATES.env.globals["FLAG_LABELS"] = FLAG_LABELS
 
@@ -89,10 +90,18 @@ async def eval_audio_page(request: Request, seed: int = Query(default=0, ge=0, l
     })
 
 
+def _too_long(text: str, limit: int) -> bool:
+    """Longer than ``limit`` characters once cleaned the way it is kept. The routes refuse such text with the reason
+    next to the form: a ``max_length`` on a Form field would make FastAPI answer 422 with the text in its body."""
+    return len(golden.clean_text(text, len(text))) > limit
+
+
 def _label_error(lang: str, no_speech: bool, reference: str) -> tuple[golden.AudioLabel | None, str | None]:
     """The label, or None and what to fix (in Vietnamese)."""
     if not no_speech and lang not in golden.LANGUAGES:
         return None, NO_LANGUAGE
+    if not no_speech and _too_long(reference, golden.REFERENCE_MAX):
+        return None, REFERENCE_TOO_LONG
     try:
         return golden.audio_label(lang, no_speech, reference), None
     except ValueError:
@@ -128,7 +137,7 @@ async def _sample_view(request: Request, sample_id: str, typed: dict | None = No
 
 @router.post("/eval/audio", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 async def add_clip(request: Request, item_id: str = Form(...), lang: str = Form(""), no_speech: str = Form(""),
-                   reference: str = Form("", max_length=20_000), prefilled: str = Form("1")):
+                   reference: str = Form(""), prefilled: str = Form("1")):
     state = request.app.state
     label, error = _label_error(lang, no_speech == "on", reference)
     if label is not None:
@@ -148,7 +157,7 @@ async def add_clip(request: Request, item_id: str = Form(...), lang: str = Form(
 
 @router.post("/eval/audio/{sample_id}", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 async def update_clip(request: Request, sample_id: str, lang: str = Form(""), no_speech: str = Form(""),
-                      reference: str = Form("", max_length=20_000)):
+                      reference: str = Form("")):
     label, error = _label_error(lang, no_speech == "on", reference)
     if label is None:
         return await _sample_view(request, sample_id, {"reference": reference, "lang": lang,
@@ -274,13 +283,18 @@ async def picture_file(request: Request, sample_id: str):
 
 DAYS_BACKWARDS = "Ngày đầu không được sau ngày cuối."
 NO_QUESTION = "Câu hỏi cần có chữ."
+QUESTION_TOO_LONG = f"Câu hỏi dài tối đa {questions.TEXT_MAX} ký tự."
+SEARCH_TOO_LONG = f"Từ tìm kiếm dài tối đa {search.QUERY_MAX} ký tự."
 RUN_VALUES = {"gain": "Gain tối đa là 0–30 dB (D19).", "vad": "Ngưỡng VAD nằm giữa 0 và 1.",
               "number": "Gain và ngưỡng VAD phải là số (hoặc để trống)."}
+RUN_BUSY = "Đang có một lần chạy chưa xong nên các giá trị bạn nhập chưa được dùng. Chờ lần chạy này xong rồi chạy lại."
 
 
 def _question_error(text: str, first: dt.date | None, last: dt.date | None) -> str | None:
     if first and last and first > last:
         return DAYS_BACKWARDS
+    if _too_long(text, questions.TEXT_MAX):
+        return QUESTION_TOO_LONG
     return None if golden.clean_text(text, questions.TEXT_MAX) else NO_QUESTION
 
 
@@ -298,7 +312,7 @@ async def eval_questions_page(request: Request):
 
 
 @router.post("/eval/questions", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
-async def new_question(request: Request, text: str = Form(..., max_length=2000),
+async def new_question(request: Request, text: str = Form(...),
                        first: OptionalDate = Form(default=None, alias="from"),
                        last: OptionalDate = Form(default=None, alias="to")):
     error = _question_error(text, first, last)
@@ -325,7 +339,7 @@ async def eval_question_page(request: Request, question_id: str):
 
 
 @router.post("/eval/questions/{question_id}", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
-async def edit_question(request: Request, question_id: str, text: str = Form(..., max_length=2000),
+async def edit_question(request: Request, question_id: str, text: str = Form(...),
                         first: OptionalDate = Form(default=None, alias="from"),
                         last: OptionalDate = Form(default=None, alias="to")):
     error = _question_error(text, first, last)
@@ -349,14 +363,18 @@ async def remove_question(request: Request, question_id: str):
 @router.post("/eval/questions/{question_id}/search", response_class=HTMLResponse,
              dependencies=[Depends(require_htmx)])
 async def question_search(
-    request: Request, question_id: str, q: str = Form(default="", max_length=2000),
+    request: Request, question_id: str, q: str = Form(default=""),
     first: OptionalDate = Form(default=None, alias="from"),
     last: OptionalDate = Form(default=None, alias="to"),
 ):
     state = request.app.state
     zone = state.settings.zone
+    if await questions.get_question(state.pool, question_id) is None:
+        raise HTTPException(status_code=404, detail="unknown question")
     if first and last and first > last:
         return _error(DAYS_BACKWARDS)
+    if _too_long(q, search.QUERY_MAX):
+        return _error(SEARCH_TOO_LONG)
     hits = await questions.label_search(state.pool, search.request_router(state.settings, state.llm), q,
                                         first, last, zone)
     browsing = not search.clean_query(q)
@@ -388,7 +406,7 @@ TEMPLATES.env.filters["pct"] = runner.pct
 TEMPLATES.env.filters["span"] = runner.span
 
 
-async def _runs_context(request: Request, error: str | None = None) -> dict:
+async def _runs_context(request: Request, error: str | None = None, note: str | None = None) -> dict:
     state = request.app.state
     zone = state.settings.zone
     runs = await runner.list_runs(state.pool)
@@ -403,7 +421,7 @@ async def _runs_context(request: Request, error: str | None = None) -> dict:
         views.append(view)
     return {"runs": views, "active": any(r["status"] in ("waiting", "running") for r in runs),
             "settings": state.settings, "wer_limit": runner.WER_LIMIT, "distances": runner.DISTANCES,
-            "similarities": runner.SIMILARITIES, "variants": runner.VARIANTS, "error": error}
+            "similarities": runner.SIMILARITIES, "variants": runner.VARIANTS, "error": error, "note": note}
 
 
 @router.get("/eval/runs", response_class=HTMLResponse)
@@ -418,7 +436,7 @@ def _optional_float(value: str) -> float | None:
 @router.post("/eval/runs", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 async def start_run(request: Request, max_gain_db: str = Form(""), vad_threshold: str = Form("")):
     state = request.app.state
-    error = None
+    error = note = None
     try:
         gain, vad = _optional_float(max_gain_db), _optional_float(vad_threshold)
     except ValueError:
@@ -429,5 +447,7 @@ async def start_run(request: Request, max_gain_db: str = Form(""), vad_threshold
         elif vad is not None and not 0.0 < vad < 1.0:
             error = RUN_VALUES["vad"]
         else:
-            await runner.start_run(state.pool, state.settings, max_gain_db=gain, vad_threshold=vad)
-    return TEMPLATES.TemplateResponse(request, "_eval_runs.html", await _runs_context(request, error))
+            _, created = await runner.start_run(state.pool, state.settings, max_gain_db=gain, vad_threshold=vad)
+            if not created and (gain is not None or vad is not None):  # one run at a time: say what was not used
+                note = RUN_BUSY
+    return TEMPLATES.TemplateResponse(request, "_eval_runs.html", await _runs_context(request, error, note))

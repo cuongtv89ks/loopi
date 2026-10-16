@@ -305,6 +305,10 @@ async def test_a_run_is_started_from_the_page_and_its_numbers_are_shown(pool, pk
     assert "Chưa có moment đúng trong 5 kết quả đầu:</p><ul><li>Phòng tối lúc nào?</li>" in page
     order = [page.index(f"<tr><td>{name}") for name in ("live", "none", "outro", "lone_phrase", "short_foreign", "all")]
     assert order == sorted(order)
+    # every rate of the rule-set table carries its n, and its interval (none yet: one clip cannot resample), and every
+    # secondary search number its n
+    assert page.count('20.0 % <span class="muted">(1 đoạn; 95 % —)</span>') == 6
+    assert "recall@5 có giới hạn 0.0 % (n = 1), hit@10 0.0 % (n = 1), MRR 0.00 (n = 1)" in page
     assert 'hx-trigger="every 15s"' not in page  # nothing running any more
     fragment = await web.get("/eval/runs")  # what the page polls while a run waits or runs
     assert fragment.text.startswith('<div id="runs">') and "xong" in fragment.text
@@ -405,3 +409,80 @@ async def test_the_words_of_a_question_and_of_a_search_stay_out_of_the_logs(pool
     await run_jobs(make_ctx(pool, pki_settings))
     await web.post(f"/eval/questions/{question_id}/delete", headers=HX)
     assert caplog.records and "bí mật" not in caplog.text and "bí\x00" not in caplog.text
+
+
+async def test_an_unknown_question_answers_404_on_search_pick_and_drop(pool, dev, web):
+    moment = await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, axis=0, text="Mai mình đi chợ")
+    base = "/eval/questions/01NOSUCHQUESTION"
+    for path, data in ((f"{base}/search", {"q": "đi chợ", "from": "2026-10-20"}),
+                       (f"{base}/search", {"q": "", "from": "2026-10-20"}),
+                       (f"{base}/answers", {"moment_id": moment}), (f"{base}/answers/{moment}/delete", {})):
+        answer = await web.post(path, data=data, headers=HX)
+        assert answer.status_code == 404, path
+        assert "Chọn là đúng" not in answer.text
+
+
+async def test_the_rule_set_table_prints_each_rate_with_its_clips_and_its_interval(
+    pool, pki_settings, dev, web, monkeypatch
+):
+    from helpers import FakeTranscriber, make_ctx, run_jobs
+    from loopi_brain.evaluation import runner
+    from loopi_brain.pipeline import asr
+    from loopi_brain.pipeline.asr import Region, RegionResult, SegmentResult
+
+    for minute, reference in ((0, "Mai mình đi chợ nhé"), (1, "Mai mình đi chợ")):
+        item = await _spoken(pool, pki_settings, dev["device_id"], minute, "vi", "Mai mình đi chợ")
+        await golden.add_audio(pool, pki_settings, item, golden.AudioLabel("vi", False, reference))
+    await web.post("/eval/runs", data={}, headers=HX)
+    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _threshold: [Region(0.0, 2.0)])
+    heard = RegionResult("vi", 0.9, [SegmentResult(0.0, 2.0, "Mai mình đi chợ", -0.3, 0.05, 1.2)])
+    await run_jobs(make_ctx(pool, pki_settings, transcriber=FakeTranscriber(heard)))
+    page = _flat((await web.get("/eval/runs")).text)
+    variants = (await fetch_all(pool, "SELECT results FROM eval_run"))[0]["results"]["asr"]["variants"]
+    assert set(variants) == set(runner.VARIANTS)
+    for name, variant in variants.items():
+        row = variant["languages"]["vi"]
+        assert row["clips"] == 2 and row["score_ci"] is not None, name
+        cell = f'{runner.pct(row["score"])} <span class="muted">(2 đoạn; 95 % {runner.span(row["score_ci"])})</span>'
+        assert cell in page, name
+
+
+async def test_text_over_a_limit_is_refused_with_its_reason_and_never_echoed(pool, pki_settings, dev, web):
+    long_text = "bímật " * 400  # 2400 characters: over the old limit of the form field (2000) and over the real one
+    answer = await web.post("/eval/questions", data={"text": long_text}, headers=HX)
+    assert answer.status_code == 200 and "Câu hỏi dài tối đa 500 ký tự." in answer.text
+    assert "bímật" not in answer.text and "HX-Redirect" not in answer.headers
+    answer = await web.post("/eval/questions", data={"text": "a" * 501}, headers=HX)
+    assert answer.status_code == 200 and "Câu hỏi dài tối đa 500 ký tự." in answer.text
+    assert (await questions.counts(pool))["questions"] == 0
+    assert "HX-Redirect" in (await web.post("/eval/questions", data={"text": "a" * 500}, headers=HX)).headers
+    question_id = (await questions.list_questions(pool))[0]["id"]
+    edited = await web.post(f"/eval/questions/{question_id}", data={"text": long_text}, headers=HX)
+    assert edited.status_code == 200 and "Câu hỏi dài tối đa 500 ký tự." in edited.text and "bímật" not in edited.text
+    assert (await questions.get_question(pool, question_id))["text"] == "a" * 500
+    searched = await web.post(f"/eval/questions/{question_id}/search", data={"q": long_text, "from": "2026-10-20"},
+                              headers=HX)
+    assert searched.status_code == 200 and "Từ tìm kiếm dài tối đa 500 ký tự." in searched.text
+    assert "bímật" not in searched.text
+    # a reference over the limit comes back in its form with the reason (never FastAPI's 422)
+    item = await _spoken(pool, pki_settings, dev["device_id"], 0, "vi", SPEECH)
+    for size in (golden.REFERENCE_MAX + 1, 20_001):
+        refused = await web.post("/eval/audio", data={"item_id": item, "lang": "vi", "reference": "r" * size},
+                                 headers=HX)
+        assert refused.status_code == 200 and "Transcript dài tối đa 5000 ký tự." in refused.text
+    assert await fetch_all(pool, "SELECT id FROM eval_audio") == []
+    sample = await golden.add_audio(pool, pki_settings, item, golden.AudioLabel("vi", False, SPEECH))
+    kept = await web.post(f"/eval/audio/{sample}", data={"lang": "vi", "reference": "r" * 20_001}, headers=HX)
+    assert kept.status_code == 200 and "Transcript dài tối đa 5000 ký tự." in kept.text
+    assert (await fetch_all(pool, "SELECT reference FROM eval_audio"))[0]["reference"] == SPEECH
+
+
+async def test_a_second_start_says_its_values_were_not_used(pool, web):
+    first = await web.post("/eval/runs", data={"vad_threshold": "0.4"}, headers=HX)
+    assert "đang chờ" in first.text and "chưa được dùng" not in first.text
+    second = await web.post("/eval/runs", data={"max_gain_db": "12", "vad_threshold": "0.3"}, headers=HX)
+    assert "Đang có một lần chạy chưa xong nên các giá trị bạn nhập chưa được dùng." in second.text
+    assert second.text.count("đang chờ") == 1 and "max_gain_db=12" not in second.text and "vad_threshold=0.4" in second.text
+    nothing_typed = await web.post("/eval/runs", data={"max_gain_db": "", "vad_threshold": ""}, headers=HX)
+    assert "chưa được dùng" not in nothing_typed.text and nothing_typed.text.count("đang chờ") == 1
+    assert len(await fetch_all(pool, "SELECT id FROM eval_run")) == 1

@@ -1,5 +1,6 @@
 <div id="runs"{% if active %} hx-get="/eval/runs" hx-trigger="every 15s" hx-swap="outerHTML"{% endif %}>
   {% if error %}<p class="err" role="alert">{{ error }}</p>{% endif %}
+  {% if note %}<p role="status">{{ note }}</p>{% endif %}
   <div class="scroll"><table>
     <tr><th>Lần chạy</th><th>Trạng thái</th><th>Tiếng Việt (WER)</th><th>Tiếng Hàn (CER)</th><th>Tiếng Anh (WER)</th>
       <th>Không lời: bịa câu</th><th>Hit@5</th></tr>
@@ -25,7 +26,7 @@
       <div class="scroll"><table><tr><th>Luật lọc</th><th>vi</th><th>ko</th><th>en</th><th>Không lời: bịa câu (số từ)</th><th>Bỏ khỏi lời nói thật</th></tr>
       {% for name in variants if name in a.variants %}{% set v = a.variants[name] %}
         <tr><td>{{ name }}{% if name == "live" %} ({{ v.rules|join(", ") or "không" }}){% endif %}</td>
-        {% for lang in ("vi", "ko", "en") %}{% set row = v.languages.get(lang) %}<td>{{ row.score|pct if row else "—" }}</td>{% endfor %}
+        {% for lang in ("vi", "ko", "en") %}{% set row = v.languages.get(lang) %}<td>{% if row %}{{ row.score|pct }} <span class="muted">({{ row.clips }} đoạn; 95 % {{ row.score_ci|span }})</span>{% else %}—{% endif %}</td>{% endfor %}
         <td>{{ v.no_speech.invented }}/{{ v.no_speech.clips }} ({{ v.no_speech.words }})</td>
         <td>{{ v.dropped.segments }} đoạn ({{ v.dropped.words }} từ)</td></tr>
       {% endfor %}</table></div>
@@ -37,7 +38,7 @@
       <p>Mô tả khung hình: {% for model, c in r.results.captions.items() %}{{ model }}: {{ c.scored }} khung hình, điểm trung bình {{ "%.2f"|format(c.mean) }}, ≥ 4: {{ c.good }}; sai số người {{ c.wrong_people }}, bịa đồ vật {{ c.invented_objects }}, sai hoạt động {{ c.wrong_activity }}. {% else %}chưa chấm. {% endfor %}</p>
       {% set rc = r.results.recall %}
       {% if rc.hit5 is defined %}
-      <p>Tìm kiếm ({{ rc.questions }} câu hỏi, mỗi câu tìm trong các ngày bạn đã chọn, không qua bộ lọc thời gian của chat): hit@5 {{ rc.hit5|pct }} = {{ rc.found5 }}/{{ rc.questions }} (95 % {{ rc.hit5_ci|span }}; mục tiêu 70 %, D22), recall@5 có giới hạn {{ rc.recall5|pct }}, hit@10 {{ rc.hit10|pct }}, MRR {{ "%.2f"|format(rc.mrr) }}{% if not rc.semantic %} — chỉ tìm theo chữ{% endif %}.</p>
+      <p>Tìm kiếm ({{ rc.questions }} câu hỏi, mỗi câu tìm trong các ngày bạn đã chọn, không qua bộ lọc thời gian của chat): hit@5 {{ rc.hit5|pct }} = {{ rc.found5 }}/{{ rc.questions }} (95 % {{ rc.hit5_ci|span }}; mục tiêu 70 %, D22), recall@5 có giới hạn {{ rc.recall5|pct }} (n = {{ rc.questions }}), hit@10 {{ rc.hit10|pct }} (n = {{ rc.questions }}), MRR {{ "%.2f"|format(rc.mrr) }} (n = {{ rc.questions }}){% if not rc.semantic %} — chỉ tìm theo chữ{% endif %}.</p>
       <div class="scroll"><table><tr><th>Khoảng cách tối đa</th>{% for s in similarities %}<th>độ giống chữ ≥ {{ s }}</th>{% endfor %}</tr>
       {% for d in distances %}<tr><td>{{ d }}</td>{% for g in rc.grid if g.max_distance == d %}<td>{{ g.found5 }}/{{ rc.questions }}</td>{% endfor %}</tr>{% endfor %}</table></div>
       {% if r.missed %}<p>Chưa có moment đúng trong 5 kết quả đầu:</p><ul>{% for text in r.missed %}<li>{{ text }}</li>{% endfor %}</ul>{% endif %}
