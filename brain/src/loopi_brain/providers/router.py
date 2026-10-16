@@ -14,6 +14,7 @@ from .config import IMAGE_TASKS, ProvidersConfig, TaskRoute
 from .ollama import OllamaHealth, OllamaProvider
 
 log = logging.getLogger(__name__)
+_missing_key_warned = False  # a router is built per request: say it once per process
 
 
 @dataclass(frozen=True)
@@ -45,8 +46,9 @@ class Router:
 
     def _allowed(self, task: str, *, images: bool) -> list[TaskRoute]:
         """The routes of ``task`` that may receive this request: with images, local providers only (unless
-        allow_cloud_images); routes whose provider is not set up (no ANTHROPIC_API_KEY) are left out."""
-        steps = [s for s in self.route(task).chain() if s.provider in self.providers]
+        allow_cloud_images); a cloud route whose provider is not set up (no ANTHROPIC_API_KEY) is left out. Local
+        providers always stay: "local" (asr) runs outside the router and is never registered here."""
+        steps = [s for s in self.route(task).chain() if not is_cloud(s.provider) or s.provider in self.providers]
         if images and not self.config.privacy.allow_cloud_images:
             steps = [s for s in steps if not is_cloud(s.provider)]
         return steps
@@ -141,6 +143,7 @@ class Router:
 
 
 def build_router(config: ProvidersConfig, settings: Settings, client: httpx.AsyncClient | None = None) -> Router:
+    global _missing_key_warned
     ollama = OllamaProvider(
         settings.ollama_url,
         keep_alive=settings.ollama_keep_alive,
@@ -155,6 +158,7 @@ def build_router(config: ProvidersConfig, settings: Settings, client: httpx.Asyn
         providers["anthropic"] = AnthropicProvider(
             settings.anthropic_api_key.get_secret_value(), base_url=settings.anthropic_url, client=client
         )
-    elif "anthropic" in config.providers_used():
+    elif "anthropic" in config.providers_used() and not _missing_key_warned:
+        _missing_key_warned = True
         log.warning("providers.yaml routes text tasks to anthropic but ANTHROPIC_API_KEY is not set: those routes are skipped")
     return Router(config, providers)

@@ -1,4 +1,7 @@
+import asyncio
 import json
+import logging
+import traceback
 
 import httpx
 import pytest
@@ -10,6 +13,7 @@ from loopi_brain.config import Settings
 from loopi_brain.pipeline import chapters, recap
 from loopi_brain.providers.anthropic import AnthropicProvider, strict_schema
 from loopi_brain.providers.base import PrivacyBlocked, ProviderError, ProviderUnavailable, is_cloud
+from loopi_brain.providers import router as router_module
 from loopi_brain.providers.config import DEFAULT_CONFIG, ProvidersConfig, TaskRoute
 from loopi_brain.providers.ollama import OllamaHealth
 from loopi_brain.providers.router import Router, build_router
@@ -23,10 +27,12 @@ class FakeAnthropic:
     def __init__(self, text: str = "Xin chào", status: int = 200, stop_reason: str = "end_turn"):
         self.text, self.status, self.stop_reason = text, status, stop_reason
         self.requests: list[tuple[dict, dict]] = []
+        self.timeouts: list[dict] = []
 
     def __call__(self, request):
         body = json.loads(request.content)
         self.requests.append((dict(request.headers), body))
+        self.timeouts.append(request.extensions["timeout"])
         if self.status != 200:
             return httpx.Response(self.status, json={"type": "error", "error": {"type": "x", "message": "nope"}})
         if body.get("stream"):
@@ -199,7 +205,8 @@ def test_the_api_key_comes_from_anthropic_api_key_and_blank_means_none(monkeypat
     assert settings.anthropic_api_key.get_secret_value() == KEY and KEY not in repr(settings)
 
 
-async def test_routes_to_anthropic_are_used_only_with_a_key(pki_settings, caplog):
+async def test_routes_to_anthropic_are_used_only_with_a_key(pki_settings, caplog, monkeypatch):
+    monkeypatch.setattr(router_module, "_missing_key_warned", False)
     tasks = {name: route.model_dump() for name, route in DEFAULT_CONFIG.tasks.items()}
     tasks["chat"] = {"provider": "anthropic", "model": "claude-sonnet-5-5",
                      "fallback": {"provider": "ollama", "model": "qwen3:8b"}}
@@ -281,13 +288,14 @@ async def test_a_stream_stopped_before_any_text_is_an_error_but_a_clipped_answer
     assert "".join(clipped) == "Sáng mai"
 
 
-async def test_a_stream_stopped_before_any_text_falls_back_to_the_next_route(pki_settings):
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "end_turn"])
+async def test_a_stream_stopped_before_any_text_falls_back_to_the_next_route(pki_settings, stop_reason):
     tasks = {name: route.model_dump() for name, route in DEFAULT_CONFIG.tasks.items()}
     tasks["chat"] = {"provider": "anthropic", "model": "claude-sonnet-5-5",
                      "fallback": {"provider": "ollama", "model": "qwen3:8b"}}
     config = ProvidersConfig.model_validate({"tasks": tasks})
     ollama = FakeOllama(caption="từ Ollama")
-    fake = FakeAnthropic(text="", stop_reason="max_tokens")
+    fake = FakeAnthropic(text="", stop_reason=stop_reason)
 
     def both(request):
         return fake(request) if request.url.host == "api.anthropic.test" else ollama(request)
@@ -297,3 +305,214 @@ async def test_a_stream_stopped_before_any_text_falls_back_to_the_next_route(pki
     pieces = [p async for p in router.stream_chat("chat", [{"role": "user", "content": "x"}])]
     assert "".join(t for t, _ in pieces) == "từ Ollama" and {v for _, v in pieces} == {"ollama:qwen3:8b"}
     assert fake.requests[0][1]["stream"] is True  # Anthropic was asked first
+
+
+async def test_every_call_uses_the_providers_own_timeout_not_the_shared_clients():
+    fake = FakeAnthropic()
+    shared = httpx.AsyncClient(transport=httpx.MockTransport(fake), timeout=5.0)  # the Ollama client's short timeout
+    provider = AnthropicProvider(KEY, base_url="https://api.anthropic.test", client=shared)
+    await provider.chat("m", [{"role": "user", "content": "x"}])
+    _ = [p async for p in provider.stream_chat("m", [{"role": "user", "content": "x"}])]
+    assert fake.timeouts == [{"connect": 10.0, "read": 120.0, "write": 120.0, "pool": 120.0}] * 2
+
+
+def _stream_of(*events: dict):
+    sse = "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
+    return lambda request: httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
+
+
+@pytest.mark.parametrize(("error_type", "kind"), [
+    ("api_error", ProviderUnavailable), ("overloaded_error", ProviderUnavailable),
+    ("rate_limit_error", ProviderUnavailable), ("invalid_request_error", ProviderError),
+])
+async def test_a_streamed_error_event_is_unavailable_when_the_same_http_status_would_be(error_type, kind):
+    handler = _stream_of({"type": "error", "error": {"type": error_type, "message": "boom"}})
+    provider = AnthropicProvider(KEY, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    with pytest.raises(kind, match=error_type) as info:
+        _ = [p async for p in provider.stream_chat("m", [{"role": "user", "content": "x"}])]
+    assert (kind is ProviderUnavailable) == isinstance(info.value, ProviderUnavailable)
+
+
+async def test_a_stream_that_ends_without_any_text_is_an_error_like_chat():
+    messages = [{"role": "user", "content": "x"}]
+    with pytest.raises(ProviderError, match="no text"):
+        _ = [p async for p in _provider(FakeAnthropic(text="", stop_reason="end_turn")).stream_chat("m", messages)]
+    closed = _stream_of({"type": "message_start", "message": {"id": "m"}})  # closes without message_stop
+    provider = AnthropicProvider(KEY, client=httpx.AsyncClient(transport=httpx.MockTransport(closed)))
+    with pytest.raises(ProviderError, match="no text"):
+        _ = [p async for p in provider.stream_chat("m", messages)]
+
+
+def test_strict_schema_strips_keywords_only_where_they_are_keywords():
+    schema = {
+        "type": "object",
+        "properties": {
+            "minimum": {"type": "integer", "minimum": 1, "maximum": 9, "multipleOf": 2},
+            "maxLength": {"type": "string", "maxLength": 5, "enum": ["a", "b"]},
+            "nested": {"type": ["object", "null"], "properties": {"minItems": {"type": "array", "minItems": 1,
+                                                                                  "items": {"type": "string"}}}},
+        },
+        "default": {"minimum": 3},
+    }
+    out = strict_schema(schema)
+    assert set(out["properties"]) == {"minimum", "maxLength", "nested"}  # property names are never keywords
+    assert out["properties"]["minimum"] == {"type": "integer"}
+    assert out["properties"]["maxLength"] == {"type": "string", "enum": ["a", "b"]}
+    assert out["properties"]["nested"]["additionalProperties"] is False
+    assert out["properties"]["nested"]["properties"]["minItems"] == {"type": "array", "items": {"type": "string"}}
+    assert out["default"] == {"minimum": 3}  # literal data is left alone
+    assert schema["properties"]["minimum"]["minimum"] == 1  # the original is unchanged
+
+
+class _Hangup:
+    """A listener on 127.0.0.1 that accepts a connection and hangs up: enough for the HTTP library to build (and
+    refuse) a request the way it would against the real API."""
+
+    async def __aenter__(self) -> str:
+        self.connections = 0
+
+        async def accept(reader, writer):
+            self.connections += 1
+            writer.close()
+
+        self.server = await asyncio.start_server(accept, "127.0.0.1", 0)
+        return f"http://127.0.0.1:{self.server.sockets[0].getsockname()[1]}"
+
+    async def __aexit__(self, *exc):
+        self.server.close()
+        await self.server.wait_closed()
+
+
+def _assert_no_secret_anywhere(error: BaseException, secret: str):
+    assert error.__cause__ is None and error.__context__ is None  # no chained exception carries the original text
+    assert secret not in str(error) and secret not in repr(error)
+    assert secret not in "".join(traceback.format_exception(error))
+
+
+@pytest.mark.parametrize("suffix", ["\n", "\r\n", "\r", " "])
+async def test_a_key_with_stray_whitespace_never_reaches_an_error_a_log_or_a_chain(suffix, caplog):
+    secret = "sk-ant-leak-4242"
+    messages = [{"role": "user", "content": "x"}]
+    hangup = _Hangup()
+    async with hangup as url:
+        # A real transport: the HTTP library itself would refuse the header value and quote it, in its exception
+        # ("Illegal header value b'<key>'") and in its DEBUG trace log. The provider never hands it such a key.
+        client = httpx.AsyncClient(transport=httpx.AsyncHTTPTransport())
+        provider = AnthropicProvider(secret + suffix, base_url=url, client=client)
+        with pytest.raises(ProviderError) as chat_error:
+            await provider.chat("m", messages)
+        with pytest.raises(ProviderError) as stream_error:
+            _ = [p async for p in provider.stream_chat("m", messages)]
+        for error in (chat_error.value, stream_error.value):
+            _assert_no_secret_anywhere(error, secret)
+            assert not isinstance(error, ProviderUnavailable)  # a bad key is a mistake, not an outage
+        assert hangup.connections == 0  # nothing was sent: the key never reached the HTTP library
+        # Through the router (its warning log and the stored error text are built from the exception).
+        tasks = {name: route.model_dump() for name, route in DEFAULT_CONFIG.tasks.items()}
+        tasks["chat"] = {"provider": "anthropic", "model": "claude-sonnet-5-5",
+                         "fallback": {"provider": "ollama", "model": "qwen3:8b"}}
+
+        class Local:
+            async def chat(self, model, messages, *, images, json_schema, temperature, max_tokens):
+                return "từ Ollama"
+
+        router = Router(ProvidersConfig.model_validate({"tasks": tasks}), {"anthropic": provider, "ollama": Local()})
+        with caplog.at_level(logging.DEBUG):
+            result = await router.chat("chat", messages)
+        assert result.model_version == "ollama:qwen3:8b"
+        assert secret not in caplog.text and all(secret not in str(r.__dict__) for r in caplog.records)
+        assert any("failed" in r.getMessage() for r in caplog.records), "the failed route is logged"
+
+
+async def test_the_key_is_scrubbed_from_an_api_message_that_echoes_it():
+    def echo(request):
+        return httpx.Response(401, json={"type": "error", "error": {"type": "authentication_error",
+                                                                     "message": f"invalid x-api-key: {KEY}"}})
+
+    provider = AnthropicProvider(KEY, client=httpx.AsyncClient(transport=httpx.MockTransport(echo)))
+    with pytest.raises(ProviderError) as info:
+        await provider.chat("m", [{"role": "user", "content": "x"}])
+    assert KEY not in str(info.value) and "invalid x-api-key" in str(info.value)
+    streamed = _stream_of({"type": "error", "error": {"type": "api_error", "message": f"bad {KEY}"}})
+    provider = AnthropicProvider(KEY, client=httpx.AsyncClient(transport=httpx.MockTransport(streamed)))
+    with pytest.raises(ProviderError) as info:
+        _ = [p async for p in provider.stream_chat("m", [{"role": "user", "content": "x"}])]
+    assert KEY not in str(info.value) and "bad" in str(info.value)
+
+
+def test_a_key_with_stray_whitespace_is_trimmed_not_rejected(monkeypatch):
+    monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
+    for raw in (f"{KEY}\n", f"{KEY}\r\n", f"  {KEY} ", f"\t{KEY}\r"):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", raw)
+        assert Settings().anthropic_api_key.get_secret_value() == KEY
+
+
+async def test_the_missing_key_warning_is_logged_once_per_process(pki_settings, caplog, monkeypatch):
+    monkeypatch.setattr(router_module, "_missing_key_warned", False)
+    tasks = {name: route.model_dump() for name, route in DEFAULT_CONFIG.tasks.items()}
+    tasks["recap"] = {"provider": "ollama", "model": "qwen3:8b",
+                      "fallback": {"provider": "anthropic", "model": "claude-haiku-5-5"}}
+    config = ProvidersConfig.model_validate({"tasks": tasks})
+    for _ in range(3):  # a router is built for every search, chat question and status page
+        build_router(config, pki_settings, FakeOllama().client())
+    assert caplog.text.count("ANTHROPIC_API_KEY is not set") == 1
+
+
+async def test_local_providers_stay_usable_without_being_registered():
+    nothing = OllamaHealth(reachable=False, present=[], missing=DEFAULT_CONFIG.ollama_models())
+    router = Router(DEFAULT_CONFIG, {})  # "local" (asr) is never a router provider
+    assert router.task_ready("asr", nothing) and not router.task_ready("caption", nothing)
+
+
+async def test_images_never_reach_an_unknown_cloud_provider_even_when_it_is_first_in_the_chain():
+    cloud = FakeAnthropic()
+    stand_in = AnthropicProvider(KEY, base_url="https://newcloud.test", client=cloud.client())
+
+    class Local:
+        async def chat(self, model, messages, *, images, json_schema, temperature, max_tokens):
+            return f"{model} saw {len(images)} image"
+
+    config = ProvidersConfig.model_validate({"tasks": {n: r.model_dump() for n, r in DEFAULT_CONFIG.tasks.items()}})
+    config.tasks["caption"] = TaskRoute.model_construct(
+        provider="newcloud", model="m", fallback=TaskRoute(provider="ollama", model="minicpm-v4.6:1b"))
+    router = Router(config, {"newcloud": stand_in, "ollama": Local()})
+    result = await router.chat("caption", [{"role": "user", "content": "x"}], images=[b"jpeg"])
+    assert result.model_version == "ollama:minicpm-v4.6:1b" and result.text == "minicpm-v4.6:1b saw 1 image"
+    assert cloud.requests == []  # not one request, not even a refused one
+    config.tasks["caption"] = TaskRoute.model_construct(provider="newcloud", model="m", fallback=None)
+    with pytest.raises(PrivacyBlocked):
+        await router.chat("caption", [{"role": "user", "content": "x"}], images=[b"jpeg"])
+    assert cloud.requests == []
+
+
+async def test_a_refusal_by_the_http_library_is_a_fixed_message_without_the_key_or_a_chain():
+    def refuses(request):  # as h11 does for a header value it cannot send: it quotes the value
+        raise httpx.LocalProtocolError(f"Illegal header value b'{KEY}'")
+
+    provider = AnthropicProvider(KEY, client=httpx.AsyncClient(transport=httpx.MockTransport(refuses)))
+    messages = [{"role": "user", "content": "x"}]
+    with pytest.raises(ProviderError, match="refused before it was sent") as chat_error:
+        await provider.chat("m", messages)
+    with pytest.raises(ProviderError, match="refused before it was sent") as stream_error:
+        _ = [p async for p in provider.stream_chat("m", messages)]
+    for error in (chat_error.value, stream_error.value):
+        _assert_no_secret_anywhere(error, KEY)
+        assert not isinstance(error, ProviderUnavailable)
+
+
+@pytest.mark.parametrize("suffix", ["\n", " "])
+async def test_the_real_http_library_refusing_a_key_is_mapped_without_the_key_or_a_chain(suffix, monkeypatch):
+    """The second line of defence, with the key check switched off: what h11 really raises is what is mapped."""
+    secret = "sk-ant-leak-4242"
+    hangup = _Hangup()
+    async with hangup as url:
+        provider = AnthropicProvider(secret + suffix, base_url=url,
+                                     client=httpx.AsyncClient(transport=httpx.AsyncHTTPTransport()))
+        monkeypatch.setattr(provider, "_check_key", lambda: None)
+        messages = [{"role": "user", "content": "x"}]
+        with pytest.raises(ProviderError, match="refused before it was sent") as chat_error:
+            await provider.chat("m", messages)
+        with pytest.raises(ProviderError, match="refused before it was sent") as stream_error:
+            _ = [p async for p in provider.stream_chat("m", messages)]
+    for error in (chat_error.value, stream_error.value):
+        _assert_no_secret_anywhere(error, secret)

@@ -15,13 +15,16 @@ def is_cloud(provider: str) -> bool:
 
 
 class ProviderError(Exception):
-    """The provider failed a request it should serve: HTTP errors other than 404, read/write timeouts,
-    dropped connections, unusable bodies, wrong dimensions. Retried normally, then dead-lettered."""
+    """The provider failed a request it should serve: HTTP errors other than the temporary ones below, read/write
+    timeouts, dropped connections, unusable bodies, refusals, empty or cut-off answers, wrong dimensions.
+    Retried normally, then dead-lettered."""
 
 
 class ProviderUnavailable(ProviderError):
-    """The provider cannot serve the task right now: connection refused, DNS failure, connect timeout,
-    or HTTP 404 (model not pulled). A configuration/availability problem, not an item problem."""
+    """The provider cannot serve the task right now: connection refused, DNS failure, connect timeout, Ollama
+    HTTP 404 (model not pulled), Anthropic HTTP 429/500/502/503/504/529 (also as a streamed error event), or no
+    configured provider left for the task (no ANTHROPIC_API_KEY). A configuration/availability problem, not an
+    item problem: the router falls back and a job spends no retry."""
 
 
 class PrivacyBlocked(Exception):

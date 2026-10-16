@@ -49,8 +49,12 @@ class Settings(BaseSettings):
 
     @field_validator("anthropic_api_key", mode="before")
     @classmethod
-    def _blank_key_is_no_key(cls, value):
-        return None if value is None or (isinstance(value, str) and not value.strip()) else value
+    def _trimmed_key(cls, value):
+        """Blank means no key; a key pasted with a trailing newline or spaces is trimmed (never rejected: pydantic
+        would put the value into its error). A stray character would make the HTTP library refuse the header."""
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
     @property
     def zone(self) -> ZoneInfo:
