@@ -21,6 +21,7 @@ from helpers import (
     new_ulid,
     paired_device,
     write_jpeg,
+    write_media,
 )
 from loopi_brain import forget, media
 from loopi_brain.app import create_app
@@ -48,25 +49,18 @@ async def web(pool, pki_settings, jobs_open):
         yield c
 
 
-def _write(settings, rel: str) -> str:
-    path = settings.media_root / rel
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"x")
-    return rel
-
-
 async def _recorded(pool, settings, device_id, kind, start, seconds=60) -> dict:
     """An item with its raw file (and its view copy for video and audio) on disk."""
     item = await insert_item(pool, device_id, kind=kind, started_at=start, seconds=seconds)
     row = await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item,))
-    files = [_write(settings, row["raw_path"])]
+    files = [write_media(settings, row["raw_path"])]
     if kind == "video":
         view = row["raw_path"].replace("raw/", "view/", 1).replace(".h264", ".mp4")
-        files.append(_write(settings, view))
+        files.append(write_media(settings, view))
         async with pool.connection() as conn:
             await conn.execute("UPDATE item SET view_path = %s WHERE id = %s", (view, item))
     if kind == "audio":
-        files.append(_write(settings, str(media.audio_view_path(PurePosixPath(row["raw_path"])))))
+        files.append(write_media(settings, str(media.audio_view_path(PurePosixPath(row["raw_path"])))))
     return {"id": item, "files": files}
 
 
@@ -277,7 +271,7 @@ async def test_a_file_that_cannot_be_deleted_now_stays_listed_for_a_retry(pool, 
         pytest.skip("root can delete from a read-only folder")
     item = await insert_item(pool, dev["device_id"], kind="marker", started_at=NINE, seconds=0)
     raw = (await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item,)))["raw_path"]
-    _write(pki_settings, raw)
+    write_media(pki_settings, raw)
     folder = (pki_settings.media_root / raw).parent
     folder.chmod(0o555)  # the file cannot be unlinked right now
     try:
@@ -568,8 +562,8 @@ async def test_a_video_that_was_not_remuxed_yet_loses_an_mp4_that_already_exists
     raw = (await fetch_one(pool, "SELECT raw_path, view_path FROM item WHERE id = %s", (item,)))
     assert raw["view_path"] is None  # the remux has not recorded its result
     mp4 = raw["raw_path"].replace("raw/", "view/", 1).replace(".h264", ".mp4")
-    _write(pki_settings, raw["raw_path"])
-    _write(pki_settings, mp4)  # ... but its output is already on disk
+    write_media(pki_settings, raw["raw_path"])
+    write_media(pki_settings, mp4)  # ... but its output is already on disk
     counts = await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)
     assert (counts.items, counts.files, counts.files_failed) == (1, 2, 0)
     assert not (pki_settings.media_root / mp4).exists()
@@ -578,7 +572,7 @@ async def test_a_video_that_was_not_remuxed_yet_loses_an_mp4_that_already_exists
 async def test_a_remux_that_ends_after_a_forget_leaves_no_mp4_behind(pool, pki_settings, dev, monkeypatch):
     item = await insert_item(pool, dev["device_id"], kind="video", started_at=NINE, status="stored")
     raw = (await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item,)))["raw_path"]
-    _write(pki_settings, raw)
+    write_media(pki_settings, raw)
     made = []
 
     async def forgotten_while_ffmpeg_ran(src, dst, fps):

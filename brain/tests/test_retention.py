@@ -146,17 +146,41 @@ async def test_the_mark_is_committed_before_any_file_is_deleted(pool, pki_settin
     assert seen[0][1] == [True]  # the playback copy was still there when the mark was already visible
 
 
-async def test_an_unexpected_failure_leaves_nothing_marked(pool, pki_settings, dev, on, monkeypatch):
-    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+@pytest.mark.parametrize("where", ["item_files", "remove_files"])
+async def test_a_row_that_raises_unexpectedly_does_not_undo_the_rows_already_finished(
+    pool, pki_settings, dev, on, monkeypatch, caplog, where
+):
+    """The poison row is left (un-marked: its raw file goes last, so it is provably still there and a reprocess may
+    redo it); the row before it keeps its mark and its record that the files are gone, never looking playable."""
+    first = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    second = await _recording(pool, pki_settings, dev["device_id"], "video", NINE + dt.timedelta(minutes=1))
+    real_files, real_remove = media.item_files, media.remove_files
 
-    def boom(root, rels):
-        raise RuntimeError("disk on fire")
+    def poisoned_files(kind, raw_path, view_path):
+        if second["id"] in raw_path:
+            raise RuntimeError("poison")
+        return real_files(kind, raw_path, view_path)
 
-    monkeypatch.setattr(media, "remove_files", boom)
-    with pytest.raises(RuntimeError, match="disk on fire"):
-        await retention.apply_retention(pool, pki_settings, now=NOW)
-    assert (await fetch_one(pool, "SELECT raw_deleted_at FROM item"))["raw_deleted_at"] is None  # tried tomorrow
-    assert all(_exists(pki_settings, video))
+    def poisoned_remove(root, rels):
+        if any(second["id"] in rel for rel in rels):
+            raise RuntimeError("poison")
+        return real_remove(root, rels)
+
+    monkeypatch.setattr(media, where, poisoned_files if where == "item_files" else poisoned_remove)
+    with caplog.at_level(logging.ERROR, logger="loopi_brain.pipeline.retention"):
+        result = await retention.apply_retention(pool, pki_settings, now=NOW)
+    assert result == retention.RetentionResult(video=1, files=2, files_failed=1)
+    assert f"item {second['id']}" in caplog.text and "RuntimeError: poison" in caplog.text
+    rows = {r["id"]: r for r in await fetch_all(pool, "SELECT id, raw_deleted_at, raw_files_gone_at, view_path FROM item")}
+    done = rows[first["id"]]
+    assert done["raw_deleted_at"] and done["raw_files_gone_at"] and done["view_path"] is None
+    assert not any(_exists(pki_settings, first))
+    left = rows[second["id"]]
+    assert left["raw_deleted_at"] is None and left["raw_files_gone_at"] is None
+    assert _exists(pki_settings, second)[0]  # the raw file is intact
+    monkeypatch.undo()  # fixed: the next night deletes it
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).video == 1
+    assert not any(_exists(pki_settings, second))
 
 
 class _Crash(BaseException):
@@ -231,6 +255,22 @@ async def test_an_unfinished_recording_that_still_cannot_be_deleted_is_tried_onc
     result = await retention.apply_retention(pool, pki_settings, now=NOW)
     assert result == retention.RetentionResult(files_failed=1) and outside.exists()  # not retried within the run
     assert (await fetch_one(pool, "SELECT raw_deleted_at FROM item"))["raw_deleted_at"] is None
+
+
+async def test_a_video_not_remuxed_yet_is_not_due_so_no_mp4_is_written_for_an_expired_row(
+    pool, pki_settings, dev, on
+):
+    stored = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    failed = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET status = 'stored' WHERE id = %s", (stored["id"],))
+        await conn.execute("UPDATE item SET status = 'error' WHERE id = %s", (failed["id"],))
+    assert (await retention.preview_retention(pool, now=NOW))["video"]["recordings"] == 1
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).video == 1
+    assert all(_exists(pki_settings, stored)) and not any(_exists(pki_settings, failed))  # a failed remux is expired
+    async with pool.connection() as conn:  # remuxed since: due like any other
+        await conn.execute("UPDATE item SET status = 'ready' WHERE id = %s", (stored["id"],))
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).video == 1
 
 
 async def test_a_large_backlog_is_taken_in_bounded_batches(pool, pki_settings, dev, on, monkeypatch):
@@ -319,6 +359,29 @@ async def test_forgotten_paths_outside_the_media_root_are_dropped_not_deleted(po
     assert "it is not deleted and not retried" in caplog.text
 
 
+async def test_a_malformed_forget_row_blocks_neither_the_others_nor_retention(
+    pool, pki_settings, dev, on, caplog
+):
+    left = write_media(pki_settings, "raw/x/2026/10/14/left.opus")
+    async with pool.connection() as conn:
+        for log_id, files in (("F1", [5, None]), ("F2", [left])):  # F1 cannot be read as paths
+            await conn.execute("INSERT INTO forget_log (id, range_start, range_end, counts, pending_files)"
+                               " VALUES (%s, %s, %s, '{}', %s)",
+                               (log_id, NINE, NINE + dt.timedelta(hours=1), Jsonb(files)))
+    old = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE - dt.timedelta(days=30))
+    context.set_context(make_ctx(pool, pki_settings))
+    try:
+        with caplog.at_level(logging.ERROR, logger="loopi_brain.pipeline.retention"):
+            await retention.apply_retention_job(timestamp=THREE_IN_SEOUL)
+    finally:
+        context.set_context(None)
+    assert not (pki_settings.media_root / left).exists()  # the good row was handled ...
+    assert not any(_exists(pki_settings, old))  # ... and retention still ran
+    pending = {r["id"]: r["pending_files"] for r in await fetch_all(pool, "SELECT id, pending_files FROM forget_log")}
+    assert pending == {"F1": [5, None], "F2": []}  # the malformed row is left as it was, and logged
+    assert "forget row F1" in caplog.text
+
+
 async def test_forget_rows_with_nothing_left_are_not_visited(pool, pki_settings, dev, monkeypatch):
     async with pool.connection() as conn:
         await conn.execute("INSERT INTO forget_log (id, range_start, range_end, counts) VALUES ('F1', %s, %s, '{}')",
@@ -355,8 +418,9 @@ async def test_turning_retention_on_asks_first_and_says_what_the_next_run_delete
         text = (await c.get("/settings")).text
     [form] = [part for part in text.split("<form") if 'hx-post="/settings/retention"' in part]
     form = form.split(">", 1)[0]
-    assert ('hx-confirm="Bật dọn dữ liệu cũ? Lúc 03:00 lần chạy tới sẽ xoá vĩnh viễn (theo số ngày đã lưu: video 9, '
-            'audio 5): video thô 1 đoạn (0.0 GB), audio thô 0 đoạn (0.0 GB). Không thể hoàn tác."') in form
+    assert ('hx-confirm="Bật dọn dữ liệu cũ? Lúc 03:00 lần chạy tới sẽ xoá vĩnh viễn ít nhất: video thô 1 đoạn '
+            '(0.0 GB), audio thô 0 đoạn (0.0 GB) (đếm lúc mở trang, theo số ngày đã lưu: video 9, audio 5; đoạn quá hạn '
+            'thêm từ lúc đó cũng bị xoá). Không thể hoàn tác."') in form
     # switched off (or only the days changed with it off), the save needs no question
     assert "hx-on::confirm=" in form and "this.elements.enabled.checked" in form and "issueRequest(true)" in form
 

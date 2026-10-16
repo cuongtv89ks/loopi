@@ -14,8 +14,10 @@ are gone the row says so (``raw_files_gone_at``, ``view_path`` cleared). A recor
 deleted gets its mark removed again and is tried the next night; its raw file is only deleted once every copy of
 it is gone, so it never ends up marked kept while its raw file is already lost. A worker that dies between the
 commit and the deletion leaves rows marked without ``raw_files_gone_at``: each run (retention on) first finishes
-those, a batch at a time, whatever the kept days say now (the pages already show them as expired).
-Logs carry counts only, never content.
+those, a batch at a time, whatever the kept days say now (the pages already show them as expired). An unexpected
+error on one recording (a bug, not a file problem) leaves just that recording: its raw file is still there (it goes
+last), so it loses its mark again and the others in the batch keep theirs; an error that escapes the whole batch
+leaves every mark as it is for that sweep. Logs carry counts and ids only, never content.
 """
 from __future__ import annotations
 
@@ -38,10 +40,16 @@ from .jobs import job_app
 log = logging.getLogger(__name__)
 RETENTION_HOUR = 3
 BATCH = 500
-MAX_BATCHES = 40  # at most 20 000 recordings of each kind per night; a bigger backlog takes more nights
+# Per run, for each kind and each phase (finishing what a dead run left, then the newly due): at most MAX_BATCHES
+# batches of BATCH recordings; a bigger backlog takes more nights.
+MAX_BATCHES = 40
 
-# Finished recordings of one kind whose raw file is still kept and that ended before a cutoff.
-_DUE = "kind = %s AND raw_deleted_at IS NULL AND analysis_state IN ('done', 'skipped') AND ended_at < %s"
+# Finished recordings of one kind whose raw file is still kept and that ended before a cutoff. A video still
+# 'stored' is not remuxed yet: the startup remux would write an MP4 for a row that is already expired.
+_DUE = (
+    "kind = %s AND raw_deleted_at IS NULL AND analysis_state IN ('done', 'skipped') AND ended_at < %s"
+    " AND (kind <> 'video' OR status <> 'stored')"
+)
 # Recordings of one kind marked as expired whose files are not yet known to be gone (a run died in between).
 _UNFINISHED = "kind = %s AND raw_deleted_at IS NOT NULL AND raw_files_gone_at IS NULL"
 
@@ -56,14 +64,21 @@ class RetentionResult:
 
 def _remove(media_root: Path, rows: list[dict]) -> tuple[list[str], list[str], int, int]:
     """Delete the files of each row (blocking): (ids whose files are all gone, ids with a file left, files
-    deleted, files that could not be deleted). The raw file goes last and only when every copy went."""
+    deleted, files that could not be deleted). The raw file goes last and only when every copy went, so a row
+    that fails for any reason, an unexpected error included (counted as one failed file), still has its raw file."""
     done, left, deleted, failed = [], [], 0, 0
     for row in rows:
-        files = media.item_files(row["kind"], row["raw_path"], row["view_path"])
-        count, bad = media.remove_files(media_root, [rel for rel in files if rel != row["raw_path"]])
-        if not bad:
-            more, bad = media.remove_files(media_root, [row["raw_path"]])
-            count += more
+        try:
+            files = media.item_files(row["kind"], row["raw_path"], row["view_path"])
+            count, bad = media.remove_files(media_root, [rel for rel in files if rel != row["raw_path"]])
+            if not bad:
+                more, bad = media.remove_files(media_root, [row["raw_path"]])
+                count += more
+        except Exception:
+            log.exception("could not delete the files of item %s; it is tried again next night", row["id"])
+            left.append(row["id"])
+            failed += 1
+            continue
         deleted += count
         failed += len(bad)
         (left if bad else done).append(row["id"])
@@ -97,14 +112,9 @@ async def _unfinished(pool: AsyncConnectionPool, kind: str, skip: list[str]) -> 
 
 async def _delete(pool: AsyncConnectionPool, settings: Settings, rows: list[dict]) -> tuple[int, list[str], int, int]:
     """Delete the files of marked ``rows``: (recordings finished, ids with a file left, files deleted, files left).
-    Finished ones are recorded as gone and no longer point at a playable copy; the others lose their mark again."""
-    ids = [r["id"] for r in rows]
-    try:
-        done, left, deleted, failed = await anyio.to_thread.run_sync(_remove, settings.media_root, rows)
-    except Exception:  # unexpected: leave nothing marked whose files may still be there, then fail the run
-        log.exception("deleting the raw files of %d recordings failed; they are tried again", len(rows))
-        await _record(pool, [], ids)
-        raise
+    Finished ones are recorded as gone and no longer point at a playable copy; the others lose their mark again.
+    An error that escapes ``_remove`` (the worker dying, say) leaves every mark: the next run finishes those."""
+    done, left, deleted, failed = await anyio.to_thread.run_sync(_remove, settings.media_root, rows)
     await _record(pool, done, left)
     return len(done), left, deleted, failed
 
@@ -165,17 +175,26 @@ async def apply_retention(
 
 async def retry_forgotten_files(pool: AsyncConnectionPool, settings: Settings) -> int:
     """Delete the media files "Quên khoảng thời gian" could not delete at once; return how many went. A path
-    outside the media root is dropped from the audit row (never deleted, never retried)."""
+    outside the media root is dropped from the audit row (never deleted, never retried). A row that cannot be
+    handled (malformed paths, say) is logged and left as it is; it never stops the others or the retention run."""
     async with pool.connection() as conn:
-        cur = await conn.execute("SELECT id, pending_files FROM forget_log WHERE pending_files <> '[]'::jsonb")
+        cur = await conn.execute(
+            "SELECT id, pending_files FROM forget_log WHERE pending_files <> '[]'::jsonb ORDER BY id"
+        )
         rows = await cur.fetchall()
     total = 0
     for row in rows:
-        deleted, failed = await anyio.to_thread.run_sync(media.remove_files, settings.media_root, row["pending_files"])
+        try:
+            deleted, failed = await anyio.to_thread.run_sync(
+                media.remove_files, settings.media_root, row["pending_files"]
+            )
+            keep = forget.retryable(settings.media_root, failed)
+            async with pool.connection() as conn:
+                await conn.execute("UPDATE forget_log SET pending_files = %s WHERE id = %s", (Jsonb(keep), row["id"]))
+        except Exception:
+            log.exception("could not retry the files of forget row %s", row["id"])
+            continue
         total += deleted
-        keep = forget.retryable(settings.media_root, failed)
-        async with pool.connection() as conn:
-            await conn.execute("UPDATE forget_log SET pending_files = %s WHERE id = %s", (Jsonb(keep), row["id"]))
     if rows:
         log.info("forgotten files: %d deleted on retry", total)
     return total

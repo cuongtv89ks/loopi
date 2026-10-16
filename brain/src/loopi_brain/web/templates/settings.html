@@ -26,7 +26,7 @@
                    ~ w.audio.recordings ~ " đoạn (" ~ ("%.1f"|format(w.audio.bytes / 1e9)) ~ " GB)" %}
   {# Saving with the switch on asks first, naming what the next run would delete; with it off no question is asked. #}
   <form hx-post="/settings/retention" hx-target="#retention-result"
-        hx-confirm="Bật dọn dữ liệu cũ? Lúc 03:00 lần chạy tới sẽ xoá vĩnh viễn (theo số ngày đã lưu: video {{ retention.video_days }}, audio {{ retention.audio_days }}): {{ deletes }}. Không thể hoàn tác."
+        hx-confirm="Bật dọn dữ liệu cũ? Lúc 03:00 lần chạy tới sẽ xoá vĩnh viễn ít nhất: {{ deletes }} (đếm lúc mở trang, theo số ngày đã lưu: video {{ retention.video_days }}, audio {{ retention.audio_days }}; đoạn quá hạn thêm từ lúc đó cũng bị xoá). Không thể hoàn tác."
         hx-on::confirm="if (!this.elements.enabled.checked) { event.preventDefault(); event.detail.issueRequest(true); }">
     <label>Giữ video thô <input type="number" name="video_days" min="1" max="{{ max_days }}" required value="{{ retention.video_days }}"> ngày</label>
     <label>Giữ audio thô <input type="number" name="audio_days" min="1" max="{{ max_days }}" required value="{{ retention.audio_days }}"> ngày</label>
