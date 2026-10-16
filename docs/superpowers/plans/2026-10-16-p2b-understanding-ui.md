@@ -13,11 +13,11 @@
 - **D20 (owner, 2026-10-16):** the brain keeps raw audio 7 days, like video (spec §9.5 said "delete right after the transcript"), editable in Cài đặt: transcripts are not reliable yet (Whisper hallucinations on noise, faint speech) and the owner replays normalised audio (D19).
 - Work in the worktree **`/home/soul/loopi-p2b`**, branch **`feat/p2b`** (from `feat/phase2` @ `54e22f3`: P1 + P2a + audio level). The live stack (compose project `deploy`) runs from `/home/soul/loopi-p2/deploy` and bind-mounts `Caddyfile` and `providers.yaml` from there. Task 14 (controller, after the owner's yes) fast-forwards `feat/phase2` and redeploys.
 
-**Plan shape:** 14 tasks. **Tasks 1–6 are shippable on their own** (schema, chapters, recap and commitments, Day page); Tasks 7–13 add search and chat, Cài đặt, forgetting, retention, Anthropic and the deploy files; Task 14 deploys.
+**Plan shape:** 14 tasks. **Tasks 1–6 are shippable on their own** (schema, chapters with the catch-up of old days, recap and commitments, Day page) — an early deploy of them also needs Task 13's compose change (`LOOPI_WORKER_CONCURRENCY: "3"`) and Task 14's gates and checks. Tasks 7–13 add search and chat, Cài đặt, forgetting, retention, Anthropic and the deploy files; Task 14 deploys.
 
 **Ledger:** every ruling taken while executing goes to `docs/superpowers/ledgers/p2b-progress.md` (CLAUDE.md). Copy "Rulings taken while writing this plan" (end of this file) into it before Task 1.
 
-**Prototype:** every code block below ran in a throw-away worktree replayed task by task from `54e22f3`, and every "Expected" is what that run printed. Baseline: brain **340 passed, 1 skipped, 98 %**; after Task 13: **486 passed, 1 skipped, 98 %**.
+**Prototype:** every code block below ran in a throw-away worktree replayed task by task from `54e22f3`, and every "Expected" is what that run printed. Baseline: brain **340 passed, 1 skipped, 98 %**; after Task 13: **515 passed, 1 skipped, 98 %**. This revision applies the independent plan review of 2026-10-16 ("Ready with fixes": I1–I9 and the cheap minors; the controller's rulings are in R39–R53).
 
 **How to read the code blocks:** new files are given whole. Changes to existing files are unified diffs against the state the previous task left: apply them from the repository root (`git apply`, e.g. `git apply <<'PATCH' … PATCH`) or edit by hand — every context line is exact.
 
@@ -29,6 +29,8 @@
 - Ollama `POST /api/chat` with `"stream": true` answers one JSON object per line (`message.content` pieces, a last line with `"done": true`, or `{"error": …}`); `format`, `think: false`, `keep_alive` and `options.num_ctx` apply per request.
 - Anthropic Messages API (raw HTTP, as the brief asks — no SDK): `POST /v1/messages` with `x-api-key` and `anthropic-version: 2023-06-01`; `system` is top-level; structured output is `output_config.format = {"type": "json_schema", "schema": …}` with no length/number limits and `additionalProperties: false` on every object; `output_config.effort`; Claude Haiku 5.5 and Sonnet 5.5 reject a non-default `temperature` (HTTP 400) and think by default (an answer can start with `thinking` blocks); streaming is SSE (`content_block_delta` with `text_delta`, `message_delta.stop_reason` `refusal`, `error` events such as `overloaded_error`); 429, 5xx and 529 are temporary.
 - Starlette's `StreamingResponse` streams through `httpx.ASGITransport` (tests read it with `client.stream(...)`); `Jinja2Templates.get_template(name).render(...)` renders a fragment outside a response.
+- Procrastinate 3.10 jobs carry a priority: `configure_task(name, priority=…)`; a worker takes the highest-priority `todo` job first (`ORDER BY priority DESC, id`), default 0.
+- The host (read-only facts from the review, 2026-10-16): Intel i5-1135G7, 4 cores / 8 threads, 15.7 GB RAM with 7.5 GB available and 3.4 GB of swap in use; Ollama runners today: minicpm-v ≈ 2.93 GB, qwen3-embedding ≈ 1.27 GB; the worker ≈ 1.23 GB. qwen3:8b with an 8192-token context needs ≈ 6–6.5 GB, qwen3:4b ≈ 3.5 GB; on this CPU qwen3:8b reads ≈ 30–80 tokens/s and writes ≈ 5–7 tokens/s.
 
 ## Global Constraints
 
@@ -36,9 +38,10 @@
 - Local-first (§9.3, D3): the default configuration is 100 % local; images and audio never reach a cloud provider (the privacy gate is an allow-list, `LOCAL_PROVIDERS = {"ollama", "local"}`); Anthropic serves text tasks only (`chapter_summary`, `recap`, `chat`), only when `ANTHROPIC_API_KEY` is set **and** `providers.yaml` routes there; a backlog never escalates to the cloud.
 - Models (§9.3): chapter_summary `ollama` `qwen3:4b`; recap and chat `ollama` `qwen3:8b`; embed `ollama` `qwen3-embedding:0.6b`; optional cloud models `claude-haiku-5-5`, `claude-sonnet-5-5`.
 - Every derived row stores the model that wrote it as `"<provider>:<model>"` (§12 "Đổi model"): `chapter.model_version`, `day_recap.model_version`, `commitment.model_version`.
-- Jobs are retried 3 times, then dead-lettered and shown with a retry button (§12) — with P2a's exceptions kept: a model-server outage (`ProviderUnavailable`) ends a chapter or recap run without spending a retry; runs that start again by themselves (the planners, `build_chapters`, `apply_retention`) have no retry button and only their newest failure is kept. `write_recap` has a retry button.
+- Jobs are retried 3 times, then dead-lettered and shown with a retry button (§12) — with P2a's exceptions kept: a model-server outage (`ProviderUnavailable`) ends a chapter or recap run without spending a retry; runs that start again by themselves (the planners, `build_chapters`, `apply_retention`) have no retry button and only their newest failure is kept. `write_recap` has a retry button, and a failed recap is also shown on its Day page and on "Xử lý".
+- Live work first (§14 P2: ≤ 15 min recording → caption/transcript): chapter and recap jobs run one at a time (job lock `llm`), with the lowest priority (`LLM_PRIORITY = -10`), on a worker with 3 slots (`LOOPI_WORKER_CONCURRENCY: "3"`); old days are caught up one per hour. Text-model requests wait up to `LOOPI_LLM_TIMEOUT_S` (900 s); Ollama keeps at most 2 models loaded and text models unload 1 minute after their last request.
 - Model or cloud errors never affect ingest (§12): `PUT /v1/items` behaves exactly as before; the device contract `docs/protocol/v1.openapi.yaml` is not modified.
-- Retention (§9.5, D20): raw video and raw audio are kept 7 days by default, editable on Cài đặt; only finished recordings lose their raw file and its view/playback copy; keyframes, thumbnails, transcripts, captions, moments, chapters, recaps and markers are never deleted by retention. Media is deleted only by retention and by "Quên khoảng thời gian" (after the owner's confirmation); every path is checked to lie inside the media root first.
+- Retention (§9.5, D20): raw video and raw audio are kept 7 days by default, editable on Cài đặt; **retention ships switched off** and runs only after the owner turns it on (Cài đặt shows what it would delete); only finished recordings lose their raw file and its view/playback copy; keyframes, thumbnails, transcripts, captions, moments, chapters, recaps and markers are never deleted by retention. Media is deleted only by retention (once switched on) and by "Quên khoảng thời gian" (after the owner's confirmation); every path is checked to lie inside the media root first.
 - UI text Vietnamese; every web POST needs `HX-Request: true` (the chat POST included); text written by a model is always HTML-escaped.
 - Python ≥ 3.13, uv-locked; no new dependency (`brain/pyproject.toml` and `brain/uv.lock` unchanged).
 - TDD, coverage ≥ 80 % for `loopi_brain`, conventional commits ending with the session's attribution lines, never commit secrets (`deploy/.env`, API keys, PKI material), never prune or delete Docker resources you did not create (testcontainers' own containers are fine).
@@ -48,10 +51,10 @@
 ## Review Focus
 
 1. **Whisper's invented lines and recognition mistakes in the day's transcripts** (a lone "Thank you.", YouTube outros, half-heard words) reach chapter summaries, the recap and chat answers → every prompt that quotes speech says so and tells the model to ignore them; the recap reads the day's *longest* lines first; a commitment must cite a line of that day's material (an invented reference is dropped, never stored). Tests: Task 2 (`test_the_asr_caveat_names_the_known_hallucinations`), Task 4 (`test_a_settled_day_becomes_closed_chapters_with_vietnamese_summaries`), Task 5 (`test_a_day_gets_a_vietnamese_recap_and_its_sourced_commitments`, `test_a_long_day_fits_the_prompt_budget`), Task 8 (`test_a_question_gets_sources_then_a_streamed_cited_answer`).
-2. **A backlog analysed hours or days late** (P1/P2a recordings, a device that was offline): a day's chapters stay open while analysis of that day is still to come, a moment that lands inside closed chapters reopens the day, an earlier day gets its recap only once all its chapters are settled, and days analysed before P2b get chapters by themselves. Tests: Task 4 (`test_analysis_still_to_come_keeps_chapters_open`, `test_moments_appearing_inside_closed_chapters_reopen_the_day`), Task 5 (`test_the_planner_writes_today_at_23_30_and_earlier_days_once_settled`), Task 13 (`test_the_planner_also_catches_up_days_analysed_before_chapters_existed`).
-3. **The model server is down (or `qwen3:8b` is not pulled) at 23:30, during the hourly build, or while someone asks a question** → no retry spent and nothing dead-lettered; chapters exist without summaries and get them at the next build; no recap job is created while the recap model cannot run; search falls back to words and chat still shows the matching moments, then says it cannot answer. Tests: Task 4 (`test_a_model_server_outage_leaves_summaries_for_the_next_build`), Task 5 (`test_a_model_server_outage_writes_nothing_and_spends_no_retry`, `test_the_planner_skips_fresh_and_failed_recaps_and_waits_for_the_model`), Task 7 (`test_without_the_embedding_model_words_still_find_moments`, `test_a_stopped_model_server_is_explained`), Task 8 (`test_no_time_filter_when_the_model_server_is_down`, `test_an_answer_that_breaks_off_is_reported_after_the_sources`).
+2. **A backlog analysed hours or days late** (P1/P2a recordings, a device that was offline): a day's chapters stay open while analysis of that day is still to come, a moment that lands inside closed chapters reopens the day, an earlier day gets its recap once all its chapters are settled — and again once if they change afterwards — and days analysed before P2b get chapters by themselves, one per hour. Tests: Task 4 (`test_analysis_still_to_come_keeps_chapters_open`, `test_moments_appearing_inside_closed_chapters_reopen_the_day`, `test_the_planner_catches_up_one_unbuilt_day_per_run_newest_first`), Task 5 (`test_the_planner_writes_today_at_23_30_and_earlier_days_once_settled`, `test_an_earlier_day_is_written_again_once_after_its_chapters_change`, `test_today_is_written_again_at_23_30_after_an_earlier_recap`).
+3. **The model server is down (or `qwen3:8b` is not pulled, or too slow) at 23:30, during the hourly build, or while someone asks a question** → no retry spent and nothing dead-lettered for an outage; chapters exist without summaries and get them at a later build, also on older settled days; no recap job is created while the recap model cannot run; a recap that keeps failing is shown on its Day page; search falls back to words and chat still shows the matching moments, then says it cannot answer. Tests: Task 4 (`test_a_model_server_outage_leaves_summaries_for_the_next_build`, `test_the_planner_comes_back_for_summaries_an_outage_or_a_failure_left_out`), Task 5 (`test_a_model_server_outage_writes_nothing_and_spends_no_retry`, `test_the_planner_skips_fresh_and_failed_recaps_and_waits_for_the_model`), Task 6 (`test_a_failed_recap_is_shown_on_its_day`), Task 7 (`test_without_the_embedding_model_words_still_find_moments`, `test_a_stopped_model_server_is_explained`), Task 8 (`test_no_time_filter_when_the_model_server_is_down`, `test_an_answer_that_breaks_off_is_reported_after_the_sources`).
 4. **A question with no relevant memory, or an answer that cites sources that do not exist** → "Không tìm thấy trong ký ức." without asking the model to answer at all; citation numbers outside the sources are dropped; an answer citing nothing carries a visible warning; model text is escaped everywhere (answers, sources, recap markdown, chapter titles). Tests: Task 7 (`test_nothing_relevant_finds_nothing`), Task 8 (`test_nothing_relevant_says_not_found_and_asks_no_model_for_an_answer`, `test_the_chat_endpoint_streams_server_sent_events`, `test_the_chat_endpoint_flags_uncited_answers_and_not_found`), Task 6 (`test_model_text_cannot_inject_markup`, `test_a_day_shows_its_recap_commitments_and_chapters_in_order`).
-5. **"Quên khoảng thời gian" on an awkward range** — across midnight, cutting a 60 s segment in half, a marker exactly on an edge, a stored path that leaves the media root → a recording that overlaps the range goes whole, one that only touches its start stays, both days' chapters and recaps are redone, nothing outside the media root is touched, and the audit row holds counts but no content. Tests: Task 10 (`test_a_recording_that_straddles_the_edge_goes_whole_one_that_only_touches_it_stays`, `test_a_range_across_midnight_touches_both_days`, `test_files_outside_the_media_root_are_never_deleted`, `test_forgetting_removes_the_rows_files_and_derived_text_of_the_range`).
+5. **"Quên khoảng thời gian" on an awkward range or at an awkward moment** — across midnight, cutting a 60 s segment in half, a marker exactly on an edge, a stored path that leaves the media root, while a summary or the recap of that day is being written, or with a file that cannot be deleted right now → a recording that overlaps the range goes whole, one that only touches its start stays, both days' chapters and recaps are redone, a summary or recap in flight is not stored (it could quote forgotten text), nothing outside the media root is touched, a file left behind is retried at 03:00, and the audit row holds counts and paths but no content. Tests: Task 10 (`test_a_recording_that_straddles_the_edge_goes_whole_one_that_only_touches_it_stays`, `test_a_range_across_midnight_touches_both_days`, `test_files_outside_the_media_root_are_never_deleted`, `test_forgetting_removes_the_rows_files_and_derived_text_of_the_range`, `test_a_forget_waits_while_a_summary_or_recap_of_its_day_is_being_stored`, `test_a_file_that_cannot_be_deleted_now_stays_listed_for_a_retry`), Task 4 (`test_a_forget_while_the_model_writes_stores_no_summary`), Task 5 (`test_a_forget_while_the_recap_is_written_stores_nothing`), Task 11 (`test_files_a_forget_left_behind_are_deleted_at_three_even_with_retention_off`).
 
 ---
 
@@ -75,14 +78,14 @@ brain/src/loopi_brain/
 │                                      # Task 12: privacy-aware task_ready, Anthropic when keyed
 ├── pipeline/
 │   ├── segment.py                     # Task 3: pure chapter boundaries
-│   ├── chapters.py                    # Task 4: build + summaries + hourly planner; Task 13: catch-up of old days
-│   ├── recap.py                       # Task 5: recap + commitments + 23:30 planner
-│   ├── retention.py                   # Task 11: 03:00 retention
-│   ├── jobs.py, state.py, status.py   # Tasks 4, 5, 11, 13: task names, day errors, labels, /pipeline card
+│   ├── chapters.py                    # Task 4: build + summaries + hourly planner (catch-up, repair, priority)
+│   ├── recap.py                       # Task 5: recap + commitments + planner (23:30, freshness, forget guard)
+│   ├── retention.py                   # Task 11: 03:00 retention (off until the owner's yes), forget retries
+│   ├── jobs.py, state.py, status.py   # Tasks 4, 5, 11, 13: names, priority, day lock, day errors, labels, card
 │   └── asr.py                         # Task 11: docstring (D20)
 ├── search.py                          # Task 7: hybrid retrieval (pgvector + pg_trgm, RRF)
 ├── chat.py                            # Task 8: time filter, cited answer events
-├── store.py                           # Task 9: editable settings (retention days)
+├── store.py                           # Task 9: editable settings (retention days, on/off)
 ├── reprocess.py                       # Task 9: reprocess one day
 ├── forget.py                          # Task 10: "Quên khoảng thời gian"
 ├── thumbs.py                          # Task 6: 320 px keyframe thumbnails
@@ -92,14 +95,14 @@ brain/src/loopi_brain/
     ├── routes.py                      # Task 1: day bounds from days.py; Task 6: hourly view moves to /hours
     ├── day_routes.py                  # Task 6: Day page, thumbnails, recap and commitment buttons
     ├── search_routes.py               # Task 7: /search; Task 8: /chat (SSE)
-    ├── settings_routes.py             # Tasks 9, 10, 12: /settings, retention, reprocess, forget, key state
+    ├── settings_routes.py             # Tasks 9–12: /settings, retention (+ preview), reprocess, forget, key
     ├── markdown.py                    # Task 6: safe markdown for recaps
     └── templates/                     # day, _commitment, search, _hit, _sources, settings, _reprocessed,
                                        # _forget_preview, _forgotten; base/timeline/pipeline edited
 brain/tests/  conftest.py, helpers.py (shared fakes and inserts) and
               test_{days,llm,segment,chapters,recap,markdown,day_page,search,chat,settings_page,forget,retention,
               anthropic}.py (new); test_{db,config,providers,web,web_pipeline,audio_playback,deploy}.py (edited)
-deploy/docker-compose.yml, providers.yaml, .env.example, README.md   # Task 13
+deploy/docker-compose.yml, providers.yaml, .env.example, README.md   # Task 13 (worker concurrency 3, 2 models)
 docs/HANDOFF.md, docs/superpowers/ledgers/p2b-progress.md            # Task 14 (controller)
 ```
 
@@ -117,7 +120,7 @@ docs/HANDOFF.md, docs/superpowers/ledgers/p2b-progress.md            # Task 14 (
 - Consumes: P2a `db.migrate()` (applies `migrations/*.sql` in name order, then the Procrastinate schema), `web.routes.day_bounds_utc` (moves here).
 - Produces:
   - `days.day_bounds_utc(day: date, zone: ZoneInfo) -> tuple[datetime, datetime]` (UTC `[start, end)`), `days.local_day(ts: datetime, zone) -> date`, `days.local_now(zone, now: datetime | None = None) -> datetime`. `web.routes` imports `day_bounds_utc` from `days` (the name stays importable from `web.routes`).
-  - Tables (columns exactly as in `003_understanding.sql` below): `item.raw_deleted_at`; `chapter` (`day`, `ts_start`, `ts_end`, `last_moment_at`, `moment_count`, `signature`, `closed`, `title`, `summary`, `summary_signature`, `model_version`, `summary_error`); `day_recap` (`day` PK, `markdown`, `model_version`, `generated_at`, `stale`); `commitment` (`day`, `text`, `source_moment_id` → `moment` ON DELETE SET NULL, `status` open|done|dismissed, `model_version`); `setting` (`key`, `value` jsonb); `forget_log` (`range_start`, `range_end`, `counts` jsonb); `day_job_error` (`task`, `day`, `error`); indexes `item_retention`, `moment_created_at`, `chapter_day`, `commitment_day`, `commitment_source`.
+  - Tables (columns exactly as in `003_understanding.sql` below): `item.raw_deleted_at`; `chapter` (`day`, `ts_start`, `ts_end`, `last_moment_at`, `moment_count`, `signature`, `closed`, `title`, `summary`, `summary_signature`, `model_version`, `summary_error`, `summary_error_at`, `created_at`, `updated_at`); `day_recap` (`day` PK, `markdown`, `model_version`, `generated_at`, `stale`); `commitment` (`day`, `text`, `source_moment_id` → `moment` ON DELETE SET NULL, `status` open|done|dismissed, `model_version`); `setting` (`key`, `value` jsonb); `forget_log` (`range_start`, `range_end`, `requested_at`, `counts` jsonb, `pending_files` jsonb list of media paths still to delete); `day_job_error` (`task`, `day`, `error`); indexes `item_retention`, `moment_created_at`, `chapter_day`, `commitment_day`, `commitment_source`.
   - `conftest.APP_TABLES` truncates the new tables between tests.
 
 - [ ] **Step 1: Write the failing tests**
@@ -327,6 +330,7 @@ CREATE TABLE chapter (
     summary_signature  TEXT,
     model_version      TEXT,
     summary_error      TEXT,
+    summary_error_at   TIMESTAMPTZ,            -- the planner leaves a failing chapter alone for a while
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT chapter_time_order CHECK (ts_end >= ts_start AND last_moment_at >= ts_start)
@@ -362,13 +366,15 @@ CREATE TABLE setting (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Audit of "Quên khoảng thời gian": what was asked and how much went (no content).
+-- Audit of "Quên khoảng thời gian": what was asked and how much went (no content). `pending_files` lists the media
+-- paths still to delete after the commit; the nightly retention run retries them until the list is empty.
 CREATE TABLE forget_log (
-    id            TEXT PRIMARY KEY,
-    range_start   TIMESTAMPTZ NOT NULL,
-    range_end     TIMESTAMPTZ NOT NULL,
-    requested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    counts        JSONB NOT NULL,
+    id             TEXT PRIMARY KEY,
+    range_start    TIMESTAMPTZ NOT NULL,
+    range_end      TIMESTAMPTZ NOT NULL,
+    requested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    counts         JSONB NOT NULL,
+    pending_files  JSONB NOT NULL DEFAULT '[]'::jsonb,
     CONSTRAINT forget_range_order CHECK (range_end > range_start)
 );
 
@@ -481,9 +487,9 @@ EOF
 **Interfaces:**
 - Consumes: P2a `OllamaProvider`, `build_router(config, settings, client)`, `ProvidersConfig`, `FakeOllama`.
 - Produces:
-  - `Settings.ollama_text_keep_alive: str = "5m"` (`LOOPI_OLLAMA_TEXT_KEEP_ALIVE`), `Settings.llm_num_ctx: int = 8192` (`LOOPI_LLM_NUM_CTX`, 2048..131072).
+  - `Settings.ollama_text_keep_alive: str = "1m"` (`LOOPI_OLLAMA_TEXT_KEEP_ALIVE`), `Settings.llm_num_ctx: int = 8192` (`LOOPI_LLM_NUM_CTX`, 2048..131072), `Settings.llm_timeout_s: float = 900.0` (`LOOPI_LLM_TIMEOUT_S`, 60..3600).
   - `providers.config.TEXT_TASKS = ("chapter_summary", "recap", "chat")`; `ProvidersConfig.ollama_text_models() -> frozenset[str]`.
-  - `OllamaProvider(base_url, *, keep_alive="30m", client=None, text_models=frozenset(), text_keep_alive="5m", num_ctx=None)`: a chat to a text model sends `keep_alive = text_keep_alive` and `options.num_ctx = num_ctx`; every other request is unchanged. `build_router` fills these from the config and settings.
+  - `OllamaProvider(base_url, *, keep_alive="30m", client=None, text_models=frozenset(), text_keep_alive="1m", num_ctx=None, text_timeout=None)`: a chat to a text model sends `keep_alive = text_keep_alive` and `options.num_ctx = num_ctx` and waits up to `text_timeout` seconds (`httpx.Timeout(text_timeout, connect=5.0)`, from `_timeout_for(model)`); every other request is unchanged. `build_router` fills these from the config and settings.
   - `llm.ASR_CAVEAT`, `llm.PICTURE_NOTE` (prompt text); `llm.AnswerInvalid(Exception)`; `llm.parse_answer(text: str, model: type[M]) -> M`; `llm.clip(text, limit) -> str`; `llm.clipped(limit)` (a pydantic `str` type that is clipped, not rejected); `llm.spread(items, limit) -> list`; `llm.within(lines, budget) -> list[str]`.
   - `helpers.FakeOllama.reply`: optional callable `body -> str | dict` answering `/api/chat` (default: the caption).
 
@@ -540,7 +546,7 @@ Apply to `brain/tests/test_providers.py` and `brain/tests/test_config.py`:
 diff --git a/brain/tests/test_providers.py b/brain/tests/test_providers.py
 --- a/brain/tests/test_providers.py
 +++ b/brain/tests/test_providers.py
-@@ -289,3 +289,38 @@ async def test_router_rejects_wrong_embedding_dimensions():
+@@ -289,3 +289,44 @@ async def test_router_rejects_wrong_embedding_dimensions():
          await router.embed("embed", ["a"])
      result = await _router(DEFAULT_CONFIG, ollama=StubProvider()).embed("embed", ["a", "b"])
      assert len(result.vectors) == 2 and result.model_version == "ollama:qwen3-embedding:0.6b"
@@ -549,21 +555,26 @@ diff --git a/brain/tests/test_providers.py b/brain/tests/test_providers.py
 +async def test_text_models_leave_memory_soon_and_get_a_context_window():
 +    fake = FakeOllama()
 +    provider = OllamaProvider("http://models.test:11434", keep_alive="30m", client=fake.client(),
-+                              text_models=frozenset({"qwen3:8b"}), text_keep_alive="5m", num_ctx=8192)
++                              text_models=frozenset({"qwen3:8b"}), text_keep_alive="1m", num_ctx=8192,
++                              text_timeout=900.0)
 +    await provider.chat("qwen3:8b", [{"role": "user", "content": "x"}], max_tokens=100)
 +    await provider.chat("minicpm-v4.6:1b", [{"role": "user", "content": "x"}], images=[b"img"])
 +    await provider.embed("qwen3-embedding:0.6b", ["a"])
 +    (_, text), (_, vision), (_, embed) = fake.requests
-+    assert text["keep_alive"] == "5m" and text["options"] == {"temperature": 0.0, "num_predict": 100, "num_ctx": 8192}
++    assert text["keep_alive"] == "1m" and text["options"] == {"temperature": 0.0, "num_predict": 100, "num_ctx": 8192}
 +    assert vision["keep_alive"] == "30m" and "num_ctx" not in vision["options"]
 +    assert embed["keep_alive"] == "30m"
++    # A recap on a CPU takes minutes: only the text model waits that long.
++    (_, text_timeout), (_, vision_timeout), _ = fake.timeouts
++    assert text_timeout == {"connect": 5.0, "read": 900.0, "write": 900.0, "pool": 900.0}
++    assert vision_timeout["read"] == 5.0  # the client's own timeout
 +
 +
 +async def test_build_router_gives_every_text_task_model_the_text_options():
 +    assert DEFAULT_CONFIG.ollama_text_models() == {"qwen3:4b", "qwen3:8b"}
 +    fake = FakeOllama()
 +    settings = Settings(database_url="postgresql://unused", ollama_url="http://models.test:11434",
-+                        ollama_text_keep_alive="2m", llm_num_ctx=4096)
++                        ollama_text_keep_alive="2m", llm_num_ctx=4096, llm_timeout_s=600)
 +    router = build_router(DEFAULT_CONFIG, settings, fake.client())
 +    for task in ("chapter_summary", "recap", "chat"):
 +        await router.chat(task, [{"role": "user", "content": "x"}])
@@ -572,6 +583,7 @@ diff --git a/brain/tests/test_providers.py b/brain/tests/test_providers.py
 +        ("qwen3:4b", "2m", 4096), ("qwen3:8b", "2m", 4096), ("qwen3:8b", "2m", 4096),
 +        ("minicpm-v4.6:1b", "30m", None),
 +    ]
++    assert [t["read"] for _, t in fake.timeouts] == [600.0, 600.0, 600.0, 5.0]
 +
 +
 +async def test_fake_ollama_answers_chats_with_its_reply_hook():
@@ -585,7 +597,7 @@ diff --git a/brain/tests/test_providers.py b/brain/tests/test_providers.py
 diff --git a/brain/tests/test_config.py b/brain/tests/test_config.py
 --- a/brain/tests/test_config.py
 +++ b/brain/tests/test_config.py
-@@ -40,3 +40,15 @@ def test_asr_gain_ceiling_from_env(monkeypatch):
+@@ -40,3 +40,19 @@ def test_asr_gain_ceiling_from_env(monkeypatch):
          monkeypatch.setenv("LOOPI_ASR_MAX_GAIN_DB", bad)
          with pytest.raises(pydantic.ValidationError, match="asr_max_gain_db"):
              Settings()
@@ -596,10 +608,14 @@ diff --git a/brain/tests/test_config.py b/brain/tests/test_config.py
 +    import pytest
 +
 +    s = Settings(database_url="postgresql://x")
-+    assert s.ollama_text_keep_alive == "5m" and s.llm_num_ctx == 8192
++    assert (s.ollama_text_keep_alive, s.llm_num_ctx, s.llm_timeout_s) == ("1m", 8192, 900.0)
 +    monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
 +    monkeypatch.setenv("LOOPI_LLM_NUM_CTX", "1024")
 +    with pytest.raises(pydantic.ValidationError, match="llm_num_ctx"):
++        Settings()
++    monkeypatch.setenv("LOOPI_LLM_NUM_CTX", "8192")
++    monkeypatch.setenv("LOOPI_LLM_TIMEOUT_S", "10")
++    with pytest.raises(pydantic.ValidationError, match="llm_timeout_s"):
 +        Settings()
 ```
 
@@ -656,14 +672,16 @@ Apply to `brain/src/loopi_brain/config.py` and `brain/src/loopi_brain/providers/
 diff --git a/brain/src/loopi_brain/config.py b/brain/src/loopi_brain/config.py
 --- a/brain/src/loopi_brain/config.py
 +++ b/brain/src/loopi_brain/config.py
-@@ -32,6 +32,10 @@ class Settings(BaseSettings):
+@@ -32,6 +32,12 @@ class Settings(BaseSettings):
      asr_languages: str = "vi,ko,en"
      whisper_cpu_threads: int = 4
      asr_max_gain_db: float = Field(default=30.0, ge=0.0, le=60.0)  # level gain before VAD/Whisper (spec D19)
-+    # Understanding (P2b): text models (chapters, recap, chat) leave memory soon after answering, and get a
-+    # context window large enough for their bounded prompts (P2a deferred M14).
-+    ollama_text_keep_alive: str = "5m"
++    # Understanding (P2b): text models (chapters, recap, chat) leave memory a minute after answering (the host is
++    # short of memory: P2a deferred M14), get a context window large enough for their bounded prompts, and may
++    # take long on a CPU: a request waits up to llm_timeout_s seconds for the whole answer.
++    ollama_text_keep_alive: str = "1m"
 +    llm_num_ctx: int = Field(default=8192, ge=2048, le=131072)
++    llm_timeout_s: float = Field(default=900.0, ge=60.0, le=3600.0)
  
      @property
      def zone(self) -> ZoneInfo:
@@ -705,7 +723,7 @@ Apply to `brain/src/loopi_brain/providers/ollama.py` and `brain/src/loopi_brain/
 diff --git a/brain/src/loopi_brain/providers/ollama.py b/brain/src/loopi_brain/providers/ollama.py
 --- a/brain/src/loopi_brain/providers/ollama.py
 +++ b/brain/src/loopi_brain/providers/ollama.py
-@@ -29,10 +29,24 @@ def _tagged(model: str) -> str:
+@@ -29,10 +29,27 @@ def _tagged(model: str) -> str:
  class OllamaProvider:
      name = "ollama"
  
@@ -717,21 +735,37 @@ diff --git a/brain/src/loopi_brain/providers/ollama.py b/brain/src/loopi_brain/p
 +        keep_alive: str = "30m",
 +        client: httpx.AsyncClient | None = None,
 +        text_models: frozenset[str] = frozenset(),
-+        text_keep_alive: str = "5m",
++        text_keep_alive: str = "1m",
 +        num_ctx: int | None = None,
++        text_timeout: float | None = None,
 +    ):
-+        """``text_models`` (the big text models) stay loaded only ``text_keep_alive`` after a request and get a
-+        ``num_ctx`` context window; every other model stays ``keep_alive``, with Ollama's default context."""
++        """``text_models`` (the big text models) stay loaded only ``text_keep_alive`` after a request, get a
++        ``num_ctx`` context window and wait up to ``text_timeout`` seconds for an answer; every other model stays
++        ``keep_alive``, with Ollama's default context and the client's timeout."""
          self._base = base_url.rstrip("/")
          self._keep_alive = keep_alive
          self._client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)
 +        self._text_models = text_models
 +        self._text_keep_alive = text_keep_alive
 +        self._num_ctx = num_ctx
++        self._text_timeout = text_timeout
  
      async def aclose(self) -> None:
          await self._client.aclose()
-@@ -77,15 +91,18 @@ class OllamaProvider:
+@@ -64,6 +81,12 @@ class OllamaProvider:
+             raise ProviderError(f"ollama {path}: unexpected response {str(data)[:ERROR_TAIL]}")
+         return data
+ 
++    def _timeout_for(self, model: str) -> httpx.Timeout | None:
++        """A text model writes a whole recap before Ollama replies (CPU: minutes); others keep the client's timeout."""
++        if model in self._text_models and self._text_timeout is not None:
++            return httpx.Timeout(self._text_timeout, connect=5.0)
++        return None
++
+     async def chat(
+         self,
+         model: str,
+@@ -77,20 +100,23 @@ class OllamaProvider:
          msgs = [dict(m) for m in messages]
          if images:
              msgs[-1]["images"] = [base64.b64encode(img).decode("ascii") for img in images]
@@ -751,13 +785,19 @@ diff --git a/brain/src/loopi_brain/providers/ollama.py b/brain/src/loopi_brain/p
              "options": options,
          }
          if json_schema is not None:
+             payload["format"] = json_schema
+-        data = await self._request("POST", "/api/chat", payload)
++        data = await self._request("POST", "/api/chat", payload, timeout=self._timeout_for(model))
+         content = (data.get("message") or {}).get("content")
+         if not isinstance(content, str):
+             raise ProviderError("ollama /api/chat: response has no message content")
 ```
 
 ```diff
 diff --git a/brain/src/loopi_brain/providers/router.py b/brain/src/loopi_brain/providers/router.py
 --- a/brain/src/loopi_brain/providers/router.py
 +++ b/brain/src/loopi_brain/providers/router.py
-@@ -105,5 +105,12 @@ class Router:
+@@ -105,5 +105,13 @@ class Router:
  
  
  def build_router(config: ProvidersConfig, settings: Settings, client: httpx.AsyncClient | None = None) -> Router:
@@ -769,11 +809,12 @@ diff --git a/brain/src/loopi_brain/providers/router.py b/brain/src/loopi_brain/p
 +        text_models=config.ollama_text_models(),
 +        text_keep_alive=settings.ollama_text_keep_alive,
 +        num_ctx=settings.llm_num_ctx,
++        text_timeout=settings.llm_timeout_s,
 +    )
      return Router(config, {"ollama": ollama})
 ```
 
-Why `num_ctx`: Ollama silently drops the beginning of a prompt longer than the context window — the system prompt, with its instructions about Vietnamese and invented transcript lines, would be the first thing lost. Every prompt in this plan is bounded well inside 8192 tokens (Tasks 4, 5, 8).
+Why `num_ctx`: Ollama silently drops the beginning of a prompt longer than the context window — the system prompt, with its instructions about Vietnamese and invented transcript lines, would be the first thing lost. Every prompt in this plan is bounded well inside 8192 tokens (Tasks 4, 5, 8). Why the timeout: a non-streaming chat returns nothing until the whole answer is written; on this 4-core CPU a recap is several minutes (≈ 3–4 k prompt tokens at 30–80 tokens/s, up to 1000 output tokens at 5–7 tokens/s, plus loading 5 GB), beyond the 300 s client default. Why "1m": the host has ≈ 7.5 GB free; a big text model leaves memory soon after its job (chat follow-ups reload it from the page cache).
 
 - [ ] **Step 5: Write the shared answer helpers**
 
@@ -862,7 +903,7 @@ git add brain/src/loopi_brain/config.py brain/src/loopi_brain/llm.py brain/src/l
   brain/src/loopi_brain/providers/ollama.py brain/src/loopi_brain/providers/router.py brain/tests/helpers.py \
   brain/tests/test_config.py brain/tests/test_llm.py brain/tests/test_providers.py
 git commit -F - <<'EOF'
-feat(brain): text models unload after 5 minutes and get an 8192-token context
+feat(brain): text models unload after a minute, get an 8192-token context and a 15-minute timeout
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
@@ -1184,29 +1225,31 @@ EOF
 
 **Files:**
 - Create: `brain/src/loopi_brain/pipeline/chapters.py`
-- Modify: `brain/src/loopi_brain/pipeline/jobs.py` (task names, the `llm` lock), `brain/src/loopi_brain/pipeline/state.py` (per-day job errors), `brain/src/loopi_brain/pipeline/status.py` (labels, day errors on the dead-letter list)
-- Modify: `brain/tests/helpers.py` (`insert_moment` gains an embedding, an item and a length)
+- Modify: `brain/src/loopi_brain/pipeline/jobs.py` (task names, the `llm` lock, `LLM_PRIORITY`, `enqueue(priority=…)`), `brain/src/loopi_brain/pipeline/state.py` (per-day job errors, the day lock, the forget counter), `brain/src/loopi_brain/pipeline/status.py` (labels, day errors on the dead-letter list)
+- Modify: `brain/tests/helpers.py` (`insert_moment` gains an embedding, an item and a length; `insert_chapter`)
 - Test: `brain/tests/test_chapters.py`
 
 **Interfaces:**
-- Consumes: Task 1 `day_bounds_utc`, `local_now`, table `chapter`, `day_job_error`; Task 2 `ASR_CAVEAT`, `PICTURE_NOTE`, `AnswerInvalid`, `parse_answer`, `clip`, `clipped`, `spread`, `within`, `FakeOllama.reply`; Task 3 `ChapterParams`, `Point`, `segment`, `closed_count`, `signature`, `unit`; P2a `jobs.enqueue`, `jobs.RETRY`, `PipelineContext`, `get_context`, `Router.chat`, `ProviderUnavailable`/`ProviderError`.
+- Consumes: Task 1 `day_bounds_utc`, `local_now`, tables `chapter`, `day_job_error`, `forget_log`; Task 2 `ASR_CAVEAT`, `PICTURE_NOTE`, `AnswerInvalid`, `parse_answer`, `clip`, `clipped`, `spread`, `within`, `FakeOllama.reply`; Task 3 `ChapterParams`, `Point`, `segment`, `closed_count`, `signature`, `unit`; P2a `jobs.enqueue`, `jobs.RETRY`, `PipelineContext`, `get_context`, `Router.chat`, `Router.health`, `Router.task_ready`, `ProviderUnavailable`/`ProviderError`.
 - Produces:
-  - `jobs.PLAN_CHAPTERS = "plan_chapters"` (periodic, cron `"5 * * * *"`, queue `light`), `jobs.BUILD_CHAPTERS = "build_chapters"` (queue `understand`, lock `jobs.LLM_LOCK = "llm"`, queueing lock `chapters:<YYYY-MM-DD>`, kwargs `{"day": "YYYY-MM-DD"}`); both in `jobs.AUTO_RERUN_TASKS`.
+  - `jobs.PLAN_CHAPTERS = "plan_chapters"` (periodic, cron `"5 * * * *"`, queue `light`), `jobs.BUILD_CHAPTERS = "build_chapters"` (queue `understand`, lock `jobs.LLM_LOCK = "llm"`, priority `jobs.LLM_PRIORITY = -10`, queueing lock `chapters:<YYYY-MM-DD>`, kwargs `{"day": "YYYY-MM-DD"}`); both in `jobs.AUTO_RERUN_TASKS`. `jobs.enqueue(conn, task, *, queue, queueing_lock, lock=None, priority=None, **kwargs)` (Task 5 uses it too).
   - `chapters.build_chapters(ctx, day: date, attempt=0, params=ChapterParams(), now=None) -> BuildResult(chapters, closed, summarised)`; raises `ChapterSummaryFailed` when a model answer was unusable (job retried); a model-server outage is not an error.
   - `chapters.rebuild_chapters(pool, day, zone, params, now) -> tuple[int, int]`, `chapters.summarise_chapters(ctx, day, attempt) -> tuple[int, list[str]]`, `chapters.chapter_lines(pool, first, last, zone) -> list[str]`, `chapters.summary_messages(lines, first, end, zone) -> list[dict]`.
-  - `chapters.defer_build(pool, day, zone) -> int | None` (only for a day with moments or chapters; errors logged), `chapters.plan_chapters(pool, zone, now=None) -> list[date]`.
-  - Constants `OPEN_MIN_MOMENTS = 3`, `TITLE_MAX = 80`, `SUMMARY_MAX = 600`, `SUMMARY_MAX_TOKENS = 400`, `RETRY_TEMPERATURE = 0.3`, `PROMPT_BUDGET = 7000`, `MAX_PICTURE_LINES = 40`, `MAX_SPEECH_LINES = 60`, `MAX_MARKER_LINES = 20`, `RECENT = 26 h`, `SUMMARY_SCHEMA`.
-  - `state.record_day_error(pool, task, day, exc)`, `state.clear_day_error(pool, task, day)`.
-  - `/pipeline` failed list: target = the job's `day` for per-day jobs, error = `day_job_error.error`; labels "Lên lịch chia chương", "Chia chương" ("tự chạy lại mỗi giờ").
-  - `helpers.insert_moment(pool, device_id, *, kind, ts, text, lang, axis=None, item_id=None, seconds=0)`: `axis` gives the moment the 1024-d unit vector on that axis.
+  - `chapters.defer_build(pool, day, zone) -> int | None` (only for a day with moments or chapters; errors logged), `chapters.plan_chapters(pool, router, zone, now=None) -> list[date]` (Task 13's job wrapper passes `ctx.router`).
+  - Constants `OPEN_MIN_MOMENTS = 3`, `TITLE_MAX = 80`, `SUMMARY_MAX = 600`, `SUMMARY_MAX_TOKENS = 400`, `RETRY_TEMPERATURE = 0.3`, `PROMPT_BUDGET = 7000`, `MAX_PICTURE_LINES = 40`, `MAX_SPEECH_LINES = 60`, `MAX_MARKER_LINES = 20`, `RECENT = 26 h`, `CATCHUP_PER_RUN = 1`, `ERROR_COOLDOWN = 6 h`, `SUMMARY_SCHEMA`.
+  - `state.record_day_error(pool, task, day, exc)`, `state.clear_day_error(pool, task, day)`; `state.lock_day(conn, day)` (transaction advisory lock `day:<YYYY-MM-DD>`: chapter builds, stored summaries and recaps, and "Quên khoảng thời gian" (Task 10) take it), `state.forgotten(conn, start, end) -> int` (how many forget requests overlap the range: read before a model call, re-read under `lock_day` before storing its answer; a different number → store nothing).
+  - `/pipeline` failed list: target = the job's `day` for per-day jobs, error = `day_job_error.error`; labels "Lên lịch chia chương", "Chia chương" (`status.CHAPTER_RERUN` = "tự chạy lại ở lần lên lịch chia chương (mỗi giờ; chương tóm tắt lỗi: sau 6 giờ)").
+  - `helpers.insert_moment(pool, device_id, *, kind, ts, text, lang, axis=None, item_id=None, seconds=0)`: `axis` gives the moment the 1024-d unit vector on that axis; `helpers.insert_chapter(pool, day, ts_start, ts_end, *, title=None, summary=None, closed=True, moment_count=1) -> str` (Task 5 onwards use it).
 
-How a build works (`rebuild_chapters`, one transaction under an advisory lock on the day):
+How a build works (`rebuild_chapters`, one transaction under `lock_day`):
 1. Closed chapters are kept as they are, unless the number of moments in their range changed (a late moment arrived, or one was deleted): then every chapter of the day is reopened.
 2. The moments after the last closed chapter are segmented (Task 3).
 3. The horizon is `now − 30 min`, or earlier: the start of the first analysis of that day still to come (pending item, uncaptioned keyframe, unembedded moment — dead-lettered work does not count). Segments settled by that horizon are written closed.
-4. A segment keeps the row of an open chapter with the same signature (same moments: title and summary stay), else the row of an open chapter starting at the same moment (the old summary stays visible, now out of date), else gets a new row; open rows left over are deleted.
+4. A segment keeps the row of an open chapter with the same signature (same moments: title and summary stay), else the row of an open chapter starting at the same moment (the old summary stays visible, now out of date), else gets a new row; open rows left over are deleted. A row is written only when something changed, so `updated_at` is the time of the chapter's last real change (Task 5's recap planner compares it with the recap).
 
-Then `summarise_chapters` asks `chapter_summary` (`qwen3:4b`) for every chapter whose signature differs from its summary's — closed ones, and today's open one once it has 3 moments — with the chapter's lines (≤ 40 distinct captions, ≤ 60 speech lines, ≤ 20 markers, spread over the chapter, ≤ 7000 characters), JSON schema `{title, summary}`, `think: false`, ≤ 400 tokens; over-long answers are clipped.
+Then `summarise_chapters` asks `chapter_summary` (`qwen3:4b`) for every chapter whose signature differs from its summary's — closed ones, and today's open one once it has 3 moments — with the chapter's lines (≤ 40 distinct captions, ≤ 60 speech lines, ≤ 20 markers, spread over the chapter, ≤ 7000 characters), JSON schema `{title, summary}`, `think: false`, ≤ 400 tokens; over-long answers are clipped. A failed answer stores `summary_error` and `summary_error_at`. Each answer is stored under `lock_day` only if no "Quên khoảng thời gian" overlapping the day arrived since the build started (else nothing more is stored; the forget asked for a new build).
+
+The hourly planner asks for a build of: today, yesterday, every day with moments written in the last 26 hours, every day with open chapters; while `chapter_summary` can run, every day with a chapter still waiting for its summary (an outage or failure on an older settled day; a chapter whose summary failed less than 6 hours ago does not count); and the newest day that has moments but no chapter at all (days analysed before P2b), one per run. Builds have priority −10: on the worker's 3 slots (Task 13) they wait behind every live caption, transcription and embedding job.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1250,6 +1293,33 @@ diff --git a/brain/tests/helpers.py b/brain/tests/helpers.py
          )
      return moment_id
  
+@@ -377,3 +391,26 @@ class FakeTranscriber:
+         self.chunks.append(len(chunk))
+         self.peaks.append(float(abs(chunk).max()) if len(chunk) else 0.0)
+         return self.results[(len(self.chunks) - 1) % len(self.results)]
++
++
++async def insert_chapter(
++    pool,
++    day: dt.date,
++    ts_start: dt.datetime,
++    ts_end: dt.datetime,
++    *,
++    title: str | None = None,
++    summary: str | None = None,
++    closed: bool = True,
++    moment_count: int = 1,
++) -> str:
++    """Insert a chapter row directly (its moments are those starting in [ts_start, ts_end]); return its id."""
++    chapter_id = new_ulid()
++    async with pool.connection() as conn:
++        await conn.execute(
++            "INSERT INTO chapter (id, day, ts_start, ts_end, last_moment_at, moment_count, signature, closed,"
++            " title, summary, summary_signature, model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
++            (chapter_id, day, ts_start, ts_end, ts_end, moment_count, chapter_id, closed, title, summary,
++             chapter_id if title else None, "test" if title else None),
++        )
++    return chapter_id
 ```
 
 Create `brain/tests/test_chapters.py`:
@@ -1265,6 +1335,7 @@ from helpers import (
     FakeOllama,
     fetch_all,
     fetch_one,
+    insert_chapter,
     insert_item,
     insert_moment,
     jobs_by_lock,
@@ -1344,10 +1415,20 @@ async def test_a_settled_day_becomes_closed_chapters_with_vietnamese_summaries(p
 async def test_a_second_build_of_a_settled_day_calls_no_model(pool, dev, ctx, ollama):
     await _two_scenes(pool, dev["device_id"])
     await chapters.build_chapters(ctx, DAY, now=NEXT_NOON)
-    ids = [c["id"] for c in await _chapters(pool)]
+    before = [(c["id"], c["updated_at"]) for c in await _chapters(pool)]
     result = await chapters.build_chapters(ctx, DAY, now=NEXT_NOON + dt.timedelta(hours=5))
     assert result == chapters.BuildResult(chapters=2, closed=2, summarised=0)
-    assert [c["id"] for c in await _chapters(pool)] == ids and len(_chats(ollama)) == 2
+    # Nothing changed, so no row was touched (the recap planner compares updated_at with its recap).
+    assert [(c["id"], c["updated_at"]) for c in await _chapters(pool)] == before and len(_chats(ollama)) == 2
+
+
+async def test_an_unchanged_open_chapter_is_not_touched_by_the_next_build(pool, dev, ctx):
+    await _run(pool, dev["device_id"], NINE, 5, axis=0)
+    await chapters.build_chapters(ctx, DAY, now=NINE + dt.timedelta(minutes=10))
+    [before] = await _chapters(pool)
+    await chapters.build_chapters(ctx, DAY, now=NINE + dt.timedelta(minutes=20))
+    [after] = await _chapters(pool)
+    assert (after["id"], after["updated_at"], after["closed"]) == (before["id"], before["updated_at"], False)
 
 
 async def test_today_keeps_its_tail_open_and_rewrites_only_what_changed(pool, dev, ctx, ollama):
@@ -1408,12 +1489,12 @@ async def test_bad_answers_are_kept_on_the_chapter_and_fail_the_job(pool, dev, c
     ollama.reply = lambda body: "Sorry, I cannot help with that."
     with pytest.raises(chapters.ChapterSummaryFailed, match="2 chapter summaries failed; last: AnswerInvalid"):
         await chapters.build_chapters(ctx, DAY, now=NEXT_NOON)
-    assert all(c["summary_error"].startswith("AnswerInvalid") for c in await _chapters(pool))
+    assert all(c["summary_error"].startswith("AnswerInvalid") and c["summary_error_at"] for c in await _chapters(pool))
     error = await fetch_one(pool, "SELECT task, day, error FROM day_job_error")
     assert (error["task"], error["day"]) == ("build_chapters", DAY) and "2 chapter summaries" in error["error"]
     ollama.reply = good
     await chapters.build_chapters(ctx, DAY, attempt=1, now=NEXT_NOON)
-    assert [c["summary_error"] for c in await _chapters(pool)] == [None, None]
+    assert [(c["summary_error"], c["summary_error_at"]) for c in await _chapters(pool)] == [(None, None)] * 2
     assert await fetch_all(pool, "SELECT * FROM day_job_error") == []
     assert _chats(ollama)[-1]["options"]["temperature"] == chapters.RETRY_TEMPERATURE
 
@@ -1453,19 +1534,75 @@ async def test_a_day_whose_moments_are_gone_loses_its_chapters(pool, dev, ctx):
     assert await _chapters(pool) == []
 
 
-async def test_the_planner_asks_once_for_each_day_with_data(pool, dev, pki_settings, jobs_open):
+async def test_the_planner_asks_once_for_each_day_with_data(pool, dev, ctx, pki_settings, jobs_open):
     device_id = dev["device_id"]
     await insert_moment(pool, device_id, ts=NINE)  # today
     await insert_moment(pool, device_id, ts=NINE - dt.timedelta(days=5))  # a backlog day, analysed just now
     now = NINE + dt.timedelta(hours=3)
-    assert await chapters.plan_chapters(pool, pki_settings.zone, now) == [DAY - dt.timedelta(days=5), DAY]
-    assert await chapters.plan_chapters(pool, pki_settings.zone, now) == [DAY - dt.timedelta(days=5), DAY]
+    zone = pki_settings.zone
+    assert await chapters.plan_chapters(pool, ctx.router, zone, now) == [DAY - dt.timedelta(days=5), DAY]
+    assert await chapters.plan_chapters(pool, ctx.router, zone, now) == [DAY - dt.timedelta(days=5), DAY]
     locks = await jobs_by_lock(pool)
     for day in ("2026-10-09", "2026-10-14"):
         [job] = locks[f"chapters:{day}"]
         assert (job["task_name"], job["queue_name"], job["lock"], job["args"]) == (
             "build_chapters", "understand", "llm", {"day": day})
+        assert job["priority"] == jobs.LLM_PRIORITY  # live captions and transcripts go first
     assert "chapters:2026-10-13" not in locks  # yesterday had no data
+
+
+async def _old(pool, device_id, days_ago: int) -> str:
+    """A moment of ``days_ago`` days before DAY that was analysed (written) that long ago."""
+    moment = await insert_moment(pool, device_id, ts=NINE - dt.timedelta(days=days_ago))
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE moment SET created_at = now() - make_interval(days => %s) WHERE id = %s",
+                           (days_ago, moment))
+    return moment
+
+
+async def test_the_planner_catches_up_one_unbuilt_day_per_run_newest_first(pool, dev, ctx, pki_settings, jobs_open):
+    # Days P2a analysed before P2b existed have moments and no chapter.
+    for days_ago in (30, 31):
+        await _old(pool, dev["device_id"], days_ago)
+    now = NINE + dt.timedelta(days=60)
+    zone = pki_settings.zone
+    assert await chapters.plan_chapters(pool, ctx.router, zone, now) == [DAY - dt.timedelta(days=30)]
+    await insert_chapter(pool, DAY - dt.timedelta(days=30), NINE - dt.timedelta(days=30), NINE - dt.timedelta(days=30),
+                         title="x", summary="y")
+    assert await chapters.plan_chapters(pool, ctx.router, zone, now) == [DAY - dt.timedelta(days=31)]
+
+
+async def test_the_planner_comes_back_for_summaries_an_outage_or_a_failure_left_out(pool, dev, ctx, ollama,
+                                                                                    pki_settings, jobs_open):
+    old_day = DAY - dt.timedelta(days=10)
+    await _old(pool, dev["device_id"], 10)
+    chapter = await insert_chapter(pool, old_day, NINE - dt.timedelta(days=10), NINE - dt.timedelta(days=10))
+    now, zone = NINE + dt.timedelta(days=1), pki_settings.zone
+    ollama.models.remove("qwen3:4b")  # the summary model cannot run: no build just to fail
+    assert old_day not in await chapters.plan_chapters(pool, ctx.router, zone, now)
+    ollama.models.append("qwen3:4b")
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE chapter SET summary_error = 'x', summary_error_at = %s WHERE id = %s",
+                           (now - dt.timedelta(hours=1), chapter))
+    assert old_day not in await chapters.plan_chapters(pool, ctx.router, zone, now)  # failed an hour ago: wait
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE chapter SET summary_error_at = %s", (now - dt.timedelta(hours=7),))
+    assert old_day in await chapters.plan_chapters(pool, ctx.router, zone, now)
+
+
+async def test_a_forget_while_the_model_writes_stores_no_summary(pool, dev, ctx, monkeypatch):
+    await _two_scenes(pool, dev["device_id"])
+    chat = ctx.router.chat
+
+    async def chat_during_a_forget(task, messages, **kwargs):
+        async with pool.connection() as conn:  # "Quên khoảng thời gian" commits while the model is writing
+            await conn.execute("INSERT INTO forget_log (id, range_start, range_end, counts) VALUES ('F1', %s, %s, '{}')",
+                               (NINE, NINE + dt.timedelta(minutes=5)))
+        return await chat(task, messages, **kwargs)
+
+    monkeypatch.setattr(ctx.router, "chat", chat_during_a_forget)
+    result = await chapters.build_chapters(ctx, DAY, now=NEXT_NOON)
+    assert result.summarised == 0 and [c["title"] for c in await _chapters(pool)] == [None, None]
 
 
 async def test_the_worker_builds_the_chapters_a_planner_asked_for(pool, dev, ctx, pki_settings, jobs_open):
@@ -1482,8 +1619,8 @@ async def test_a_failed_build_is_listed_with_its_error_and_runs_again_by_itself(
         await conn.execute("UPDATE procrastinate_jobs SET status = 'failed', attempts = 4 WHERE id = %s", (job_id,))
         await conn.execute("INSERT INTO day_job_error (task, day, error) VALUES ('build_chapters', %s, 'boom')", (DAY,))
     [row] = (await status.pipeline_status(pool))["failed"]
-    assert (row["label"], row["target"], row["error"], row["retryable"], row["rerun"]) == (
-        "Chia chương", "2026-10-14", "boom", False, "tự chạy lại mỗi giờ")
+    assert (row["label"], row["target"], row["error"], row["retryable"]) == ("Chia chương", "2026-10-14", "boom", False)
+    assert row["rerun"] == "tự chạy lại ở lần lên lịch chia chương (mỗi giờ; chương tóm tắt lỗi: sau 6 giờ)"
 
 
 def test_the_planner_runs_every_hour():
@@ -1497,7 +1634,7 @@ def test_the_planner_runs_every_hour():
 Run: `cd brain && uv run pytest tests/test_chapters.py -q`
 Expected: FAIL — `ImportError: cannot import name 'chapters' from 'loopi_brain.pipeline'`.
 
-- [ ] **Step 3: Register the task names, the job lock and the per-day errors**
+- [ ] **Step 3: Register the task names, the job lock and priority, the day lock and the per-day errors**
 
 Apply to `brain/src/loopi_brain/pipeline/jobs.py`, `brain/src/loopi_brain/pipeline/state.py` and `brain/src/loopi_brain/pipeline/status.py`:
 
@@ -1513,7 +1650,7 @@ diff --git a/brain/src/loopi_brain/pipeline/jobs.py b/brain/src/loopi_brain/pipe
  ]
  
  ANALYZE_VIDEO = "analyze_video"
-@@ -26,10 +27,15 @@ EMBED_MOMENTS = "embed_moments"
+@@ -26,10 +27,18 @@ EMBED_MOMENTS = "embed_moments"
  DISPATCH_PENDING = "dispatch_pending"
  RETRY_STALLED = "retry_stalled_jobs"
  REMOVE_OLD_JOBS = "remove_old_jobs"
@@ -1526,11 +1663,35 @@ diff --git a/brain/src/loopi_brain/pipeline/jobs.py b/brain/src/loopi_brain/pipe
 +# each periodic tick; the hourly planner asks for each day's chapters again), so a failed one is never
 +# retried and only the newest failed one is kept.
 +AUTO_RERUN_TASKS = (EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS, PLAN_CHAPTERS, BUILD_CHAPTERS)
-+# The text models run one job at a time (chapters, recaps): each one takes most of the CPU.
++# The text models run one job at a time (chapters, recaps): each one takes most of the CPU. They also wait behind
++# every live job (video, captions, ASR, markers, embeddings: priority 0) for a free worker slot, so recordings keep
++# their 15-minute latency target while chapters and recaps are being written (spec §14 P2).
 +LLM_LOCK = "llm"
++LLM_PRIORITY = -10
  
  # Spec §12: a failed job is retried 3 times, then stays 'failed' (the dead-letter list).
  # RetryStrategy compares max_attempts with the attempts already made (0 on the first run),
+@@ -60,16 +69,18 @@ async def enqueue(
+     queue: str,
+     queueing_lock: str,
+     lock: str | None = None,
++    priority: int | None = None,
+     **task_kwargs,
+ ) -> int:
+-    """Defer ``task`` inside the caller's transaction and return the job id.
++    """Defer ``task`` inside the caller's transaction and return the job id (``priority``: higher runs first,
++    default 0).
+ 
+     If a 'todo' job already holds ``queueing_lock``, return that job's id instead.
+     """
+     try:
+         async with conn.transaction():  # savepoint: a unique violation must not abort the caller
+             deferrer = job_app.configure_task(
+-                task, queue=queue, lock=lock, queueing_lock=queueing_lock, connection=conn
++                task, queue=queue, lock=lock, queueing_lock=queueing_lock, priority=priority, connection=conn
+             )
+             return await deferrer.defer_async(**task_kwargs)
+     except AlreadyEnqueued:
 ```
 
 ```diff
@@ -1545,7 +1706,7 @@ diff --git a/brain/src/loopi_brain/pipeline/state.py b/brain/src/loopi_brain/pip
  import logging
  
  from psycopg import AsyncConnection
-@@ -73,3 +74,21 @@ async def keyframe_exists(pool: AsyncConnectionPool, keyframe_id: str) -> bool:
+@@ -73,3 +74,36 @@ async def keyframe_exists(pool: AsyncConnectionPool, keyframe_id: str) -> bool:
      async with pool.connection() as conn:
          cur = await conn.execute("SELECT 1 FROM keyframe WHERE id = %s", (keyframe_id,))
          return await cur.fetchone() is not None
@@ -1562,6 +1723,21 @@ diff --git a/brain/src/loopi_brain/pipeline/state.py b/brain/src/loopi_brain/pip
 +            )
 +    except Exception:
 +        log.exception("could not record the %s error of %s", task, day)
++
++
++async def lock_day(conn: AsyncConnection, day: dt.date) -> None:
++    """Serialise, for one local day and inside the caller's transaction, everything that writes text derived from
++    that day (chapters, summaries, the recap) with "Quên khoảng thời gian"."""
++    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"day:{day.isoformat()}",))
++
++
++async def forgotten(conn: AsyncConnection, start: dt.datetime, end: dt.datetime) -> int:
++    """How many "Quên khoảng thời gian" requests overlap [start, end): read before a model call and again (under
++    ``lock_day``) before writing its answer; a different number means the material may hold forgotten text."""
++    cur = await conn.execute(
++        "SELECT count(*) AS n FROM forget_log WHERE range_start < %s AND range_end > %s", (end, start)
++    )
++    return (await cur.fetchone())["n"]
 +
 +
 +async def clear_day_error(pool: AsyncConnectionPool, task: str, day: dt.date) -> None:
@@ -1604,15 +1780,15 @@ diff --git a/brain/src/loopi_brain/pipeline/status.py b/brain/src/loopi_brain/pi
 -# minute, and the scheduler starts the next tick of each periodic task by itself (retry_stalled_jobs
 -# every 10 minutes, remove_old_jobs daily). The value says when that happens.
 +# minute, the scheduler starts the next tick of each periodic task by itself (retry_stalled_jobs
-+# every 10 minutes, remove_old_jobs daily), and the hourly planner asks for each day's chapters again.
-+# The value says when that happens.
++# every 10 minutes, remove_old_jobs daily), and the hourly chapter planner asks for a day's build again
++# (a chapter whose summary failed: after 6 hours). The value says when that happens.
  EVERY_MINUTE = "tự chạy lại mỗi phút"
-+EVERY_HOUR = "tự chạy lại mỗi giờ"
++CHAPTER_RERUN = "tự chạy lại ở lần lên lịch chia chương (mỗi giờ; chương tóm tắt lỗi: sau 6 giờ)"
  ON_SCHEDULE = "tự chạy lại theo lịch"
  AUTO_RERUN = {
 -    task: EVERY_MINUTE if task in (jobs.EMBED_MOMENTS, jobs.DISPATCH_PENDING) else ON_SCHEDULE
 +    task: EVERY_MINUTE if task in (jobs.EMBED_MOMENTS, jobs.DISPATCH_PENDING)
-+    else EVERY_HOUR if task == jobs.BUILD_CHAPTERS else ON_SCHEDULE
++    else CHAPTER_RERUN if task == jobs.BUILD_CHAPTERS else ON_SCHEDULE
      for task in jobs.AUTO_RERUN_TASKS
  }
  NOT_RETRIED = jobs.AUTO_RERUN_TASKS
@@ -1646,15 +1822,18 @@ from .. import devices
 from ..days import day_bounds_utc, local_now
 from ..llm import ASR_CAVEAT, PICTURE_NOTE, AnswerInvalid, clip, clipped, parse_answer, spread, within
 from ..providers.base import ProviderError, ProviderUnavailable
+from ..providers.router import Router
 from . import jobs
 from .context import PipelineContext, get_context
 from .jobs import job_app
 from .segment import ChapterParams, Point, closed_count, segment, signature, unit
-from .state import clear_day_error, error_text, record_day_error
+from .state import clear_day_error, error_text, forgotten, lock_day, record_day_error
 
 log = logging.getLogger(__name__)
 OPEN_MIN_MOMENTS = 3  # the open chapter at the end of today gets a summary once it has this many moments
 RECENT = dt.timedelta(hours=26)  # the planner rebuilds every day that got new moments this recently
+CATCHUP_PER_RUN = 1  # days with moments but no chapter yet (analysed before P2b) built per hourly run, newest first
+ERROR_COOLDOWN = dt.timedelta(hours=6)  # a chapter whose summary failed is not the reason for a build before this
 TITLE_MAX = 80
 SUMMARY_MAX = 600
 SUMMARY_MAX_TOKENS = 400
@@ -1751,11 +1930,11 @@ async def rebuild_chapters(
     now = now or dt.datetime.now(dt.UTC)
     start, end = day_bounds_utc(day, zone)
     async with pool.connection() as conn, conn.transaction():
-        # One build of a day at a time (the "llm" job lock already serialises jobs; this also covers callers
-        # outside the worker, such as tests or a future CLI).
-        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"chapters:{day}",))
+        # One writer of a day's chapters at a time (the "llm" job lock serialises jobs; this also covers a forget
+        # and callers outside the worker).
+        await lock_day(conn, day)
         cur = await conn.execute(
-            "SELECT id, ts_start, last_moment_at, moment_count, signature, closed FROM chapter"
+            "SELECT id, ts_start, ts_end, last_moment_at, moment_count, signature, closed FROM chapter"
             " WHERE day = %s ORDER BY ts_start",
             (day,),
         )
@@ -1799,11 +1978,14 @@ async def rebuild_chapters(
                 )
             else:
                 chapter_id = row["id"]
-                await conn.execute(
-                    "UPDATE chapter SET ts_start = %s, ts_end = %s, last_moment_at = %s, moment_count = %s,"
-                    " signature = %s, closed = %s, updated_at = now() WHERE id = %s",
-                    (*values, chapter_id),
-                )
+                current = (row["ts_start"], row["ts_end"], row["last_moment_at"], row["moment_count"],
+                           row["signature"], row["closed"])
+                if values != current:  # updated_at moves only when the chapter changes (the recap planner reads it)
+                    await conn.execute(
+                        "UPDATE chapter SET ts_start = %s, ts_end = %s, last_moment_at = %s, moment_count = %s,"
+                        " signature = %s, closed = %s, updated_at = now() WHERE id = %s",
+                        (*values, chapter_id),
+                    )
             kept.add(chapter_id)
         await conn.execute(
             "DELETE FROM chapter WHERE day = %s AND NOT closed AND NOT (id = ANY(%s))", (day, list(kept))
@@ -1853,10 +2035,13 @@ async def summarise_chapters(ctx: PipelineContext, day: dt.date, attempt: int = 
     (closed chapters, and the open one once it has OPEN_MIN_MOMENTS moments). Returns (written, errors).
 
     A model server outage stops here without an error: the next hourly build continues. A bad answer is
-    stored on its chapter and the other chapters go on.
+    stored on its chapter and the other chapters go on. If part of the day is forgotten while the model writes,
+    nothing more is stored: the forget asked for a new build.
     """
     zone = ctx.settings.zone
+    start, end = day_bounds_utc(day, zone)
     async with ctx.pool.connection() as conn:
+        generation = await forgotten(conn, start, end)
         cur = await conn.execute(
             "SELECT id, ts_start, ts_end, last_moment_at, signature FROM chapter"
             " WHERE day = %s AND summary_signature IS DISTINCT FROM signature"
@@ -1882,12 +2067,19 @@ async def summarise_chapters(ctx: PipelineContext, day: dt.date, attempt: int = 
         except (ProviderError, AnswerInvalid) as exc:
             errors.append(error_text(exc))
             async with ctx.pool.connection() as conn:
-                await conn.execute("UPDATE chapter SET summary_error = %s WHERE id = %s", (errors[-1], row["id"]))
+                await conn.execute(
+                    "UPDATE chapter SET summary_error = %s, summary_error_at = now() WHERE id = %s",
+                    (errors[-1], row["id"]),
+                )
             continue
-        async with ctx.pool.connection() as conn:
+        async with ctx.pool.connection() as conn, conn.transaction():
+            await lock_day(conn, day)
+            if await forgotten(conn, start, end) != generation:
+                log.info("chapters of %s: part of the day was forgotten during the summary; not stored", day)
+                break
             await conn.execute(
                 "UPDATE chapter SET title = %s, summary = %s, model_version = %s, summary_signature = %s,"
-                " summary_error = NULL, updated_at = now() WHERE id = %s AND signature = %s",
+                " summary_error = NULL, summary_error_at = NULL, updated_at = now() WHERE id = %s AND signature = %s",
                 (answer.title, answer.summary, result.model_version, row["signature"], row["id"], row["signature"]),
             )
         written += 1
@@ -1928,7 +2120,7 @@ async def defer_build(pool: AsyncConnectionPool, day: dt.date, zone) -> int | No
             if not (await cur.fetchone())["needed"]:
                 return None
             return await jobs.enqueue(
-                conn, jobs.BUILD_CHAPTERS, queue="understand", lock=jobs.LLM_LOCK,
+                conn, jobs.BUILD_CHAPTERS, queue="understand", lock=jobs.LLM_LOCK, priority=jobs.LLM_PRIORITY,
                 queueing_lock=f"chapters:{day.isoformat()}", day=day.isoformat(),
             )
     except Exception:
@@ -1936,9 +2128,16 @@ async def defer_build(pool: AsyncConnectionPool, day: dt.date, zone) -> int | No
         return None
 
 
-async def plan_chapters(pool: AsyncConnectionPool, zone, now: dt.datetime | None = None) -> list[dt.date]:
-    """The hourly planner: ask for a build of today, yesterday, every day that got moments in the last 26 hours
-    (a backlog being analysed) and every day with open chapters; return the days asked for."""
+async def plan_chapters(
+    pool: AsyncConnectionPool, router: Router, zone, now: dt.datetime | None = None
+) -> list[dt.date]:
+    """The hourly planner; returns the days it asked a build for:
+    - today, yesterday, every day that got moments in the last 26 hours (a backlog being analysed) and every day
+      with open chapters;
+    - while the chapter_summary model can run: every day with a chapter still waiting for its summary (an outage
+      or a failure on an older, settled day), except chapters whose summary failed less than 6 hours ago;
+    - one day with moments but no chapter at all (days analysed before P2b was installed), the newest first.
+    """
     now = now or dt.datetime.now(dt.UTC)
     today = local_now(zone, now).date()
     async with pool.connection() as conn:
@@ -1948,6 +2147,20 @@ async def plan_chapters(pool: AsyncConnectionPool, zone, now: dt.datetime | None
             (zone.key, now - RECENT),
         )
         days = {r["day"] for r in await cur.fetchall()} | {today, today - dt.timedelta(days=1)}
+        if router.task_ready("chapter_summary", await router.health()):
+            cur = await conn.execute(
+                "SELECT DISTINCT day FROM chapter WHERE summary_signature IS DISTINCT FROM signature"
+                " AND (closed OR moment_count >= %s) AND (summary_error_at IS NULL OR summary_error_at < %s)",
+                (OPEN_MIN_MOMENTS, now - ERROR_COOLDOWN),
+            )
+            days |= {r["day"] for r in await cur.fetchall()}
+        cur = await conn.execute(
+            "SELECT d.day FROM (SELECT DISTINCT (ts_start AT TIME ZONE %s)::date AS day FROM moment) d"
+            " WHERE NOT EXISTS (SELECT 1 FROM chapter c WHERE c.day = d.day) ORDER BY d.day DESC",
+            (zone.key,),
+        )
+        unbuilt = [r["day"] for r in await cur.fetchall() if r["day"] not in days]
+        days |= set(unbuilt[:CATCHUP_PER_RUN])
     return [day for day in sorted(days) if await defer_build(pool, day, zone) is not None]
 
 
@@ -1955,7 +2168,7 @@ async def plan_chapters(pool: AsyncConnectionPool, zone, now: dt.datetime | None
 @job_app.task(name=jobs.PLAN_CHAPTERS, queue="light", queueing_lock="plan_chapters")
 async def plan_chapters_job(timestamp: int | None = None) -> None:
     ctx = get_context()
-    await plan_chapters(ctx.pool, ctx.settings.zone)
+    await plan_chapters(ctx.pool, ctx.router, ctx.settings.zone)
 
 
 @job_app.task(name=jobs.BUILD_CHAPTERS, queue="understand", lock=jobs.LLM_LOCK, retry=jobs.RETRY, pass_context=True)
@@ -1966,10 +2179,10 @@ async def build_chapters_job(context: JobContext, day: str) -> None:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_chapters.py -q`
-Expected: `15 passed`.
+Expected: `19 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `386 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `390 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 6: Commit**
 
@@ -1987,63 +2200,31 @@ EOF
 
 ---
 
-### Task 5: The day recap, its commitments and the 23:30 planner
+### Task 5: The day recap, its commitments and the recap planner (23:30, and again when the day changed)
 
 **Files:**
 - Create: `brain/src/loopi_brain/pipeline/recap.py`
 - Modify: `brain/src/loopi_brain/pipeline/jobs.py`, `brain/src/loopi_brain/pipeline/status.py`
-- Modify: `brain/tests/helpers.py` (`insert_chapter`)
 - Test: `brain/tests/test_recap.py`
 
 **Interfaces:**
-- Consumes: Task 1 tables `day_recap`, `commitment`, `day_bounds_utc`, `local_now`; Task 2 `ASR_CAVEAT`, `clip`, `clipped`, `parse_answer`, `within`; Task 4 `jobs.LLM_LOCK`, `state.record_day_error`/`clear_day_error`, chapter rows; P2a `Router.chat`, `Router.health`, `Router.task_ready`, `jobs.enqueue`.
+- Consumes: Task 1 tables `day_recap`, `commitment`, `forget_log`, `day_bounds_utc`, `local_now`; Task 2 `ASR_CAVEAT`, `clip`, `clipped`, `parse_answer`, `within`; Task 4 `jobs.LLM_LOCK`, `jobs.LLM_PRIORITY`, `jobs.enqueue(priority=…)`, `state.record_day_error`/`clear_day_error`, `state.lock_day`, `state.forgotten`, chapter rows (`closed`, `updated_at`), `helpers.insert_chapter`; P2a `Router.chat`, `Router.health`, `Router.task_ready`.
 - Produces:
-  - `jobs.PLAN_RECAPS = "plan_recaps"` (periodic, cron `"*/15 * * * *"`, in `AUTO_RERUN_TASKS`), `jobs.WRITE_RECAP = "write_recap"` (queue `understand`, lock `llm`, queueing lock `recap:<YYYY-MM-DD>`, kwargs `{"day": …}`; **not** auto-rerun: its dead letter has a retry button).
-  - `recap.write_recap(ctx, day, attempt=0) -> bool` (False: no data — any old row is deleted — or the model server is down); `recap.defer_recap(pool, day) -> int`; `recap.plan_recaps(pool, router, zone, now=None) -> list[date]`; `recap.set_commitment_status(pool, commitment_id, status) -> dict | None` (`ValueError` for a status outside `STATUSES = ("open", "done", "dismissed")`).
-  - `recap.recap_material(pool, day, zone) -> Material | None`, `recap.recap_messages(material, day)`, `recap.compose_markdown(answer, commitments, zone) -> str`, `recap.sourced(answer, refs)`; constants `RECAP_TIME = 23:30`, `HEADINGS`, `NOTHING = "Không có."`, `RECAP_SCHEMA`, `MAX_EVENTS = 12`, `MAX_MEMORABLE = 8`, `MAX_COMMITMENTS = 10`, `MAX_SPEECH_LINES = 60`, `PROMPT_BUDGET = 9000`, `RETRY_TEMPERATURE = 0.3`.
+  - `jobs.PLAN_RECAPS = "plan_recaps"` (periodic, cron `"*/15 * * * *"`, in `AUTO_RERUN_TASKS`), `jobs.WRITE_RECAP = "write_recap"` (queue `understand`, lock `llm`, priority `LLM_PRIORITY`, queueing lock `recap:<YYYY-MM-DD>`, kwargs `{"day": …}`; **not** auto-rerun: its dead letter has a retry button).
+  - `recap.write_recap(ctx, day, attempt=0) -> bool` (False: no data — any old row is deleted —, the model server is down, or part of the day was forgotten while the model wrote: nothing stored, the planner asks again); `recap.defer_recap(pool, day) -> int`; `recap.plan_recaps(pool, router, zone, now=None) -> list[date]`; `recap.set_commitment_status(pool, commitment_id, status) -> dict | None` (`ValueError` for a status outside `STATUSES = ("open", "done", "dismissed")`).
+  - `recap.recap_material(pool, day, zone) -> Material | None`, `recap.recap_messages(material, day)`, `recap.compose_markdown(answer, commitments, zone) -> str`, `recap.sourced(answer, refs)`; constants `RECAP_TIME = 23:30`, `HEADINGS`, `NOTHING = "Không có."`, `RECAP_SCHEMA`, `ITEM_MAX = 200`, `MAX_EVENTS = 8`, `MAX_MEMORABLE = 5`, `MAX_COMMITMENTS = 8`, `RECAP_MAX_TOKENS = 1000`, `MAX_SPEECH_LINES = 60`, `PROMPT_BUDGET = 9000`, `RETRY_TEMPERATURE = 0.3`.
   - Labels "Lên lịch recap" (no button, "tự chạy lại theo lịch") and "Viết recap" (retry button).
-  - `helpers.insert_chapter(pool, day, ts_start, ts_end, *, title=None, summary=None, closed=True, moment_count=1) -> str`.
 
 The recap model (`recap`, `qwen3:8b`) reads: the day's chapters (time range, title, summary), every marked moment as `[M1]`, `[M2]`, …, and the day's 60 *longest* speech lines in time order as `[S1]`, `[S2]`, … (≤ 9000 characters in all). It answers JSON `{main_events: [...], memorable: [...], commitments: [{text, source}]}`. The brain writes the markdown — always the three sections of spec §10.2 — and stores each commitment whose `source` is one of the references it was shown (the real moment id behind it), status `open`. Writing again keeps the commitments the user marked done or dismissed and skips new ones with the same source moment or the same text.
 
-The planner (every 15 minutes): nothing while the recap model cannot run (`task_ready`); otherwise every day that has chapters, no fresh recap (none, or `stale`) and no recap job waiting, running or failed — today only from 23:30 local time, earlier days only once all their chapters are closed.
+The answer is kept small so a CPU writes it in minutes (≤ 1000 tokens, ≤ 8 + 5 bullets of ≤ 200 characters, ≤ 8 commitments; Task 2 gives text models a 900 s timeout). The whole run reads the forget counter first and stores the recap and commitments under `lock_day` only if no "Quên khoảng thời gian" overlapping the day arrived meanwhile (else the recap could quote forgotten speech).
+
+The planner (every 15 minutes): nothing while the recap model cannot run (`task_ready`); never a day whose recap job waits, runs or failed. Otherwise, among days with chapters:
+- **today** from 23:30 local time, unless a fresh recap was written at or after 23:30 — a recap written earlier (e.g. by "Tạo lại recap" at noon) is written again at 23:30;
+- **an earlier day** once all its chapters are closed, if it has no fresh recap or its recap is older than its last chapter change (`max(chapter.updated_at)`: late uploads, a backlog, summaries that came later) — at most once per change;
+- a `stale` recap (reprocessing) counts as no recap.
 
 - [ ] **Step 1: Write the failing tests**
-
-Apply to `brain/tests/helpers.py`:
-
-```diff
-diff --git a/brain/tests/helpers.py b/brain/tests/helpers.py
---- a/brain/tests/helpers.py
-+++ b/brain/tests/helpers.py
-@@ -391,3 +391,26 @@ class FakeTranscriber:
-         self.chunks.append(len(chunk))
-         self.peaks.append(float(abs(chunk).max()) if len(chunk) else 0.0)
-         return self.results[(len(self.chunks) - 1) % len(self.results)]
-+
-+
-+async def insert_chapter(
-+    pool,
-+    day: dt.date,
-+    ts_start: dt.datetime,
-+    ts_end: dt.datetime,
-+    *,
-+    title: str | None = None,
-+    summary: str | None = None,
-+    closed: bool = True,
-+    moment_count: int = 1,
-+) -> str:
-+    """Insert a chapter row directly (its moments are those starting in [ts_start, ts_end]); return its id."""
-+    chapter_id = new_ulid()
-+    async with pool.connection() as conn:
-+        await conn.execute(
-+            "INSERT INTO chapter (id, day, ts_start, ts_end, last_moment_at, moment_count, signature, closed,"
-+            " title, summary, summary_signature, model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-+            (chapter_id, day, ts_start, ts_end, ts_end, moment_count, chapter_id, closed, title, summary,
-+             chapter_id if title else None, "test" if title else None),
-+        )
-+    return chapter_id
-```
 
 Create `brain/tests/test_recap.py`:
 
@@ -2130,7 +2311,7 @@ async def test_a_day_gets_a_vietnamese_recap_and_its_sourced_commitments(pool, d
     assert (commitment["day"], commitment["text"], commitment["source_moment_id"], commitment["status"]) == (
         DAY, "Đi khám răng lúc 9 giờ sáng mai", ids["dentist"], "open")
     [body] = _chats(ollama)
-    assert body["model"] == "qwen3:8b" and body["format"] == recap.RECAP_SCHEMA and body["keep_alive"] == "5m"
+    assert body["model"] == "qwen3:8b" and body["format"] == recap.RECAP_SCHEMA and body["keep_alive"] == "1m"
     system, user = body["messages"]
     assert ASR_CAVEAT in system["content"]
     assert "09:00–09:30 Đọc sách: Một người đọc sách bên bàn." in user["content"]
@@ -2222,8 +2403,61 @@ async def test_the_planner_writes_today_at_23_30_and_earlier_days_once_settled(p
     locks = await jobs_by_lock(pool)
     assert [j["args"] for j in locks["recap:2026-10-13"]] == [{"day": "2026-10-13"}]
     [job] = locks["recap:2026-10-14"]
-    assert (job["task_name"], job["queue_name"], job["lock"]) == ("write_recap", "understand", "llm")
+    assert (job["task_name"], job["queue_name"], job["lock"], job["priority"]) == (
+        "write_recap", "understand", "llm", jobs.LLM_PRIORITY)
     assert "recap:2026-10-11" not in locks
+
+
+async def test_today_is_written_again_at_23_30_after_an_earlier_recap(pool, dev, ctx, pki_settings, jobs_open):
+    zone = pki_settings.zone
+    await insert_chapter(pool, DAY, NINE, NINE + dt.timedelta(hours=1), closed=False)
+    async with pool.connection() as conn:  # "Tạo lại recap" pressed at noon
+        await conn.execute("INSERT INTO day_recap (day, markdown, model_version, generated_at) VALUES (%s, 'x', 'x', %s)",
+                           (DAY, dt.datetime(2026, 10, 14, 12, 0, tzinfo=zone)))
+    assert await recap.plan_recaps(pool, ctx.router, zone, dt.datetime(2026, 10, 14, 23, 0, tzinfo=zone)) == []
+    assert await recap.plan_recaps(pool, ctx.router, zone, dt.datetime(2026, 10, 14, 23, 31, tzinfo=zone)) == [DAY]
+    async with pool.connection() as conn:  # written at 23:35: done for today
+        await conn.execute("DELETE FROM procrastinate_jobs")
+        await conn.execute("UPDATE day_recap SET generated_at = %s", (dt.datetime(2026, 10, 14, 23, 35, tzinfo=zone),))
+    assert await recap.plan_recaps(pool, ctx.router, zone, dt.datetime(2026, 10, 14, 23, 50, tzinfo=zone)) == []
+
+
+async def test_an_earlier_day_is_written_again_once_after_its_chapters_change(pool, dev, ctx, pki_settings, jobs_open):
+    zone = pki_settings.zone
+    past = DAY - dt.timedelta(days=2)
+    await insert_chapter(pool, past, NINE - dt.timedelta(days=2), NINE - dt.timedelta(days=2, hours=-1))
+    written = dt.datetime(2026, 10, 12, 23, 30, tzinfo=zone)
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO day_recap (day, markdown, model_version, generated_at) VALUES (%s, 'x', 'x', %s)",
+                           (past, written))
+        await conn.execute("UPDATE chapter SET updated_at = %s", (written - dt.timedelta(hours=1),))
+    now = dt.datetime(2026, 10, 14, 10, 0, tzinfo=zone)
+    assert await recap.plan_recaps(pool, ctx.router, zone, now) == []  # the recap is newer than its chapters
+    async with pool.connection() as conn:  # a summary arrived after the recap (an outage, a late upload)
+        await conn.execute("UPDATE chapter SET updated_at = %s", (written + dt.timedelta(hours=3),))
+    assert await recap.plan_recaps(pool, ctx.router, zone, now) == [past]
+    async with pool.connection() as conn:
+        await conn.execute("DELETE FROM procrastinate_jobs")
+        await conn.execute("UPDATE day_recap SET generated_at = %s", (written + dt.timedelta(hours=4),))
+    assert await recap.plan_recaps(pool, ctx.router, zone, now) == []  # written again once
+    async with pool.connection() as conn:  # reopened: wait until it settles again
+        await conn.execute("UPDATE chapter SET closed = false, updated_at = %s", (written + dt.timedelta(hours=5),))
+    assert await recap.plan_recaps(pool, ctx.router, zone, now) == []
+
+
+async def test_a_forget_while_the_recap_is_written_stores_nothing(pool, dev, ctx, monkeypatch):
+    await _day(pool, dev["device_id"])
+    chat = ctx.router.chat
+
+    async def chat_during_a_forget(task, messages, **kwargs):
+        async with pool.connection() as conn:  # "Quên khoảng thời gian" commits while the model is writing
+            await conn.execute("INSERT INTO forget_log (id, range_start, range_end, counts) VALUES ('F1', %s, %s, '{}')",
+                               (NINE + dt.timedelta(minutes=15), NINE + dt.timedelta(minutes=25)))
+        return await chat(task, messages, **kwargs)
+
+    monkeypatch.setattr(ctx.router, "chat", chat_during_a_forget)
+    assert await recap.write_recap(ctx, DAY) is False  # its text may quote the forgotten line
+    assert await fetch_all(pool, "SELECT * FROM day_recap") == [] and await fetch_all(pool, "SELECT * FROM commitment") == []
 
 
 async def test_the_planner_skips_fresh_and_failed_recaps_and_waits_for_the_model(pool, dev, ctx, ollama, pki_settings,
@@ -2310,9 +2544,9 @@ diff --git a/brain/src/loopi_brain/pipeline/jobs.py b/brain/src/loopi_brain/pipe
 +AUTO_RERUN_TASKS = (
 +    EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS, PLAN_CHAPTERS, BUILD_CHAPTERS, PLAN_RECAPS,
 +)
- # The text models run one job at a time (chapters, recaps): each one takes most of the CPU.
- LLM_LOCK = "llm"
- 
+ # The text models run one job at a time (chapters, recaps): each one takes most of the CPU. They also wait behind
+ # every live job (video, captions, ASR, markers, embeddings: priority 0) for a free worker slot, so recordings keep
+ # their 15-minute latency target while chapters and recaps are being written (spec §14 P2).
 ```
 
 ```diff
@@ -2341,6 +2575,10 @@ The recap model reads the day's chapters, marked moments and the most substantia
 with JSON: the main course of the day, memorable moments, and the things someone said they must do or
 promised, each citing the reference of the line it comes from. The brain writes the Vietnamese markdown
 (three fixed sections) and stores each commitment whose reference is a real moment of that day.
+
+A recap is written again when the day changed after it: today's at 23:30 if it was written earlier (e.g. by
+"Tạo lại recap"), an earlier day's once its chapters are settled again after a change (late uploads, a
+backlog, summaries that came later) — at most one more run per change.
 """
 from __future__ import annotations
 
@@ -2360,15 +2598,16 @@ from ..providers.router import Router
 from . import jobs
 from .context import PipelineContext, get_context
 from .jobs import job_app
-from .state import clear_day_error, record_day_error
+from .state import clear_day_error, forgotten, lock_day, record_day_error
 
 log = logging.getLogger(__name__)
 RECAP_TIME = dt.time(23, 30)  # local time today's recap is written (spec §9.2)
-ITEM_MAX = 300
-MAX_EVENTS = 12
-MAX_MEMORABLE = 8
-MAX_COMMITMENTS = 10
-RECAP_MAX_TOKENS = 1500
+# Output stays small: on the 4-core CPU qwen3:8b writes ≈ 5–7 tokens/s, so 1000 tokens are ≈ 3 minutes.
+ITEM_MAX = 200
+MAX_EVENTS = 8
+MAX_MEMORABLE = 5
+MAX_COMMITMENTS = 8
+RECAP_MAX_TOKENS = 1000
 RETRY_TEMPERATURE = 0.3
 MAX_SPEECH_LINES = 60  # the longest speech lines of the day ("Thank you." and other short noise go first)
 CHAPTER_BUDGET = 3500
@@ -2541,10 +2780,14 @@ def sourced(answer: RecapAnswer, refs: dict[str, tuple[str, dt.datetime]]) -> li
 
 
 async def write_recap(ctx: PipelineContext, day: dt.date, attempt: int = 0) -> bool:
-    """Write (or rewrite) the recap of ``day`` and its open commitments; False if nothing was written (no data,
-    or the model server is down: the planner asks again once it is back)."""
+    """Write (or rewrite) the recap of ``day`` and its open commitments; False if nothing was written (no data;
+    the model server is down; or part of the day was forgotten while the model wrote, so its text may quote
+    forgotten moments — in the last two cases the planner asks again)."""
     pool, zone = ctx.pool, ctx.settings.zone
+    start, end = day_bounds_utc(day, zone)
     try:
+        async with pool.connection() as conn:
+            generation = await forgotten(conn, start, end)
         material = await recap_material(pool, day, zone)
         if material is None:
             async with pool.connection() as conn:
@@ -2563,6 +2806,10 @@ async def write_recap(ctx: PipelineContext, day: dt.date, attempt: int = 0) -> b
         commitments = sourced(answer, material.refs)
         markdown = compose_markdown(answer, [(text, ts) for text, _, ts in commitments], zone)
         async with pool.connection() as conn, conn.transaction():
+            await lock_day(conn, day)
+            if await forgotten(conn, start, end) != generation:
+                log.info("recap of %s: part of the day was forgotten while it was written; not stored", day)
+                return False
             await conn.execute(
                 "INSERT INTO day_recap (day, markdown, model_version) VALUES (%s, %s, %s)"
                 " ON CONFLICT (day) DO UPDATE SET markdown = EXCLUDED.markdown,"
@@ -2596,34 +2843,46 @@ async def defer_recap(pool: AsyncConnectionPool, day: dt.date) -> int:
     """Ask for the recap of ``day`` (one waiting request per day)."""
     async with pool.connection() as conn, conn.transaction():
         return await jobs.enqueue(
-            conn, jobs.WRITE_RECAP, queue="understand", lock=jobs.LLM_LOCK,
+            conn, jobs.WRITE_RECAP, queue="understand", lock=jobs.LLM_LOCK, priority=jobs.LLM_PRIORITY,
             queueing_lock=f"recap:{day.isoformat()}", day=day.isoformat(),
         )
 
 
 async def plan_recaps(pool: AsyncConnectionPool, router: Router, zone, now: dt.datetime | None = None) -> list[dt.date]:
-    """Ask for the recap of every day that needs one: today once it is 23:30, and every earlier day whose
-    chapters are all settled; only days with chapters and no fresh recap, and never a day whose recap job
-    waits, runs or failed (the failure is on the dead-letter list, with a retry button). Nothing while the
-    recap model cannot run (no job is created just to fail)."""
+    """Ask for the recap of every day with chapters that needs one, and return those days:
+    - today from 23:30 local time, unless its recap was written at or after 23:30;
+    - an earlier day once all its chapters are settled, if it has no recap, or its recap is older than the
+      day's last chapter change;
+    - a stale recap (reprocessing) by the same rules.
+    Never a day whose recap job waits, runs or failed (the failure is on the dead-letter list, with a retry
+    button), and nothing while the recap model cannot run (no job is created just to fail)."""
     local = local_now(zone, now)
     today = local.date()
     if not router.task_ready("recap", await router.health()):
         log.warning("recaps wait: the recap model is not available")
         return []
+    tonight = dt.datetime.combine(today, RECAP_TIME, tzinfo=zone)
     async with pool.connection() as conn:
         cur = await conn.execute(
-            """SELECT c.day FROM chapter c LEFT JOIN day_recap r ON r.day = c.day
-                WHERE (r.day IS NULL OR r.stale) AND c.day <= %(today)s
+            """SELECT c.day, bool_and(c.closed) AS settled, max(c.updated_at) AS changed,
+                      max(r.generated_at) AS written, bool_or(r.stale) AS stale
+                 FROM chapter c LEFT JOIN day_recap r ON r.day = c.day
+                WHERE c.day <= %(today)s
                   AND NOT EXISTS (SELECT 1 FROM procrastinate_jobs j
                                    WHERE j.queueing_lock = 'recap:' || c.day::text
                                      AND j.status IN ('todo', 'doing', 'failed'))
-                GROUP BY c.day HAVING bool_and(c.closed) OR c.day = %(today)s
-                ORDER BY c.day""",
+                GROUP BY c.day ORDER BY c.day""",
             {"today": today},
         )
-        days = [r["day"] for r in await cur.fetchall()]
-    due = [day for day in days if day < today or local.time() >= RECAP_TIME]
+        rows = await cur.fetchall()
+    due = []
+    for r in rows:
+        fresh = r["written"] is not None and not r["stale"]
+        if r["day"] == today:
+            if local >= tonight and not (fresh and r["written"] >= tonight):
+                due.append(r["day"])
+        elif r["settled"] and not (fresh and r["written"] >= r["changed"]):
+            due.append(r["day"])
     for day in due:
         await defer_recap(pool, day)
     return due
@@ -2655,16 +2914,16 @@ async def write_recap_job(context: JobContext, day: str) -> None:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_recap.py -q`
-Expected: `12 passed`.
+Expected: `15 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `398 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `405 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add brain/src/loopi_brain/pipeline/recap.py brain/src/loopi_brain/pipeline/jobs.py \
-  brain/src/loopi_brain/pipeline/status.py brain/tests/helpers.py brain/tests/test_recap.py
+  brain/src/loopi_brain/pipeline/status.py brain/tests/test_recap.py
 git commit -F - <<'EOF'
 feat(brain): 23:30 recap in Vietnamese with sourced commitments (spec 10.2)
 
@@ -2694,7 +2953,9 @@ EOF
   - `web.markdown.render_markdown(text, heading_offset=1) -> Markup` (headings, `-` lists, paragraphs, `**bold**`; everything escaped first).
   - `thumbs.THUMB_WIDTH = 320`, `thumbs.thumb_rel(keyframe_rel: PurePosixPath) -> PurePosixPath` (ValueError unless under `keyframes/`), `thumbs.make_thumb(src, dst)`.
   - `media.inside(media_root, rel) -> Path` (ValueError for an absolute path or one leaving the media root; used by Tasks 10 and 11 too).
-  - `web.day_routes.day_view(pool, day, zone) -> dict`, `day_title(day) -> str` ("Thứ Tư, 14/10/2026").
+  - `web.day_routes.day_view(pool, day, zone, today=None) -> dict` (keys `sections` — chapters and the moments outside any chapter, in time order —, `earlier_open`, `recap_failed`, `recap`, `recap_html`, `recap_at`, `commitments`, `has_data`), `day_title(day) -> str` ("Thứ Tư, 14/10/2026"), `OPEN_DAYS_BACK = 7`.
+
+What the page shows, top to bottom: date navigation and "Chi tiết theo giờ"; the recap (safe markdown), or why there is none, and — when the day's recap job failed — "Viết recap lỗi: …" with a pointer to "Xử lý"; the day's commitments; on today's page also the commitments still open from the previous 7 days ("Việc còn mở từ những ngày trước"); then the chapters and the moments outside any chapter ("Chưa chia chương", e.g. before the first hourly build), in time order.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2821,7 +3082,47 @@ async def test_a_day_shows_its_recap_commitments_and_chapters_in_order(web, pool
     assert "Mai mình đi chợ &lt;nhé&gt;" in first
     second = text.split(f'id="ch-{ids["second"]}"')[1].split("</section>")[0]
     assert f'<p class="marker" id="m-{ids["marker"]}"><time>09:20:00</time> ★ chìa khoá</p>' in second
-    assert f'id="m-{ids["late"]}"' in text.split('id="loose"')[1]
+    assert f'id="m-{ids["late"]}"' in text.split(f'id="loose-{ids["late"]}"')[1]
+
+
+async def test_moments_outside_chapters_are_shown_in_time_order(web, pool, dev):
+    early = await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, text="Sớm", lang="vi")
+    await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE + dt.timedelta(hours=1), text="Giữa", lang="vi")
+    late = await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE + dt.timedelta(hours=3), text="Muộn",
+                               lang="vi")
+    chapter = await insert_chapter(pool, DAY, NINE + dt.timedelta(hours=1), NINE + dt.timedelta(hours=1), title="Trưa")
+    text = (await web.get("/", params={"day": "2026-10-14"})).text
+    assert text.index(f'id="loose-{early}"') < text.index(f'id="ch-{chapter}"') < text.index(f'id="loose-{late}"')
+    assert "<time>09:00</time> Chưa chia chương (1 khoảnh khắc)" in text
+
+
+async def test_today_also_lists_the_commitments_left_open_on_earlier_days(web, pool, pki_settings):
+    today = local_now(pki_settings.zone).date()
+    async with pool.connection() as conn:
+        for cid, days_ago, status in (("C1", 2, "open"), ("C2", 3, "done"), ("C3", 8, "open"), ("C4", 0, "open")):
+            await conn.execute("INSERT INTO commitment (id, day, text, status, model_version)"
+                               " VALUES (%s, %s, %s, %s, 'x')", (cid, today - dt.timedelta(days=days_ago),
+                                                                 f"việc {cid}", status))
+    text = (await web.get("/")).text
+    earlier = text.split('id="earlier-commitments"')[1].split("</section>")[0]
+    assert 'id="c-C1"' in earlier and f"{today - dt.timedelta(days=2):%d/%m}" in earlier
+    assert 'id="c-C2"' not in text and 'id="c-C3"' not in text  # done, or more than 7 days old
+    assert 'id="c-C4"' in text.split('id="commitments"')[1].split("</section>")[0]  # today's own list
+    other_day = (await web.get("/", params={"day": (today - dt.timedelta(days=1)).isoformat()})).text
+    assert "earlier-commitments" not in other_day
+
+
+async def test_a_failed_recap_is_shown_on_its_day(web, pool, pki_settings, dev, jobs_open):
+    from loopi_brain.pipeline import recap
+
+    await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, text="x", lang="vi")
+    job_id = await recap.defer_recap(pool, DAY)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE procrastinate_jobs SET status = 'failed', attempts = 4 WHERE id = %s", (job_id,))
+        await conn.execute("INSERT INTO day_job_error (task, day, error) VALUES ('write_recap', %s, "
+                           "'ProviderError: ollama /api/chat: ReadTimeout')", (DAY,))
+    text = (await web.get("/", params={"day": "2026-10-14"})).text
+    assert "Viết recap lỗi: ProviderError: ollama /api/chat: ReadTimeout." in text and 'href="/pipeline"' in text
 
 
 async def test_a_day_without_data_says_so(web):
@@ -3001,7 +3302,7 @@ Run: `cd brain && uv run pytest tests/test_markdown.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'loopi_brain.web.markdown'`.
 
 Run: `cd brain && uv run pytest tests/test_day_page.py -q`
-Expected: FAIL — `7 failed, 1 passed` (`/` still shows the hourly view).
+Expected: FAIL — `10 failed, 1 passed` (`/` still shows the hourly view).
 
 Run: `cd brain && uv run pytest tests/test_web.py tests/test_web_pipeline.py tests/test_audio_playback.py -q`
 Expected: FAIL — `8 failed, 32 passed` (`/hours` does not exist yet).
@@ -3159,6 +3460,7 @@ log = logging.getLogger(__name__)
 WEEKDAYS = ("Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật")
 STATUS_LABELS = {"open": "Chưa xong", "done": "Đã xong", "dismissed": "Đã bỏ qua"}
 FRAMES_SHOWN = 6  # pictures per chapter shown at once; the others are behind "Tất cả khung hình"
+OPEN_DAYS_BACK = 7  # today's page also lists the open commitments of the previous days
 TEMPLATES.env.globals["STATUS_LABELS"] = STATUS_LABELS
 
 router = APIRouter()
@@ -3190,8 +3492,14 @@ def _group(title: str | None, rows: list[dict]) -> dict:
     }
 
 
-async def day_view(pool, day: dt.date, zone) -> dict:
-    """Everything the Day page shows for local ``day``."""
+_COMMITMENTS = (
+    "SELECT c.*, m.ts_start AS source_ts FROM commitment c LEFT JOIN moment m ON m.id = c.source_moment_id"
+)
+
+
+async def day_view(pool, day: dt.date, zone, today: dt.date | None = None) -> dict:
+    """Everything the Day page shows for local ``day`` (on ``today``'s page: also the commitments still open
+    from the previous 7 days)."""
     start, end = day_bounds_utc(day, zone)
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT * FROM chapter WHERE day = %s ORDER BY ts_start", (day,))
@@ -3206,14 +3514,33 @@ async def day_view(pool, day: dt.date, zone) -> dict:
         moment_rows = [_moment_view(r, zone) for r in await cur.fetchall()]
         cur = await conn.execute("SELECT * FROM day_recap WHERE day = %s", (day,))
         recap = await cur.fetchone()
-        cur = await conn.execute(
-            "SELECT c.*, m.ts_start AS source_ts FROM commitment c LEFT JOIN moment m ON m.id = c.source_moment_id"
-            " WHERE c.day = %s ORDER BY c.created_at, c.id",
-            (day,),
-        )
+        cur = await conn.execute(f"{_COMMITMENTS} WHERE c.day = %s ORDER BY c.created_at, c.id", (day,))
         commitments = [_commitment_view(r, zone) for r in await cur.fetchall()]
-    chapters, loose = [], []
+        earlier = []
+        if day == today:
+            cur = await conn.execute(
+                f"{_COMMITMENTS} WHERE c.status = 'open' AND c.day < %s AND c.day >= %s"
+                " ORDER BY c.day DESC, c.created_at, c.id",
+                (day, day - dt.timedelta(days=OPEN_DAYS_BACK)),
+            )
+            earlier = [_commitment_view(r, zone) for r in await cur.fetchall()]
+        cur = await conn.execute(
+            "SELECT e.error FROM procrastinate_jobs j"
+            " LEFT JOIN day_job_error e ON e.task = j.task_name AND e.day = %s"
+            " WHERE j.queueing_lock = %s AND j.status = 'failed' ORDER BY j.id DESC LIMIT 1",
+            (day, f"recap:{day.isoformat()}"),
+        )
+        recap_failed = await cur.fetchone()
+    # Chapters and the moments outside any chapter (not built yet, or arrived since), in time order.
+    sections, loose = [], []
     k = 0
+
+    def flush_loose() -> None:
+        if loose:
+            sections.append({**_group(None, list(loose)), "kind": "loose", "id": loose[0]["id"], "count": len(loose),
+                             "start": loose[0]["ts_start"].astimezone(zone).strftime("%H:%M")})
+            loose.clear()
+
     for row in chapter_rows:
         members = []
         while k < len(moment_rows) and moment_rows[k]["ts_start"] <= row["last_moment_at"]:
@@ -3222,8 +3549,10 @@ async def day_view(pool, day: dt.date, zone) -> dict:
             else:
                 loose.append(moment_rows[k])
             k += 1
-        chapters.append({
+        flush_loose()
+        sections.append({
             **_group(row["title"], members),
+            "kind": "chapter",
             "id": row["id"],
             "summary": row["summary"],
             "outdated": row["summary"] is not None and row["summary_signature"] != row["signature"],
@@ -3231,10 +3560,11 @@ async def day_view(pool, day: dt.date, zone) -> dict:
             "end": row["ts_end"].astimezone(zone).strftime("%H:%M"),
         })
     loose.extend(moment_rows[k:])
+    flush_loose()
     return {
-        "chapters": chapters,
-        "loose": _group(None, loose) if loose else None,
-        "loose_count": len(loose),
+        "sections": sections,
+        "earlier_open": earlier,
+        "recap_failed": recap_failed,
         "recap": recap,
         "recap_html": render_markdown(recap["markdown"]) if recap else None,
         "recap_at": recap["generated_at"].astimezone(zone).strftime("%d/%m %H:%M") if recap else None,
@@ -3256,7 +3586,7 @@ async def day_page(request: Request, day: dt.date | None = Query(default=None)):
         request,
         "day.html",
         {
-            **await day_view(request.app.state.pool, day, zone),
+            **await day_view(request.app.state.pool, day, zone, today),
             "day": day,
             "title": day_title(day),
             "is_today": day == today,
@@ -3308,11 +3638,7 @@ async def commitment_status(request: Request, commitment_id: str, status: str):
     if await recap_rules.set_commitment_status(pool, commitment_id, status) is None:
         raise HTTPException(status_code=404, detail="unknown commitment")
     async with pool.connection() as conn:
-        cur = await conn.execute(
-            "SELECT c.*, m.ts_start AS source_ts FROM commitment c LEFT JOIN moment m ON m.id = c.source_moment_id"
-            " WHERE c.id = %s",
-            (commitment_id,),
-        )
+        cur = await conn.execute(f"{_COMMITMENTS} WHERE c.id = %s", (commitment_id,))
         row = await cur.fetchone()
     return TEMPLATES.TemplateResponse(
         request, "_commitment.html", {"c": _commitment_view(row, request.app.state.settings.zone)}
@@ -3421,6 +3747,8 @@ Create `brain/src/loopi_brain/web/templates/day.html`:
     <p class="muted">Viết lúc {{ recap_at }} · {{ recap.model_version }}</p>
   {% elif has_data %}<p>Chưa có recap. Recap được viết lúc 23:30, hoặc khi mọi chương của ngày đã xong.</p>
   {% else %}<p>Không có dữ liệu cho ngày này.</p>{% endif %}
+  {% if recap_failed %}<p class="err">Viết recap lỗi{% if recap_failed.error %}: {{ recap_failed.error }}{% endif %}.
+    Bấm "Tạo lại recap", hoặc "Xử lý lại" ở trang <a href="/pipeline">Xử lý</a>.</p>{% endif %}
   {% if has_data %}<button hx-post="/day/{{ day }}/recap" hx-target="#recap-request">Tạo lại recap</button>
   <span id="recap-request"></span>{% endif %}
 </section>
@@ -3430,20 +3758,27 @@ Create `brain/src/loopi_brain/web/templates/day.html`:
   {% for c in commitments %}{% include "_commitment.html" %}{% endfor %}
 </section>
 {% endif %}
-{% for ch in chapters %}
-<section class="chapter" id="ch-{{ ch.id }}">
-  <h2><time>{{ ch.start }}–{{ ch.end }}</time> {{ ch.title or "Đang tóm tắt…" }}</h2>
-  {% if ch.summary %}<p>{{ ch.summary }}{% if ch.outdated %} <span class="muted">(đang cập nhật)</span>{% endif %}</p>{% endif %}
-  {{ moments(ch) }}
-</section>
-{% endfor %}
-{% if loose %}
-<section class="chapter" id="loose">
-  <h2>Chưa chia chương ({{ loose_count }} khoảnh khắc)</h2>
-  <p class="muted">Các chương được chia mỗi giờ.</p>
-  {{ moments(loose) }}
+{% if earlier_open %}
+<section class="card" id="earlier-commitments">
+  <h2>Việc còn mở từ những ngày trước</h2>
+  {% for c in earlier_open %}<div class="muted">{{ c.day.strftime("%d/%m") }}</div>{% include "_commitment.html" %}{% endfor %}
 </section>
 {% endif %}
+{% for s in sections %}
+{% if s.kind == "chapter" %}
+<section class="chapter" id="ch-{{ s.id }}">
+  <h2><time>{{ s.start }}–{{ s.end }}</time> {{ s.title or "Đang tóm tắt…" }}</h2>
+  {% if s.summary %}<p>{{ s.summary }}{% if s.outdated %} <span class="muted">(đang cập nhật)</span>{% endif %}</p>{% endif %}
+  {{ moments(s) }}
+</section>
+{% else %}
+<section class="chapter loose" id="loose-{{ s.id }}">
+  <h2><time>{{ s.start }}</time> Chưa chia chương ({{ s.count }} khoảnh khắc)</h2>
+  <p class="muted">Các chương được chia mỗi giờ.</p>
+  {{ moments(s) }}
+</section>
+{% endif %}
+{% endfor %}
 {% endblock %}
 ```
 
@@ -3546,13 +3881,13 @@ diff --git a/brain/src/loopi_brain/web/templates/timeline.html b/brain/src/loopi
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_markdown.py tests/test_day_page.py -q`
-Expected: `11 passed`.
+Expected: `14 passed`.
 
 Run: `cd brain && uv run pytest tests/test_web.py tests/test_web_pipeline.py tests/test_audio_playback.py -q`
 Expected: `40 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `409 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `419 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 7: Commit**
 
@@ -3573,7 +3908,7 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
-**Tasks 1–6 are shippable on their own** (chapters, recap, commitments, Day page). The final whole-branch review may be run at this point first if the owner wants the first half deployed early.
+**Tasks 1–6 are shippable on their own** (chapters with the catch-up of old days, recap, commitments, Day page). The final whole-branch review may be run at this point first if the owner wants the first half deployed early; such a deploy also needs Task 13's `LOOPI_WORKER_CONCURRENCY: "3"` and Task 14's gates (I7) and checks.
 
 ---
 
@@ -3767,10 +4102,10 @@ Apply to `brain/src/loopi_brain/config.py` and `brain/src/loopi_brain/app.py`:
 diff --git a/brain/src/loopi_brain/config.py b/brain/src/loopi_brain/config.py
 --- a/brain/src/loopi_brain/config.py
 +++ b/brain/src/loopi_brain/config.py
-@@ -36,6 +36,10 @@ class Settings(BaseSettings):
-     # context window large enough for their bounded prompts (P2a deferred M14).
-     ollama_text_keep_alive: str = "5m"
+@@ -38,6 +38,10 @@ class Settings(BaseSettings):
+     ollama_text_keep_alive: str = "1m"
      llm_num_ctx: int = Field(default=8192, ge=2048, le=131072)
+     llm_timeout_s: float = Field(default=900.0, ge=60.0, le=3600.0)
 +    # Search (spec §10.4): a moment is relevant when its embedding is this close to the question's (cosine
 +    # distance), or when its text matches the question's words this well (pg_trgm word similarity). P2c tunes both.
 +    search_max_distance: float = Field(default=0.6, gt=0.0, le=2.0)
@@ -4119,7 +4454,7 @@ Run: `cd brain && uv run pytest tests/test_search.py -q`
 Expected: `12 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `421 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `431 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 7: Commit**
 
@@ -4148,14 +4483,14 @@ EOF
 **Interfaces:**
 - Consumes: Task 1 `day_bounds_utc`, `local_now`; Task 2 `ASR_CAVEAT`, `PICTURE_NOTE`, `AnswerInvalid`, `clip`, `parse_answer`; Task 7 `search_moments`, `Hit`, `request_router`, `hit_view`, `_hit.html`, `app.state.llm`; Task 6 `require_htmx`, `TEMPLATES`.
 - Produces:
-  - `OllamaProvider.stream_chat(model, messages, *, temperature=0.0, max_tokens=None) -> AsyncIterator[str]` (NDJSON; connection refused / 404 → `ProviderUnavailable`, broken stream → `ProviderError`); the `Provider` protocol declares it (Task 12's Anthropic provider implements it).
+  - `OllamaProvider.stream_chat(model, messages, *, temperature=0.0, max_tokens=None) -> AsyncIterator[str]` (NDJSON; a text model waits up to Task 2's `text_timeout`; connection refused / 404 → `ProviderUnavailable`, broken stream → `ProviderError`); the `Provider` protocol declares it (Task 12's Anthropic provider implements it).
   - `Router.stream_chat(task, messages, temperature=0.0, max_tokens=None) -> AsyncIterator[tuple[str, str]]` — `(piece, model_version)`; falls back to the next route only before the first piece.
   - `chat.chat_events(pool, router, question, settings, now=None) -> AsyncIterator[tuple[str, dict]]` — events `status {text}`, `filter {text}`, `sources {hits: list[Hit]}`, `token {text}`, `answer {text, not_found}`, `error {text}`, `done {}`.
-  - `chat.time_filter(router, question, today) -> tuple[date | None, date | None]`, `chat.clean_filter(first, last, today)`, `chat.cited(text, count) -> list[int]`, `chat.CITATION`, `chat.NOT_FOUND = "Không tìm thấy trong ký ức."`, `chat.SOURCES = 8`, `chat.ANSWER_MAX_TOKENS = 600`, `chat.FILTER_SCHEMA`.
+  - `chat.time_filter(router, question, today) -> tuple[date | None, date | None]`, `chat.clean_filter(first, last, today)`, `chat.cited(text, count) -> list[int]`, `chat.mentions_time(question) -> bool`, `chat.TIME_WORDS`, `chat.CITATION`, `chat.NOT_FOUND = "Không tìm thấy trong ký ức."`, `chat.SOURCES = 8`, `chat.ANSWER_MAX_TOKENS = 600`, `chat.FILTER_SCHEMA`.
   - `POST /chat` (form `q`, `HX-Request: true`) → `text/event-stream`; each event is `event: <name>\ndata: <JSON>\n\n`; `sources` and `answer` carry server-escaped HTML (`{"html": …}`), the others text. `web.search_routes.render_answer(text, sources) -> Markup`, `sse(event, payload) -> str`.
   - `helpers.FakeOllama`: a chat with `"stream": true` is answered in 8-character NDJSON pieces; `stream_fail_after = n` breaks the stream with an error line after n pieces.
 
-The steps of one answer: "Đang hiểu câu hỏi…" → the chat model reads the dates the question is about (JSON `{"from", "to"}`, YYYY-MM-DD or empty; cleaned: swapped ends put in order, one end copies the other, the future is cut, ≤ 366 days; anything unusable → no filter) → "Đang tìm trong ký ức…" → hybrid search (≤ 8 sources) → none: "Không tìm thấy trong ký ức." and **no answer is asked of the model** → else the sources are shown, then the answer streams; it cites `[n]`; the final HTML links each valid `[n]` to `/?day=…#m-<id>`, drops numbers that are not sources, and warns when nothing is cited.
+The steps of one answer: "Đang hiểu câu hỏi…" → if the question has a time word (`chat.mentions_time`: Vietnamese, English or Korean time words, or a date such as 14/10), the chat model reads the dates it is about (JSON `{"from", "to"}`, YYYY-MM-DD or empty; cleaned: swapped ends put in order, one end copies the other, the future is cut, ≤ 366 days; anything unusable → no filter) — without a time word that `qwen3:8b` call is skipped → "Đang tìm trong ký ức…" → hybrid search (≤ 8 sources) → none: "Không tìm thấy trong ký ức." and **no answer is asked of the model** → else the sources are shown, then the answer streams; it cites `[n]`; the final HTML links each valid `[n]` to `/?day=…#m-<id>`, drops numbers that are not sources, and warns when nothing is cited — unless the model itself answered "Không tìm thấy trong ký ức.", which is shown as a plain not-found answer.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4310,9 +4645,11 @@ async def test_a_question_gets_sources_then_a_streamed_cited_answer(pool, dev, r
     assert [h.id for h in events[2][1]["hits"]] == [ids["dentist"], ids["noodles"]]
     assert "".join(p["text"] for n, p in events if n == "token") == ANSWER
     assert events[-2][1] == {"text": ANSWER, "not_found": False}
-    stream = [b for path, b in ollama.requests if path == "/api/chat" and b["stream"]]
-    [body] = stream
+    stream = [(b, t) for (path, b), (_, t) in zip(ollama.requests, ollama.timeouts, strict=True)
+              if path == "/api/chat" and b["stream"]]
+    [(body, timeout)] = stream
     assert body["think"] is False and body["options"]["num_predict"] == chat.ANSWER_MAX_TOKENS
+    assert timeout["read"] == 900.0  # a CPU answer may take minutes (LOOPI_LLM_TIMEOUT_S)
     system, user = body["messages"]
     assert "[2] or [1][3]" in system["content"] and chat.NOT_FOUND in system["content"]
     assert ASR_CAVEAT in system["content"]  # transcripts may hold invented lines
@@ -4345,6 +4682,31 @@ async def test_an_answer_that_breaks_off_is_reported_after_the_sources(pool, dev
     names = [n for n, _ in events]
     assert "sources" in names and names[-2:] == ["error", "done"] and "answer" not in names
     assert "máy chủ model" in events[-2][1]["text"]
+
+
+@pytest.mark.parametrize(("question", "expected"), [
+    ("Hôm qua mình làm gì?", True), ("Mai mình phải làm gì?", True), ("What did we cook last week?", True),
+    ("어제 뭐 했어?", True), ("Chuyện ngày 14/10 là gì?", True),
+    ("Chìa khoá để ở đâu?", False), ("Ai đã gọi điện cho bố?", False),
+])
+def test_only_questions_with_a_time_word_need_a_time_filter(question, expected):
+    assert chat.mentions_time(question) is expected
+
+
+async def test_a_question_without_a_time_word_asks_the_model_once(pool, dev, router, ollama, pki_settings):
+    await _memories(pool, dev["device_id"])
+    events = await _events(chat.chat_events(pool, router, "Chìa khoá để ở đâu?", pki_settings, now=NOW))
+    assert events[-1] == ("done", {})
+    chats = [b for path, b in ollama.requests if path == "/api/chat"]
+    assert len(chats) == 1 and chats[0]["stream"] is True  # no time-filter call, only the answer
+
+
+async def test_a_model_that_finds_nothing_is_shown_as_not_found(web, pool, dev, ollama):
+    await _memories(pool, dev["device_id"])
+    ollama.reply = lambda body: {"from": "", "to": ""} if "format" in body else chat.NOT_FOUND
+    async with web.stream("POST", "/chat", data={"q": "Mai mình phải làm gì?"}, headers=HX) as r:
+        events = _parse((await r.aread()).decode())
+    assert events[-2] == ("answer", {"html": f"<p>{chat.NOT_FOUND}</p>"})  # no "không trích nguồn" warning
 
 
 async def test_an_empty_question_is_not_sent_anywhere(pool, router, ollama, pki_settings):
@@ -4479,7 +4841,7 @@ diff --git a/brain/src/loopi_brain/providers/ollama.py b/brain/src/loopi_brain/p
  from dataclasses import dataclass
  
  import httpx
-@@ -62,14 +64,7 @@ class OllamaProvider:
+@@ -65,14 +67,7 @@ class OllamaProvider:
          except httpx.TransportError as exc:  # read/write timeout, dropped connection: this request failed
              raise ProviderError(f"ollama {path}: {type(exc).__name__}: {exc}") from exc
          if response.status_code >= 400:
@@ -4495,12 +4857,12 @@ diff --git a/brain/src/loopi_brain/providers/ollama.py b/brain/src/loopi_brain/p
          try:
              data = response.json()
          except ValueError as exc:
-@@ -88,6 +83,14 @@ class OllamaProvider:
+@@ -97,6 +92,14 @@ class OllamaProvider:
          temperature: float = 0.0,
          max_tokens: int | None = None,
      ) -> str:
 +        payload = self._chat_payload(model, messages, images, json_schema, temperature, max_tokens)
-+        data = await self._request("POST", "/api/chat", payload)
++        data = await self._request("POST", "/api/chat", payload, timeout=self._timeout_for(model))
 +        content = (data.get("message") or {}).get("content")
 +        if not isinstance(content, str):
 +            raise ProviderError("ollama /api/chat: response has no message content")
@@ -4510,11 +4872,11 @@ diff --git a/brain/src/loopi_brain/providers/ollama.py b/brain/src/loopi_brain/p
          msgs = [dict(m) for m in messages]
          if images:
              msgs[-1]["images"] = [base64.b64encode(img).decode("ascii") for img in images]
-@@ -107,11 +110,39 @@ class OllamaProvider:
+@@ -116,11 +119,41 @@ class OllamaProvider:
          }
          if json_schema is not None:
              payload["format"] = json_schema
--        data = await self._request("POST", "/api/chat", payload)
+-        data = await self._request("POST", "/api/chat", payload, timeout=self._timeout_for(model))
 -        content = (data.get("message") or {}).get("content")
 -        if not isinstance(content, str):
 -            raise ProviderError("ollama /api/chat: response has no message content")
@@ -4527,8 +4889,10 @@ diff --git a/brain/src/loopi_brain/providers/ollama.py b/brain/src/loopi_brain/p
 +        """Yield the answer's text as Ollama writes it (``stream: true``: one JSON object per line)."""
 +        payload = self._chat_payload(model, messages, None, None, temperature, max_tokens)
 +        payload["stream"] = True
++        timeout = self._timeout_for(model)
++        kwargs: dict = {"timeout": timeout} if timeout is not None else {}
 +        try:
-+            async with self._client.stream("POST", f"{self._base}/api/chat", json=payload) as response:
++            async with self._client.stream("POST", f"{self._base}/api/chat", json=payload, **kwargs) as response:
 +                if response.status_code >= 400:
 +                    await response.aread()
 +                    raise _http_error("/api/chat", response)
@@ -4555,7 +4919,7 @@ diff --git a/brain/src/loopi_brain/providers/ollama.py b/brain/src/loopi_brain/p
  
      async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
          data = await self._request(
-@@ -138,3 +169,14 @@ class OllamaProvider:
+@@ -147,3 +180,14 @@ class OllamaProvider:
          )
          if data.get("status") != "success":
              raise ProviderError(f"ollama pull {model}: {data}")
@@ -4628,7 +4992,8 @@ Create `brain/src/loopi_brain/chat.py`:
 """Questions about one's own memories, answered with citations (spec §10.4).
 
 1. The chat model reads the time a question refers to as structured output (dates relative to the local
-   today); anything unusable means no time filter.
+   today); anything unusable means no time filter. A question without a time word skips this call (it costs a
+   whole qwen3:8b run on a CPU).
 2. Hybrid retrieval (``search.py``) within that time.
 3. No relevant moment: "Không tìm thấy trong ký ức." -- the model is not asked to answer at all.
 4. Otherwise the chat model answers from the numbered sources only, citing them as [n]; the answer streams.
@@ -4661,6 +5026,14 @@ ANSWER_MAX_TOKENS = 600
 FILTER_MAX_TOKENS = 60
 MAX_FILTER_DAYS = 366
 CITATION = re.compile(r"\[(\d+(?:\s*[,;]\s*\d+)*)\]")
+# Words (vi, en, ko) or date-like numbers that can name a time; without one, no time filter is asked for.
+TIME_WORDS = re.compile(
+    r"\b(?:hôm|ngày|tuần|tháng|năm|sáng|trưa|chiều|tối|đêm|khuya|thứ|chủ nhật|lúc|giờ|mai|qua|nay|kia|trước|gần đây"
+    r"|today|yesterday|tomorrow|morning|noon|afternoon|evening|night|week|month|year|monday|tuesday|wednesday"
+    r"|thursday|friday|saturday|sunday|last|ago|recently|when)\b"
+    r"|어제|오늘|내일|그제|아침|점심|저녁|밤|주말|지난|요일|\d{1,4}\s*[/.\-]\s*\d{1,2}",
+    re.IGNORECASE,
+)
 FILTER_SCHEMA = {
     "type": "object",
     "properties": {"from": {"type": "string"}, "to": {"type": "string"}},
@@ -4687,6 +5060,10 @@ class FilterAnswer(BaseModel):
 
     first: str = Field(alias="from")
     last: str = Field(alias="to")
+
+
+def mentions_time(question: str) -> bool:
+    return TIME_WORDS.search(question) is not None
 
 
 def _date(text: str) -> dt.date | None:
@@ -4782,7 +5159,7 @@ async def chat_events(
         return
     yield "status", {"text": "Đang hiểu câu hỏi…"}
     first = last = None
-    if router is not None:
+    if router is not None and mentions_time(question):
         first, last = await time_filter(router, question, local_now(zone, now).date())
     if first is not None:
         yield "filter", {"text": describe_filter(first, last)}
@@ -4815,7 +5192,9 @@ async def chat_events(
         yield "done", {}
         return
     text = "".join(pieces).strip()
-    yield "answer", {"text": text, "not_found": False}
+    # "Không tìm thấy" from the model, citing nothing, is a not-found answer, not an uncited one.
+    not_found = text.startswith(NOT_FOUND.rstrip(".")) and not cited(text, len(result.hits))
+    yield "answer", {"text": text, "not_found": not_found}
     yield "done", {}
 ```
 
@@ -4992,10 +5371,10 @@ diff --git a/brain/src/loopi_brain/web/templates/search.html b/brain/src/loopi_b
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_chat.py -q`
-Expected: `21 passed`.
+Expected: `30 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `442 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `461 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 7: Commit**
 
@@ -5025,9 +5404,9 @@ EOF
 **Interfaces:**
 - Consumes: Task 1 tables `setting`, `chapter`, `day_recap`; Task 4 `chapters.defer_build`; Task 5 `recap.defer_recap`; P2a `status.model_health`, `load_providers`, `model_version`, the dispatcher (re-captions keyframes whose `caption_job_id` is NULL, re-analyses `pending` items).
 - Produces:
-  - `store.Retention(video_days: int = 7, audio_days: int = 7)` (1..`store.MAX_DAYS` = 3650, `extra="forbid"`), `store.get_retention(pool) -> Retention`, `store.set_retention(pool, retention)` (row `setting.key = "retention"`). Task 11 reads it.
+  - `store.Retention(video_days: int = 7, audio_days: int = 7, enabled: bool = False)` (days 1..`store.MAX_DAYS` = 3650, `extra="forbid"`; **retention ships off**), `store.get_retention(pool) -> Retention`, `store.set_retention(pool, retention)` (row `setting.key = "retention"`). Task 11 reads it and shows what it would delete.
   - `reprocess.CHOICES = ("captions", "transcripts", "chapters", "recap")`, `reprocess.ReprocessResult(keyframes, audio_items, expired_audio, chapters, recap)`, `reprocess.reprocess_day(pool, day, zone, what: set[str]) -> ReprocessResult` (ValueError for an empty or unknown choice).
-  - `GET /settings`; `POST /settings/retention` (form `video_days`, `audio_days`; 422 when invalid); `POST /settings/reprocess` (form `day`, `what` repeated); `web.settings_routes.providers_view(settings) -> dict`, `settings_context(request)`, `TASK_LABELS`, `CHOICE_LABELS`. Tasks 10 and 12 extend this page.
+  - `GET /settings`; `POST /settings/retention` (form `video_days`, `audio_days`, checkbox `enabled`; 422 when invalid); `POST /settings/reprocess` (form `day`, `what` repeated); `web.settings_routes.providers_view(settings) -> dict`, `settings_context(request)`, `TASK_LABELS`, `CHOICE_LABELS`. Tasks 10 and 12 extend this page.
 
 What reprocessing does (spec §12 "Đổi model"), all in one transaction:
 - **captions**: the day's keyframes lose caption, model, job id and error, and their visual moments go → the dispatcher captions them again with the configured model.
@@ -5087,9 +5466,9 @@ async def web(pool, pki_settings, jobs_open, ollama):
 
 
 async def test_retention_defaults_to_seven_days_and_is_stored(pool):
-    assert await store.get_retention(pool) == store.Retention(video_days=7, audio_days=7)
-    await store.set_retention(pool, store.Retention(video_days=14, audio_days=3))
-    assert await store.get_retention(pool) == store.Retention(video_days=14, audio_days=3)
+    assert await store.get_retention(pool) == store.Retention(video_days=7, audio_days=7, enabled=False)  # off
+    await store.set_retention(pool, store.Retention(video_days=14, audio_days=3, enabled=True))
+    assert await store.get_retention(pool) == store.Retention(video_days=14, audio_days=3, enabled=True)
     for bad in ({"video_days": 0}, {"audio_days": 3651}, {"video_days": "a week"}, {"keep": 1}):
         with pytest.raises(pydantic.ValidationError):
             store.Retention(**bad)
@@ -5105,6 +5484,8 @@ async def test_the_settings_page_shows_providers_privacy_health_and_retention(we
     assert "Thiếu model: qwen3:8b." in text and "Asia/Seoul" in text
     assert 'name="video_days" min="1" max="3650" required value="7"' in text
     assert 'name="audio_days" min="1" max="3650" required value="7"' in text
+    assert '<input type="checkbox" name="enabled"> Bật dọn dữ liệu cũ' in text  # not checked
+    assert "Dọn dữ liệu cũ: <strong>đang tắt</strong> (chưa xoá gì)" in text
     assert 'href="/pipeline"' in text and 'hx-post="/settings/reprocess"' in text
 
 
@@ -5120,13 +5501,16 @@ async def test_a_broken_providers_file_is_shown(pool, pki_settings, jobs_open, t
 async def test_the_retention_form_saves_validated_days(web, pool):
     assert (await web.post("/settings/retention", data={"video_days": "5", "audio_days": "9"})).status_code == 403
     r = await web.post("/settings/retention", data={"video_days": "5", "audio_days": "9"}, headers=HX)
-    assert r.status_code == 200 and "giữ video thô 5 ngày, audio thô 9 ngày" in r.text
-    assert await store.get_retention(pool) == store.Retention(video_days=5, audio_days=9)
+    assert r.status_code == 200 and "giữ video thô 5 ngày, audio thô 9 ngày" in r.text and "đang tắt" in r.text
+    assert await store.get_retention(pool) == store.Retention(video_days=5, audio_days=9, enabled=False)
     for bad in ("0", "3651", "abc", "-2"):
         r = await web.post("/settings/retention", data={"video_days": bad, "audio_days": "9"}, headers=HX)
         assert r.status_code == 422
     assert await store.get_retention(pool) == store.Retention(video_days=5, audio_days=9)
     assert "value=\"5\"" in (await web.get("/settings")).text
+    r = await web.post("/settings/retention", data={"video_days": "5", "audio_days": "9", "enabled": "on"}, headers=HX)
+    assert "Dọn dữ liệu cũ đang bật: chạy lúc 03:00" in r.text and (await store.get_retention(pool)).enabled
+    assert 'name="enabled" checked' in (await web.get("/settings")).text
 
 
 async def _captioned_keyframe(pool, settings, device_id, ts) -> tuple[str, str]:
@@ -5238,12 +5622,15 @@ MAX_DAYS = 3650
 
 
 class Retention(BaseModel):
-    """How many days raw recordings are kept (spec §9.5; D20: audio like video, 7 days by default)."""
+    """How many days raw recordings are kept (spec §9.5; D20: audio like video, 7 days by default), and whether the
+    nightly deletion runs at all: it is **off** until the owner turns it on in Cài đặt, after seeing what would go
+    (deleting recordings is never done without the owner's yes)."""
 
     model_config = ConfigDict(extra="forbid")
 
     video_days: int = Field(default=7, ge=1, le=MAX_DAYS)
     audio_days: int = Field(default=7, ge=1, le=MAX_DAYS)
+    enabled: bool = False
 
 
 async def get_retention(pool: AsyncConnectionPool) -> Retention:
@@ -5413,15 +5800,18 @@ async def settings_page(request: Request):
 
 
 @router.post("/settings/retention", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
-async def save_retention(request: Request, video_days: str = Form(...), audio_days: str = Form(...)):
+async def save_retention(
+    request: Request, video_days: str = Form(...), audio_days: str = Form(...), enabled: str = Form("")
+):
     try:
-        retention = store.Retention(video_days=video_days, audio_days=audio_days)
+        retention = store.Retention(video_days=video_days, audio_days=audio_days, enabled=enabled == "on")
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=f"days must be whole numbers from 1 to {store.MAX_DAYS}") from exc
     await store.set_retention(request.app.state.pool, retention)
+    state = "đang bật: chạy lúc 03:00" if retention.enabled else "đang tắt: không xoá gì"
     return HTMLResponse(
         f"<span>Đã lưu: giữ video thô {retention.video_days} ngày, audio thô {retention.audio_days} ngày."
-        " Áp dụng ở lần dọn dữ liệu kế tiếp (03:00).</span>"
+        f" Dọn dữ liệu cũ {state}.</span>"
     )
 
 
@@ -5466,9 +5856,11 @@ Create `brain/src/loopi_brain/web/templates/settings.html`:
   <form hx-post="/settings/retention" hx-target="#retention-result">
     <label>Giữ video thô <input type="number" name="video_days" min="1" max="{{ max_days }}" required value="{{ retention.video_days }}"> ngày</label>
     <label>Giữ audio thô <input type="number" name="audio_days" min="1" max="{{ max_days }}" required value="{{ retention.audio_days }}"> ngày</label>
+    <label><input type="checkbox" name="enabled"{% if retention.enabled %} checked{% endif %}> Bật dọn dữ liệu cũ</label>
     <button>Lưu</button>
   </form>
-  <p class="muted">Lúc 03:00 mỗi đêm, file thô cũ hơn số ngày này bị xoá (chỉ những đoạn đã phân tích xong). Keyframe, transcript, chương và recap được giữ mãi.</p>
+  <p>Dọn dữ liệu cũ: {% if retention.enabled %}<strong>đang bật</strong>{% else %}<strong>đang tắt</strong> (chưa xoá gì){% endif %}.</p>
+  <p class="muted">Khi bật, lúc 03:00 mỗi đêm file thô cũ hơn số ngày này bị xoá vĩnh viễn (chỉ những đoạn đã phân tích xong). Keyframe, transcript, chương và recap được giữ mãi.</p>
   <div id="retention-result"></div>
 </section>
 <section class="card" id="reprocess">
@@ -5548,7 +5940,7 @@ Run: `cd brain && uv run pytest tests/test_settings_page.py -q`
 Expected: `9 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `451 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `470 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 6: Commit**
 
@@ -5575,19 +5967,20 @@ EOF
 - Test: `brain/tests/test_forget.py`
 
 **Interfaces:**
-- Consumes: Task 1 tables, `local_day`; Task 4 `chapters.defer_build`; Task 6 `media.inside`, `thumbs.thumb_rel`; Task 9 the Cài đặt page; P2a `media.audio_view_path`, `devices.new_id`.
+- Consumes: Task 1 tables (`forget_log.pending_files`), `local_day`; Task 4 `chapters.defer_build`, `state.lock_day`; Task 6 `media.inside`, `thumbs.thumb_rel`; Task 9 the Cài đặt page; P2a `media.audio_view_path`, `devices.new_id`.
 - Produces:
   - `media.remove_files(media_root, rels: list[str]) -> tuple[int, list[str]]` (blocking; files deleted, paths that could not be; a missing file counts as gone; a path outside the media root is refused and reported). Task 11 uses it.
-  - `forget.MAX_RANGE = 31 days`, `forget.ForgetCounts(items, keyframes, transcript_segments, moments, commitments, chapters, recaps, files, files_failed)`, `forget.check_range(start, end)` (ValueError: naive, empty, reversed or too long), `forget.days_touched(start, end, zone) -> list[date]`, `forget.preview(pool, start, end, zone) -> ForgetCounts` (changes nothing), `forget.forget_range(pool, settings, start, end) -> ForgetCounts`.
+  - `forget.MAX_RANGE = 7 days`, `forget.ForgetCounts(items, keyframes, transcript_segments, moments, commitments, chapters, recaps, files, files_failed)`, `forget.check_range(start, end)` (ValueError: naive, empty, reversed or too long), `forget.days_touched(start, end, zone) -> list[date]`, `forget.preview(pool, start, end, zone) -> ForgetCounts` (changes nothing), `forget.forget_range(pool, settings, start, end) -> ForgetCounts`, `forget.retryable(media_root, rels) -> list[str]` (the paths inside the media root: Task 11 retries them).
   - `POST /settings/forget/preview` (form `start`, `end` as `datetime-local` values in local time) → counts + a confirmation form; `POST /settings/forget` (same + `confirm=yes`) → what went. Both need `HX-Request: true`; invalid ranges → 422.
 
-What goes, in one transaction: every item that overlaps `[start, end)` (whole, even a 60 s segment half inside; a zero-length marker inside the range), its keyframes, transcript segments and moments (embeddings included), every other moment starting in the range, the commitments sourced in those moments, and the recaps of every local day the range (or a deleted moment) touches; the chapters overlapping the range lose their title and summary at once, and every chapter of those days is reopened; an audit row (`forget_log`) keeps the range and the counts only. After the commit: the raw files, video MP4s, audio playback copies, keyframes and thumbnails are deleted (each checked with `media.inside`), the audit row gets the file counts, and a chapter build is asked for each touched day.
+What goes, in one transaction that first takes `lock_day` for every touched day (in day order): every item that overlaps `[start, end)` (whole, even a 60 s segment half inside; a zero-length marker inside the range), its keyframes, transcript segments and moments (embeddings included), every other moment starting in the range, the commitments sourced in those moments, and the recaps of every local day the range (or a deleted moment) touches; the chapters overlapping the range lose their title and summary at once, and every chapter of those days is reopened; an audit row (`forget_log`) keeps the range, the counts and the list of media paths to delete — no content. Because a summary or recap of those days is stored only under the same lock and only if no new forget row appeared (Tasks 4–5), a model answer written from the forgotten material is never stored. After the commit: the raw files, video MP4s, audio playback copies, keyframes and thumbnails are deleted (each checked with `media.inside`), the audit row gets the file counts and keeps only the paths that could not be deleted (Task 11's 03:00 run retries them), and a chapter build is asked for each touched day. At most 7 days per request, so one request stays a few seconds.
 
 - [ ] **Step 1: Write the failing tests**
 
 Create `brain/tests/test_forget.py`:
 
 ```python
+import asyncio
 import datetime as dt
 
 import httpx
@@ -5707,6 +6100,7 @@ async def test_forgetting_removes_the_rows_files_and_derived_text_of_the_range(p
     [audit] = await fetch_all(pool, "SELECT * FROM forget_log")
     assert (audit["range_start"], audit["range_end"]) == (NINE, HALF_PAST)
     assert audit["counts"]["files"] == 7 and "khám" not in str(audit["counts"])  # counts only, no content
+    assert audit["pending_files"] == []  # every file went
     assert "chapters:2026-10-14" in await jobs_by_lock(pool)
 
 
@@ -5746,7 +6140,7 @@ async def test_a_range_across_midnight_touches_both_days(pool, pki_settings, dev
 
 
 async def test_ranges_are_checked(pool, pki_settings):
-    for start, end in ((HALF_PAST, NINE), (NINE, NINE), (NINE, NINE + dt.timedelta(days=32))):
+    for start, end in ((HALF_PAST, NINE), (NINE, NINE), (NINE, NINE + dt.timedelta(days=8))):
         with pytest.raises(ValueError):
             await forget.forget_range(pool, pki_settings, start, end)
     with pytest.raises(ValueError):
@@ -5761,6 +6155,33 @@ async def test_files_outside_the_media_root_are_never_deleted(pool, pki_settings
     counts = await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)
     assert counts.items == 1 and counts.files_failed == 1  # the raw path leaves the media root: refused
     assert outside.read_bytes() == b"keep me"
+    assert (await fetch_one(pool, "SELECT pending_files FROM forget_log"))["pending_files"] == []  # never retried
+
+
+async def test_a_file_that_cannot_be_deleted_now_stays_listed_for_a_retry(pool, pki_settings, dev):
+    item = await insert_item(pool, dev["device_id"], kind="marker", started_at=NINE, seconds=0)
+    raw = (await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item,)))["raw_path"]
+    _write(pki_settings, raw)
+    folder = (pki_settings.media_root / raw).parent
+    folder.chmod(0o555)  # the file cannot be unlinked right now
+    try:
+        counts = await forget.forget_range(pool, pki_settings, NINE, HALF_PAST)
+    finally:
+        folder.chmod(0o755)
+    assert (counts.items, counts.files, counts.files_failed) == (1, 0, 1)
+    assert (await fetch_one(pool, "SELECT pending_files FROM forget_log"))["pending_files"] == [raw]
+
+
+async def test_a_forget_waits_while_a_summary_or_recap_of_its_day_is_being_stored(pool, pki_settings, dev):
+    from loopi_brain.pipeline.state import lock_day
+
+    await insert_item(pool, dev["device_id"], kind="marker", started_at=NINE, seconds=0)
+    async with pool.connection() as conn, conn.transaction():
+        await lock_day(conn, DAY)  # a recap of that day is being stored
+        task = asyncio.create_task(forget.forget_range(pool, pki_settings, NINE, HALF_PAST))
+        await asyncio.sleep(0.3)
+        assert not task.done()
+    assert (await task).items == 1  # it went on once the recap was stored
 
 
 async def test_the_settings_page_previews_then_forgets_after_confirmation(web, pool, pki_settings, dev):
@@ -5830,9 +6251,12 @@ Create `brain/src/loopi_brain/forget.py`:
 In one transaction: the recordings (items) that touch the range, with their keyframes, transcript segments
 and moments (embeddings included), every other moment of the range, the commitments sourced in it, and the
 recaps of the days it touches; the chapters of those days are reopened and the ones that overlap the range
-lose their title and summary (they quoted what is forgotten). An audit row records the range and the counts,
-never any content. After the commit the media files go: raw files, playback/view copies, keyframes and their
-thumbnails, each checked to lie inside the media root. The affected days' chapters are rebuilt.
+lose their title and summary (they quoted what is forgotten). The transaction holds each touched day's lock
+(``state.lock_day``), so a summary or recap being stored waits for it — and then sees the new audit row and
+stores nothing. An audit row records the range, the counts and the media paths still to delete, never any
+content. After the commit the media files go: raw files, playback/view copies, keyframes and their thumbnails,
+each checked to lie inside the media root; a file that could not be deleted stays listed on the audit row and
+the nightly retention run tries again. The affected days' chapters are rebuilt.
 """
 from __future__ import annotations
 
@@ -5850,9 +6274,10 @@ from . import devices, media, thumbs
 from .config import Settings
 from .days import local_day
 from .pipeline import chapters as chapter_rules
+from .pipeline.state import lock_day
 
 log = logging.getLogger(__name__)
-MAX_RANGE = dt.timedelta(days=31)
+MAX_RANGE = dt.timedelta(days=7)  # one request stays a few seconds: ≈ 20 000 files and their rows at most
 # An item touches [start, end) if it overlaps it, or is a zero-length item (a marker) inside it.
 _ITEMS = "started_at < %(end)s AND (ended_at > %(start)s OR started_at >= %(start)s)"
 
@@ -5949,14 +6374,31 @@ def _files(targets: dict) -> list[str]:
     return paths
 
 
+def retryable(media_root, rels: list[str]) -> list[str]:
+    """The paths worth trying again later: inside the media root (others are refused for ever)."""
+    out = []
+    for rel in rels:
+        try:
+            media.inside(media_root, rel)
+        except ValueError:
+            continue
+        out.append(rel)
+    return out
+
+
 async def forget_range(pool: AsyncConnectionPool, settings: Settings, start: dt.datetime, end: dt.datetime) -> ForgetCounts:
     """Forget [start, end) for good; return what went."""
     check_range(start, end)
     zone = settings.zone
     days = days_touched(start, end, zone)
     async with pool.connection() as conn, conn.transaction():
+        for day in days:  # in day order: no deadlock with another forget
+            await lock_day(conn, day)
         targets = await _targets(conn, start, end, lock=True)
-        days = sorted(set(days) | {local_day(m["ts_start"], zone) for m in targets["moments"]})
+        extra = sorted({local_day(m["ts_start"], zone) for m in targets["moments"]} - set(days))
+        for day in extra:  # a recording that started on the previous day
+            await lock_day(conn, day)
+        days = sorted(set(days) | set(extra))
         derived = await _derived(conn, targets, days, start, end)
         item_ids = [r["id"] for r in targets["items"]]
         moment_ids = [m["id"] for m in targets["moments"]]
@@ -5976,14 +6418,18 @@ async def forget_range(pool: AsyncConnectionPool, settings: Settings, start: dt.
         counts = ForgetCounts(items=len(item_ids), keyframes=len(targets["keyframes"]), transcript_segments=segments,
                               moments=len(moment_ids), **derived)
         log_id = devices.new_id()
+        files = _files(targets)
         await conn.execute(
-            "INSERT INTO forget_log (id, range_start, range_end, counts) VALUES (%s, %s, %s, %s)",
-            (log_id, start, end, Jsonb(asdict(counts))),
+            "INSERT INTO forget_log (id, range_start, range_end, counts, pending_files) VALUES (%s, %s, %s, %s, %s)",
+            (log_id, start, end, Jsonb(asdict(counts)), Jsonb(files)),
         )
-    deleted, failed = await anyio.to_thread.run_sync(media.remove_files, settings.media_root, _files(targets))
+    deleted, failed = await anyio.to_thread.run_sync(media.remove_files, settings.media_root, files)
     counts = ForgetCounts(**{**asdict(counts), "files": deleted, "files_failed": len(failed)})
     async with pool.connection() as conn:
-        await conn.execute("UPDATE forget_log SET counts = %s WHERE id = %s", (Jsonb(asdict(counts)), log_id))
+        await conn.execute(
+            "UPDATE forget_log SET counts = %s, pending_files = %s WHERE id = %s",
+            (Jsonb(asdict(counts)), Jsonb(retryable(settings.media_root, failed)), log_id),
+        )
     for day in days:
         await chapter_rules.defer_build(pool, day, zone)
     log.info("forgot %s .. %s: %s", start.isoformat(), end.isoformat(), asdict(counts))
@@ -6014,7 +6460,7 @@ diff --git a/brain/src/loopi_brain/web/settings_routes.py b/brain/src/loopi_brai
  from ..pipeline import status
  from ..providers.config import TASKS, ProvidersConfigError, load_providers
  from ..providers.router import model_version
-@@ -80,3 +81,34 @@ async def reprocess_day(request: Request, day: dt.date = Form(...), what: list[s
+@@ -83,3 +84,34 @@ async def reprocess_day(request: Request, day: dt.date = Form(...), what: list[s
          request, "_reprocessed.html", {"day": day, "r": result, "what": [CHOICE_LABELS[c] for c in reprocess.CHOICES
                                                                         if c in what]}
      )
@@ -6055,8 +6501,8 @@ diff --git a/brain/src/loopi_brain/web/settings_routes.py b/brain/src/loopi_brai
 diff --git a/brain/src/loopi_brain/web/templates/settings.html b/brain/src/loopi_brain/web/templates/settings.html
 --- a/brain/src/loopi_brain/web/templates/settings.html
 +++ b/brain/src/loopi_brain/web/templates/settings.html
-@@ -29,6 +29,16 @@
-   <p class="muted">Lúc 03:00 mỗi đêm, file thô cũ hơn số ngày này bị xoá (chỉ những đoạn đã phân tích xong). Keyframe, transcript, chương và recap được giữ mãi.</p>
+@@ -31,6 +31,16 @@
+   <p class="muted">Khi bật, lúc 03:00 mỗi đêm file thô cũ hơn số ngày này bị xoá vĩnh viễn (chỉ những đoạn đã phân tích xong). Keyframe, transcript, chương và recap được giữ mãi.</p>
    <div id="retention-result"></div>
  </section>
 +<section class="card" id="forget">
@@ -6066,7 +6512,7 @@ diff --git a/brain/src/loopi_brain/web/templates/settings.html b/brain/src/loopi
 +    <label>đến <input type="datetime-local" name="end" required></label>
 +    <button>Xem trước</button>
 +  </form>
-+  <p class="muted">Xoá vĩnh viễn mọi đoạn ghi, khung hình, transcript và khoảnh khắc trong khoảng này (tối đa 31 ngày một lần).</p>
++  <p class="muted">Xoá vĩnh viễn mọi đoạn ghi, khung hình, transcript và khoảnh khắc trong khoảng này (tối đa 7 ngày một lần).</p>
 +  <div id="forget-result"></div>
 +</section>
  <section class="card" id="reprocess">
@@ -6103,10 +6549,10 @@ Chương và recap của những ngày này sẽ được làm lại.</span>
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_forget.py tests/test_media.py -q`
-Expected: `23 passed`.
+Expected: `25 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `458 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `479 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 7: Commit**
 
@@ -6124,34 +6570,40 @@ EOF
 
 ---
 
-### Task 11: Retention at 03:00 (D20)
+### Task 11: Retention at 03:00 (D20) — off until the owner turns it on
 
 **Files:**
 - Create: `brain/src/loopi_brain/pipeline/retention.py`
 - Modify: `brain/src/loopi_brain/pipeline/jobs.py`, `brain/src/loopi_brain/pipeline/status.py`, `brain/src/loopi_brain/pipeline/asr.py` (docstring)
+- Modify: `brain/src/loopi_brain/web/settings_routes.py`, `brain/src/loopi_brain/web/templates/settings.html` (what retention would delete)
 - Test: `brain/tests/test_retention.py`
 
 **Interfaces:**
-- Consumes: Task 1 `item.raw_deleted_at`, `local_now`; Task 9 `store.get_retention`; Task 10 `media.remove_files`; P2a `media.audio_view_path`, `jobs`, `get_context`.
+- Consumes: Task 1 `item.raw_deleted_at`, `forget_log.pending_files`, `local_now`; Task 9 `store.get_retention` (`enabled`), `settings_context`; Task 10 `media.remove_files`, `forget.retryable`; P2a `media.audio_view_path`, `jobs`, `get_context`.
 - Produces:
   - `jobs.APPLY_RETENTION = "apply_retention"` (periodic, cron `"0 * * * *"`, queue `light`, in `AUTO_RERUN_TASKS`; label "Dọn dữ liệu cũ", "tự chạy lại theo lịch").
-  - `retention.apply_retention(pool, settings, now=None) -> RetentionResult(video, audio, files, files_failed)`; `retention.due(timestamp: int | None, zone) -> bool` (the tick's local hour is `RETENTION_HOUR = 3`); `BATCH = 500`, `MAX_BATCHES = 40` per kind per run.
+  - `retention.apply_retention(pool, settings, now=None) -> RetentionResult(video, audio, files, files_failed)` (all zero while retention is off); `retention.preview_retention(pool, now=None) -> {"video": {"recordings", "bytes"}, "audio": {…}}` (read only); `retention.retry_forgotten_files(pool, settings) -> int`; `retention.due(timestamp: int | None, zone) -> bool` (the tick's local hour is `RETENTION_HOUR = 3`); `BATCH = 500`, `MAX_BATCHES = 40` per kind per run.
+  - Cài đặt shows "Nếu chạy bây giờ sẽ xoá: video thô N đoạn (x GB), audio thô M đoạn (y GB)." next to the on/off state.
 
-Rules: for each kind (video, audio), items with `analysis_state` `done` or `skipped`, no `raw_deleted_at`, and `ended_at` older than the kept days lose their raw file and the copy the web plays (video `view_path`, audio `view/…/<id>.opus`), files first; then the row gets `raw_deleted_at = now()` and `view_path = NULL`. A row whose file cannot be deleted keeps its mark empty and is tried again the next night. Markers, pending items, keyframes, thumbnails, transcripts, moments, chapters and recaps are never touched. Idempotent.
+Rules: **nothing is deleted while retention is off (the default)**; the owner turns it on in Cài đặt after seeing the preview (Task 14 stops to ask). When on, for each kind (video, audio), items with `analysis_state` `done` or `skipped`, no `raw_deleted_at`, and `ended_at` older than the kept days lose their raw file and the copy the web plays (video `view_path`, audio `view/…/<id>.opus`). Each batch runs in one transaction that holds its rows (`FOR UPDATE SKIP LOCKED`) while their files go, so a reprocess setting an item back to `pending` waits and then sees `raw_deleted_at`; a row someone else holds is left for the next night. A row whose file cannot be deleted keeps its mark empty and is tried again the next night. Markers, pending items, keyframes, thumbnails, transcripts, moments, chapters and recaps are never touched. Idempotent. The same 03:00 tick, on or off, first retries the media paths a "Quên khoảng thời gian" left on its audit row.
 
 - [ ] **Step 1: Write the failing tests**
 
 Create `brain/tests/test_retention.py`:
 
 ```python
+import asyncio
 import datetime as dt
 import logging
 from pathlib import PurePosixPath
 
+import httpx
 import pytest
+from psycopg.types.json import Jsonb
 
-from helpers import fetch_all, fetch_one, insert_item, insert_keyframe, make_ctx, paired_device
+from helpers import FakeOllama, fetch_all, fetch_one, insert_item, insert_keyframe, make_ctx, paired_device
 from loopi_brain import media, store
+from loopi_brain.app import create_app
 from loopi_brain.pipeline import context, jobs, retention, status
 
 NINE = dt.datetime(2026, 10, 14, 0, 0, tzinfo=dt.UTC)
@@ -6161,6 +6613,12 @@ NOW = NINE + dt.timedelta(days=8)  # NINE's recordings are 8 days old
 @pytest.fixture
 async def dev(pool, pki_settings):
     return await paired_device(pool, pki_settings)
+
+
+@pytest.fixture
+async def on(pool):
+    """The owner turned retention on in Cài đặt (it ships off)."""
+    await store.set_retention(pool, store.Retention(enabled=True))
 
 
 def _write(settings, rel: str) -> str:
@@ -6190,7 +6648,7 @@ def _exists(settings, rec) -> list[bool]:
     return [(settings.media_root / rel).exists() for rel in rec["files"]]
 
 
-async def test_old_finished_recordings_lose_their_raw_files_and_keep_their_rows(pool, pki_settings, dev):
+async def test_old_finished_recordings_lose_their_raw_files_and_keep_their_rows(pool, pki_settings, dev, on):
     device_id = dev["device_id"]
     video = await _recording(pool, pki_settings, device_id, "video", NINE)
     keyframe = await insert_keyframe(pool, pki_settings, video["id"], device_id, NINE)
@@ -6216,13 +6674,13 @@ async def test_old_finished_recordings_lose_their_raw_files_and_keep_their_rows(
 async def test_the_kept_days_come_from_the_settings(pool, pki_settings, dev):
     video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
     audio = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
-    await store.set_retention(pool, store.Retention(video_days=7, audio_days=30))
+    await store.set_retention(pool, store.Retention(video_days=7, audio_days=30, enabled=True))
     result = await retention.apply_retention(pool, pki_settings, now=NOW)
     assert (result.video, result.audio) == (1, 0)
     assert _exists(pki_settings, video) == [False, False] and all(_exists(pki_settings, audio))
 
 
-async def test_a_file_that_cannot_be_deleted_is_tried_again_next_night(pool, pki_settings, dev, caplog):
+async def test_a_file_that_cannot_be_deleted_is_tried_again_next_night(pool, pki_settings, dev, on, caplog):
     outside = pki_settings.media_root.parent / "outside.h264"
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_bytes(b"keep")
@@ -6236,7 +6694,7 @@ async def test_a_file_that_cannot_be_deleted_is_tried_again_next_night(pool, pki
     assert "could not delete media file ../outside.h264" in caplog.text
 
 
-async def test_a_large_backlog_is_taken_in_bounded_batches(pool, pki_settings, dev, monkeypatch):
+async def test_a_large_backlog_is_taken_in_bounded_batches(pool, pki_settings, dev, on, monkeypatch):
     monkeypatch.setattr(retention, "BATCH", 2)
     monkeypatch.setattr(retention, "MAX_BATCHES", 2)
     for n in range(5):
@@ -6253,7 +6711,7 @@ def test_the_hourly_tick_works_only_at_three_local_time(pki_settings):
     assert (jobs.APPLY_RETENTION, "0 * * * *") in periodic
 
 
-async def test_the_job_applies_retention_only_on_the_three_oclock_tick(pool, pki_settings, dev):
+async def test_the_job_applies_retention_only_on_the_three_oclock_tick(pool, pki_settings, dev, on):
     video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE - dt.timedelta(days=30))
     context.set_context(make_ctx(pool, pki_settings))
     try:
@@ -6263,6 +6721,50 @@ async def test_the_job_applies_retention_only_on_the_three_oclock_tick(pool, pki
         assert not any(_exists(pki_settings, video))
     finally:
         context.set_context(None)
+
+
+async def test_nothing_is_deleted_until_the_owner_turns_retention_on(pool, pki_settings, dev, caplog):
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    audio = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
+    await _recording(pool, pki_settings, dev["device_id"], "audio", NOW - dt.timedelta(days=1))  # too recent
+    assert await retention.preview_retention(pool, now=NOW) == {
+        "video": {"recordings": 1, "bytes": 1}, "audio": {"recordings": 1, "bytes": 1}}  # what it would delete
+    with caplog.at_level(logging.INFO, logger="loopi_brain.pipeline.retention"):
+        assert await retention.apply_retention(pool, pki_settings, now=NOW) == retention.RetentionResult()
+    assert all(_exists(pki_settings, video)) and all(_exists(pki_settings, audio))
+    assert "retention is off" in caplog.text
+
+
+async def test_a_recording_someone_else_holds_is_left_for_the_next_night(pool, pki_settings, dev, on):
+    held = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
+    free = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE + dt.timedelta(minutes=1))
+    async with pool.connection() as conn, conn.transaction():  # e.g. "Xử lý lại" is resetting it right now
+        await conn.execute("SELECT 1 FROM item WHERE id = %s FOR UPDATE", (held["id"],))
+        result = await asyncio.wait_for(retention.apply_retention(pool, pki_settings, now=NOW), 10)
+    assert result.audio == 1 and all(_exists(pki_settings, held)) and not any(_exists(pki_settings, free))
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).audio == 1  # the next night
+
+
+async def test_files_a_forget_left_behind_are_deleted_at_three_even_with_retention_off(pool, pki_settings, dev):
+    left = _write(pki_settings, "raw/x/2026/10/14/left.opus")
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO forget_log (id, range_start, range_end, counts, pending_files)"
+                           " VALUES ('F1', %s, %s, '{}', %s)", (NINE, NINE + dt.timedelta(hours=1), Jsonb([left])))
+    context.set_context(make_ctx(pool, pki_settings))
+    try:
+        await retention.apply_retention_job(timestamp=int(dt.datetime(2026, 10, 14, 18, 0, tzinfo=dt.UTC).timestamp()))
+    finally:
+        context.set_context(None)
+    assert not (pki_settings.media_root / left).exists()
+    assert (await fetch_one(pool, "SELECT pending_files FROM forget_log"))["pending_files"] == []
+
+
+async def test_the_settings_page_shows_what_retention_would_delete(pool, pki_settings, dev, jobs_open):
+    await _recording(pool, pki_settings, dev["device_id"], "video", dt.datetime.now(dt.UTC) - dt.timedelta(days=30))
+    app = create_app(pki_settings, pool=pool, http_client=FakeOllama().client(), llm_client=FakeOllama().client())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://brain.test") as c:
+        text = (await c.get("/settings")).text
+    assert "Nếu chạy bây giờ sẽ xoá: video thô 1 đoạn (0.0 GB)" in text and "audio thô 0 đoạn" in text
 
 
 async def test_a_failed_retention_run_waits_for_its_schedule(pool, jobs_open):
@@ -6307,8 +6809,8 @@ diff --git a/brain/src/loopi_brain/pipeline/jobs.py b/brain/src/loopi_brain/pipe
      EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS, PLAN_CHAPTERS, BUILD_CHAPTERS, PLAN_RECAPS,
 +    APPLY_RETENTION,
  )
- # The text models run one job at a time (chapters, recaps): each one takes most of the CPU.
- LLM_LOCK = "llm"
+ # The text models run one job at a time (chapters, recaps): each one takes most of the CPU. They also wait behind
+ # every live job (video, captions, ASR, markers, embeddings: priority 0) for a free worker slot, so recordings keep
 ```
 
 ```diff
@@ -6349,10 +6851,12 @@ Create `brain/src/loopi_brain/pipeline/retention.py`:
 ```python
 """Retention (spec §9.5, D20; §9.2 "03:00: áp dụng chính sách lưu trữ").
 
-Every night at 03:00 local time, raw recordings older than the kept days (Cài đặt; 7 and 7 by default) lose
-their raw file and the copy the web plays (video MP4, normalised audio): only recordings whose analysis is
-finished, never markers. The item row stays, marked ``raw_deleted_at`` so the pages say "đã hết hạn";
-keyframes, thumbnails, transcripts, captions, moments, chapters and recaps are never deleted here.
+Every night at 03:00 local time — **only once the owner turned it on in Cài đặt** (it ships off; the page shows
+what it would delete first) — raw recordings older than the kept days (7 and 7 by default) lose their raw file
+and the copy the web plays (video MP4, normalised audio): only recordings whose analysis is finished, never
+markers. The item row stays, marked ``raw_deleted_at`` so the pages say "đã hết hạn"; keyframes, thumbnails,
+transcripts, captions, moments, chapters and recaps are never deleted here. The same nightly run (on or off)
+retries the media files a "Quên khoảng thời gian" could not delete at once.
 """
 from __future__ import annotations
 
@@ -6364,7 +6868,9 @@ from pathlib import PurePosixPath
 import anyio
 from psycopg_pool import AsyncConnectionPool
 
-from .. import media, store
+from psycopg.types.json import Jsonb
+
+from .. import forget, media, store
 from ..config import Settings
 from ..days import local_now
 from . import jobs
@@ -6375,6 +6881,11 @@ log = logging.getLogger(__name__)
 RETENTION_HOUR = 3
 BATCH = 500
 MAX_BATCHES = 40  # at most 20 000 recordings of each kind per night; a bigger backlog takes more nights
+
+
+_DUE = (
+    "kind = %s AND raw_deleted_at IS NULL AND analysis_state IN ('done', 'skipped') AND ended_at < %s"
+)
 
 
 @dataclass(frozen=True)
@@ -6406,28 +6917,47 @@ def _remove(settings: Settings, kind: str, rows: list[dict]) -> tuple[list[str],
     return done, deleted, failed
 
 
-async def apply_retention(pool: AsyncConnectionPool, settings: Settings, now: dt.datetime | None = None) -> RetentionResult:
-    """Delete the raw files of finished recordings older than the kept days, in batches; return the counts."""
+async def preview_retention(pool: AsyncConnectionPool, now: dt.datetime | None = None) -> dict:
+    """What a run would delete now with the kept days in Cài đặt (read only): per kind, recordings and bytes."""
     now = now or dt.datetime.now(dt.UTC)
     retention = await store.get_retention(pool)
+    out = {}
+    async with pool.connection() as conn:
+        for kind, days in (("video", retention.video_days), ("audio", retention.audio_days)):
+            cur = await conn.execute(
+                f"SELECT count(*) AS recordings, coalesce(sum(size_bytes), 0)::bigint AS bytes FROM item WHERE {_DUE}",
+                (kind, now - dt.timedelta(days=days)),
+            )
+            out[kind] = await cur.fetchone()
+    return out
+
+
+async def apply_retention(pool: AsyncConnectionPool, settings: Settings, now: dt.datetime | None = None) -> RetentionResult:
+    """Delete the raw files of finished recordings older than the kept days, in batches; return the counts.
+    Nothing while retention is off (the default)."""
+    now = now or dt.datetime.now(dt.UTC)
+    retention = await store.get_retention(pool)
+    if not retention.enabled:
+        log.info("retention is off (Cài đặt): no recording deleted")
+        return RetentionResult()
     counts = {"video": 0, "audio": 0}
     files = failed_files = 0
     for kind, days in (("video", retention.video_days), ("audio", retention.audio_days)):
         cutoff = now - dt.timedelta(days=days)
         skip: list[str] = []  # rows whose files could not be deleted: retried next night, not in this loop
         for _ in range(MAX_BATCHES):
-            async with pool.connection() as conn:
+            # Rows stay locked while their files go: a reprocess (which sets an item back to pending) waits, then
+            # sees raw_deleted_at; a row someone else holds is left for the next night.
+            async with pool.connection() as conn, conn.transaction():
                 cur = await conn.execute(
-                    "SELECT id, raw_path, view_path FROM item WHERE kind = %s AND raw_deleted_at IS NULL"
-                    " AND analysis_state IN ('done', 'skipped') AND ended_at < %s AND NOT (id = ANY(%s))"
-                    " ORDER BY ended_at, id LIMIT %s",
+                    f"SELECT id, raw_path, view_path FROM item WHERE {_DUE} AND NOT (id = ANY(%s))"
+                    " ORDER BY ended_at, id LIMIT %s FOR UPDATE SKIP LOCKED",
                     (kind, cutoff, skip, BATCH),
                 )
                 rows = await cur.fetchall()
-            if not rows:
-                break
-            done, deleted, failed = await anyio.to_thread.run_sync(_remove, settings, kind, rows)
-            async with pool.connection() as conn:
+                if not rows:
+                    break
+                done, deleted, failed = await anyio.to_thread.run_sync(_remove, settings, kind, rows)
                 await conn.execute(
                     "UPDATE item SET raw_deleted_at = now(), view_path = NULL WHERE id = ANY(%s)", (done,)
                 )
@@ -6438,6 +6968,21 @@ async def apply_retention(pool: AsyncConnectionPool, settings: Settings, now: dt
     result = RetentionResult(counts["video"], counts["audio"], files, failed_files)
     log.info("retention (video %d days, audio %d days): %s", retention.video_days, retention.audio_days, result)
     return result
+
+
+async def retry_forgotten_files(pool: AsyncConnectionPool, settings: Settings) -> int:
+    """Delete the media files "Quên khoảng thời gian" could not delete at once; return how many went."""
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT id, pending_files FROM forget_log WHERE pending_files <> '[]'::jsonb")
+        rows = await cur.fetchall()
+    total = 0
+    for row in rows:
+        deleted, failed = await anyio.to_thread.run_sync(media.remove_files, settings.media_root, row["pending_files"])
+        total += deleted
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE forget_log SET pending_files = %s WHERE id = %s",
+                               (Jsonb(forget.retryable(settings.media_root, failed)), row["id"]))
+    return total
 
 
 def due(timestamp: int | None, zone) -> bool:
@@ -6451,24 +6996,67 @@ def due(timestamp: int | None, zone) -> bool:
 async def apply_retention_job(timestamp: int | None = None) -> None:
     ctx = get_context()
     if due(timestamp, ctx.settings.zone):
+        await retry_forgotten_files(ctx.pool, ctx.settings)
         await apply_retention(ctx.pool, ctx.settings)
+```
+
+Apply to `brain/src/loopi_brain/web/settings_routes.py` and `brain/src/loopi_brain/web/templates/settings.html` (the preview on Cài đặt):
+
+```diff
+diff --git a/brain/src/loopi_brain/web/settings_routes.py b/brain/src/loopi_brain/web/settings_routes.py
+--- a/brain/src/loopi_brain/web/settings_routes.py
++++ b/brain/src/loopi_brain/web/settings_routes.py
+@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
+ from pydantic import ValidationError
+ 
+ from .. import forget, reprocess, store
+-from ..pipeline import status
++from ..pipeline import retention, status
+ from ..providers.config import TASKS, ProvidersConfigError, load_providers
+ from ..providers.router import model_version
+ from .routes import TEMPLATES, require_htmx
+@@ -48,6 +48,7 @@ async def settings_context(request: Request) -> dict:
+         "health": await status.model_health(state.settings, state.http),
+         "tz": state.settings.tz,
+         "retention": await store.get_retention(state.pool),
++        "would_delete": await retention.preview_retention(state.pool),
+         "max_days": store.MAX_DAYS,
+         "choices": CHOICE_LABELS,
+     }
+```
+
+```diff
+diff --git a/brain/src/loopi_brain/web/templates/settings.html b/brain/src/loopi_brain/web/templates/settings.html
+--- a/brain/src/loopi_brain/web/templates/settings.html
++++ b/brain/src/loopi_brain/web/templates/settings.html
+@@ -28,6 +28,9 @@
+     <button>Lưu</button>
+   </form>
+   <p>Dọn dữ liệu cũ: {% if retention.enabled %}<strong>đang bật</strong>{% else %}<strong>đang tắt</strong> (chưa xoá gì){% endif %}.</p>
++  {% set w = would_delete %}
++  <p>Nếu chạy bây giờ sẽ xoá: video thô {{ w.video.recordings }} đoạn ({{ "%.1f"|format(w.video.bytes / 1e9) }} GB),
++     audio thô {{ w.audio.recordings }} đoạn ({{ "%.1f"|format(w.audio.bytes / 1e9) }} GB).</p>
+   <p class="muted">Khi bật, lúc 03:00 mỗi đêm file thô cũ hơn số ngày này bị xoá vĩnh viễn (chỉ những đoạn đã phân tích xong). Keyframe, transcript, chương và recap được giữ mãi.</p>
+   <div id="retention-result"></div>
+ </section>
 ```
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_retention.py -q`
-Expected: `7 passed`.
+Expected: `11 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `465 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `490 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add brain/src/loopi_brain/pipeline/retention.py brain/src/loopi_brain/pipeline/jobs.py \
-  brain/src/loopi_brain/pipeline/status.py brain/src/loopi_brain/pipeline/asr.py brain/tests/test_retention.py
+  brain/src/loopi_brain/pipeline/status.py brain/src/loopi_brain/pipeline/asr.py \
+  brain/src/loopi_brain/web/settings_routes.py brain/src/loopi_brain/web/templates/settings.html brain/tests/test_retention.py
 git commit -F - <<'EOF'
-feat(brain): 03:00 retention of raw video and audio after the kept days (spec 9.5, D20)
+feat(brain): 03:00 retention of raw video and audio, off until the owner turns it on (spec 9.5, D20)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
@@ -6493,7 +7081,9 @@ EOF
   - `providers.config.KNOWN_PROVIDERS` gains `"anthropic"`, allowed only on `TEXT_TASKS` (a route of `caption`, `embed` or `asr` to anthropic is a load error); `IMAGE_TASKS = ("caption",)`; `ProvidersConfig.providers_used() -> set[str]`.
   - `Router._allowed(task, images)` (routes that may take the request: configured providers only; with images, local only unless `allow_cloud_images`); `_usable` raises `PrivacyBlocked` (images, only cloud routes) or `ProviderUnavailable` ("no configured provider … ANTHROPIC_API_KEY") when nothing is left; `task_ready(task, health)` counts only those routes.
   - `Settings.anthropic_api_key: SecretStr | None` (env `ANTHROPIC_API_KEY`, no `LOOPI_` prefix; blank = None), `Settings.anthropic_url = "https://api.anthropic.com"`; `build_router` adds `AnthropicProvider` only when the key is set (else logs that anthropic routes are skipped).
-  - `providers.anthropic.AnthropicProvider(api_key, *, base_url="https://api.anthropic.com", client=None)` with `chat` (text only: images → `PrivacyBlocked`), `stream_chat` (SSE), `embed` (always `ProviderError`); `strict_schema(schema)`. HTTP 429/500/502/503/504/529 and connection failures → `ProviderUnavailable` (fallback, no retry spent); other errors, refusals and empty answers → `ProviderError`.
+  - `providers.anthropic.AnthropicProvider(api_key, *, base_url="https://api.anthropic.com", client=None)` with `chat` (text only: images → `PrivacyBlocked`), `stream_chat` (SSE), `embed` (always `ProviderError`); `strict_schema(schema)`. HTTP 429/500/502/503/504/529 and connection failures → `ProviderUnavailable` (fallback, no retry spent); other errors, refusals, empty answers and an answer cut off by `max_tokens` before any text → `ProviderError`.
+  - Thinking is set explicitly (Haiku 5.5 and Sonnet 5.5 think by default and `max_tokens` caps thinking plus answer): `THINKING_OFF = {"claude-haiku-5-5": {"type": "disabled"}, "claude-sonnet-5-5": {"type": "between_tools"}}` (Sonnet 5.5 rejects "disabled"); with thinking off `max_tokens` is at least `MIN_MAX_TOKENS = 1024`; any other model keeps thinking and gets `THINKING_MAX_TOKENS = 8192`.
+  - Cài đặt says which tasks may send text to the cloud ("Gửi text lên cloud (Anthropic) khi dùng tuyến đó: …") when a key is set and a route uses anthropic.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6567,13 +7157,34 @@ async def test_chat_sends_text_only_with_the_system_prompt_on_top_and_no_samplin
     assert json.loads(text) == {"title": "Sáng", "summary": "Đọc sách."}
     [(headers, body)] = fake.requests
     assert headers["x-api-key"] == KEY and headers["anthropic-version"] == "2023-06-01"
-    assert body["model"] == "claude-haiku-5-5" and body["max_tokens"] == 400 and body["system"] == "Be brief."
+    assert body["model"] == "claude-haiku-5-5" and body["system"] == "Be brief."
+    # Thinking off, and a cap the answer always fits in (the brain clips longer answers).
+    assert body["thinking"] == {"type": "disabled"} and body["max_tokens"] == 1024
     assert body["messages"] == [{"role": "user", "content": "Tóm tắt"}]
     assert "temperature" not in body and body["output_config"]["effort"] == "low"
     schema = body["output_config"]["format"]["schema"]
     assert body["output_config"]["format"]["type"] == "json_schema"
     assert schema["additionalProperties"] is False and "maxLength" not in json.dumps(schema)
     assert repr(_provider(fake)) == "AnthropicProvider('https://api.anthropic.test')"  # no key in logs
+
+
+@pytest.mark.parametrize(("model", "thinking", "max_tokens"), [
+    ("claude-haiku-5-5", {"type": "disabled"}, 1024),
+    ("claude-sonnet-5-5", {"type": "between_tools"}, 1024),  # Sonnet 5.5 rejects "disabled"
+    ("claude-opus-5-5", None, 8192),  # always thinks: thinking and answer share the budget
+])
+async def test_thinking_is_turned_off_where_allowed_and_otherwise_budgeted(model, thinking, max_tokens):
+    fake = FakeAnthropic()
+    await _provider(fake).chat(model, [{"role": "user", "content": "x"}], max_tokens=60)
+    pieces = [p async for p in _provider(fake).stream_chat(model, [{"role": "user", "content": "x"}], max_tokens=600)]
+    assert pieces
+    for _, body in fake.requests:
+        assert body.get("thinking") == thinking and body["max_tokens"] == max_tokens
+
+
+async def test_an_answer_cut_off_before_any_text_is_an_error():
+    with pytest.raises(ProviderError, match="max_tokens was used up"):
+        await _provider(FakeAnthropic(text="", stop_reason="max_tokens")).chat("m", [{"role": "user", "content": "x"}])
 
 
 def test_strict_schema_closes_every_object_and_drops_limits():
@@ -6720,6 +7331,8 @@ async def test_the_settings_page_says_whether_the_key_is_set_and_never_shows_it(
         assert f"ANTHROPIC_API_KEY: {expected}" in text and KEY not in text
         assert "<code>ollama:qwen3:8b → anthropic:claude-haiku-5-5</code>" in text
         assert ("bị bỏ qua" in text) == (expected == "chưa đặt")
+        # With a key, the page says which tasks may send text to the cloud.
+        assert ("Gửi text lên cloud (Anthropic) khi dùng tuyến đó: Recap cuối ngày" in text) == (expected == "đã đặt")
 ```
 
 Apply to `brain/tests/test_providers.py` (a recap fallback to anthropic is valid now — a caption or embedding route to it is not; a cloud route counts as ready only when its key is set):
@@ -6849,7 +7462,7 @@ diff --git a/brain/src/loopi_brain/config.py b/brain/src/loopi_brain/config.py
  from pydantic_settings import BaseSettings, SettingsConfigDict
  
  
-@@ -40,6 +40,15 @@ class Settings(BaseSettings):
+@@ -42,6 +42,15 @@ class Settings(BaseSettings):
      # distance), or when its text matches the question's words this well (pg_trgm word similarity). P2c tunes both.
      search_max_distance: float = Field(default=0.6, gt=0.0, le=2.0)
      search_min_similarity: float = Field(default=0.3, gt=0.0, le=1.0)
@@ -6880,8 +7493,12 @@ Plain httpx, no SDK dependency. Requests never carry images or audio. Notes on t
 - Structured output is ``output_config.format = {"type": "json_schema", "schema": ...}``; the schema may not use
   length or number limits and every object needs ``additionalProperties: false`` (``strict_schema``). The
   caller still clips over-long answers, as for Ollama.
-- Claude Haiku 5.5 and Sonnet 5.5 reject non-default sampling parameters, so no ``temperature`` is sent; they
-  think by default, so ``output_config.effort`` is "low" and only ``text`` content blocks are read.
+- Claude Haiku 5.5 and Sonnet 5.5 reject non-default sampling parameters, so no ``temperature`` is sent.
+- They think by default, and ``max_tokens`` caps thinking **and** answer together: a small cap can end before
+  any text. So thinking is turned off where the model allows it (Haiku 5.5: ``{"type": "disabled"}``, valid at
+  effort ≤ high; Sonnet 5.5 rejects "disabled" and uses ``{"type": "between_tools"}``), ``max_tokens`` is at least
+  1024, and any other model gets 8192 so its thinking leaves room for the answer; ``output_config.effort`` is
+  "low"; only ``text`` content blocks are read; an answer cut off before any text is an error.
 - Streaming is Server-Sent Events; text arrives as ``content_block_delta`` events with a ``text_delta``.
 """
 from __future__ import annotations
@@ -6897,6 +7514,9 @@ API_VERSION = "2023-06-01"
 DEFAULT_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 DEFAULT_MAX_TOKENS = 2048
 EFFORT = "low"
+THINKING_OFF = {"claude-haiku-5-5": {"type": "disabled"}, "claude-sonnet-5-5": {"type": "between_tools"}}
+MIN_MAX_TOKENS = 1024  # thinking off: room for any answer the brain asks for (it clips longer ones)
+THINKING_MAX_TOKENS = 8192  # a model that always thinks: thinking and answer share this budget
 ERROR_TAIL = 500
 # Rate limits, overload (529) and server errors pass: the router falls back, a job does not spend a retry.
 TEMPORARY = frozenset({429, 500, 502, 503, 504, 529})
@@ -6942,12 +7562,16 @@ class AnthropicProvider:
     @staticmethod
     def _body(model: str, messages: list[dict], json_schema: dict | None, max_tokens: int | None) -> dict:
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
+        thinking = THINKING_OFF.get(model)
+        floor = MIN_MAX_TOKENS if thinking else THINKING_MAX_TOKENS
         body: dict = {
             "model": model,
-            "max_tokens": max_tokens or DEFAULT_MAX_TOKENS,
+            "max_tokens": max(max_tokens or DEFAULT_MAX_TOKENS, floor),
             "messages": [{"role": m["role"], "content": m["content"]} for m in messages if m["role"] != "system"],
             "output_config": {"effort": EFFORT},
         }
+        if thinking:
+            body["thinking"] = dict(thinking)
         if system:
             body["system"] = system
         if json_schema is not None:
@@ -6989,6 +7613,8 @@ class AnthropicProvider:
             if isinstance(block, dict) and block.get("type") == "text"
         )
         if not text:
+            if data.get("stop_reason") == "max_tokens":
+                raise ProviderError("anthropic /v1/messages: max_tokens was used up before any answer text")
             raise ProviderError(f"anthropic /v1/messages: no text in the answer (stop_reason {data.get('stop_reason')})")
         return text
 
@@ -7093,9 +7719,9 @@ diff --git a/brain/src/loopi_brain/providers/router.py b/brain/src/loopi_brain/p
  
  
  def build_router(config: ProvidersConfig, settings: Settings, client: httpx.AsyncClient | None = None) -> Router:
-@@ -141,4 +149,11 @@ def build_router(config: ProvidersConfig, settings: Settings, client: httpx.Asyn
-         text_keep_alive=settings.ollama_text_keep_alive,
+@@ -142,4 +150,11 @@ def build_router(config: ProvidersConfig, settings: Settings, client: httpx.Asyn
          num_ctx=settings.llm_num_ctx,
+         text_timeout=settings.llm_timeout_s,
      )
 -    return Router(config, {"ollama": ollama})
 +    providers: dict[str, Provider] = {"ollama": ollama}
@@ -7116,7 +7742,7 @@ Apply to `brain/src/loopi_brain/web/settings_routes.py` and `brain/src/loopi_bra
 diff --git a/brain/src/loopi_brain/web/settings_routes.py b/brain/src/loopi_brain/web/settings_routes.py
 --- a/brain/src/loopi_brain/web/settings_routes.py
 +++ b/brain/src/loopi_brain/web/settings_routes.py
-@@ -29,16 +29,18 @@ router = APIRouter()
+@@ -29,16 +29,20 @@ router = APIRouter()
  
  def providers_view(settings) -> dict:
      """Each task's route chain ("ollama:qwen3:8b → …"), the privacy flags, or the configuration error."""
@@ -7132,8 +7758,10 @@ diff --git a/brain/src/loopi_brain/web/settings_routes.py b/brain/src/loopi_brai
          for task in TASKS
      ]
 -    return {"error": None, "tasks": tasks, "privacy": config.privacy}
++    cloud_text = [TASK_LABELS[task] for task in TASKS
++                  if key_set and any(step.provider == "anthropic" for step in config.tasks[task].chain())]
 +    return {"error": None, "tasks": tasks, "privacy": config.privacy, "key_set": key_set,
-+            "key_missing": "anthropic" in config.providers_used() and not key_set}
++            "key_missing": "anthropic" in config.providers_used() and not key_set, "cloud_text": cloud_text}
  
  
  async def settings_context(request: Request) -> dict:
@@ -7143,12 +7771,14 @@ diff --git a/brain/src/loopi_brain/web/settings_routes.py b/brain/src/loopi_brai
 diff --git a/brain/src/loopi_brain/web/templates/settings.html b/brain/src/loopi_brain/web/templates/settings.html
 --- a/brain/src/loopi_brain/web/templates/settings.html
 +++ b/brain/src/loopi_brain/web/templates/settings.html
-@@ -12,6 +12,8 @@
+@@ -12,6 +12,10 @@
    <p>Ảnh gửi lên cloud: {{ "có" if providers.privacy.allow_cloud_images else "không" }} ·
       âm thanh gửi lên cloud: {{ "có" if providers.privacy.allow_cloud_audio else "không" }}</p>
    {% endif %}
 +  <p>ANTHROPIC_API_KEY: {{ "đã đặt" if providers.key_set else "chưa đặt" }}{% if providers.key_missing %}
 +     <span class="err">— providers.yaml dùng anthropic nhưng chưa có key, nên các tuyến đó bị bỏ qua.</span>{% endif %}</p>
++  {% if providers.cloud_text %}<p>Gửi text lên cloud (Anthropic) khi dùng tuyến đó: {{ providers.cloud_text|join(", ") }}
++     — transcript, mô tả khung hình và tóm tắt của ngày, không bao giờ ảnh hay âm thanh.</p>{% endif %}
    {% if not health.error %}
      {% if not health.reachable %}<p class="err">Không kết nối được Ollama ({{ health.url }}).</p>
      {% elif health.missing %}<p class="err">Thiếu model: {{ health.missing|join(", ") }}.</p>
@@ -7157,10 +7787,10 @@ diff --git a/brain/src/loopi_brain/web/templates/settings.html b/brain/src/loopi
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_anthropic.py tests/test_providers.py -q`
-Expected: `48 passed`.
+Expected: `52 passed`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `483 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `512 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 7: Commit**
 
@@ -7179,62 +7809,28 @@ EOF
 
 ---
 
-### Task 13: Upgrade catch-up, the "Hiểu ngày" card, compose and README
+### Task 13: The "Hiểu ngày" card, compose (3 worker slots, 2 models) and README
 
 **Files:**
-- Modify: `brain/src/loopi_brain/pipeline/chapters.py` (the planner also builds days that have moments but no chapter), `brain/src/loopi_brain/pipeline/status.py` (`understanding_status`), `brain/src/loopi_brain/web/routes.py`, `brain/src/loopi_brain/web/templates/pipeline.html`
+- Modify: `brain/src/loopi_brain/pipeline/status.py` (`understanding_status`), `brain/src/loopi_brain/web/routes.py`, `brain/src/loopi_brain/web/templates/pipeline.html`
 - Modify: `deploy/docker-compose.yml`, `deploy/providers.yaml` (comments only), `deploy/.env.example`, `deploy/README.md`
-- Test: `brain/tests/test_chapters.py`, `brain/tests/test_web_pipeline.py`, `brain/tests/test_deploy.py`
+- Test: `brain/tests/test_web_pipeline.py`, `brain/tests/test_deploy.py`
 
 **Interfaces:**
-- Consumes: Task 4 `plan_chapters`; Task 9 `store.get_retention`; P2a `/pipeline`, `tests/test_deploy.py` (parses the compose file with PyYAML only).
+- Consumes: Task 4 `LLM_LOCK`/`LLM_PRIORITY`, the catch-up of old days; Task 5 `jobs.WRITE_RECAP`; Task 9/11 `store.get_retention` (`enabled`); P2a `/pipeline`, `tests/test_deploy.py` (parses the compose file with PyYAML only).
 - Produces:
-  - `plan_chapters` also defers a build for every local day that has moments and no chapter at all (the days analysed before P2b was installed get chapters, then recaps, by themselves).
-  - `status.understanding_status(pool, zone) -> {"chapters_waiting": int, "last_recap": {"day", "at"} | None, "retention": Retention}`; `/pipeline` shows it in a "Hiểu ngày" card with the three schedules.
-  - Compose: `api` and `worker` get `ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}`; `models` gets `OLLAMA_MAX_LOADED_MODELS: "3"`. `.env.example` lists an empty `ANTHROPIC_API_KEY=`. `providers.yaml` keeps every route local (the Anthropic examples stay commented out). README section "Understanding and pages (P2b)".
+  - `status.understanding_status(pool, zone) -> {"chapters_waiting": int, "recaps_failed": int, "last_recap": {"day", "at"} | None, "retention": Retention}`; `/pipeline` shows it in a "Hiểu ngày" card: the three schedules, chapters waiting for a summary, the newest recap, failed recaps, and whether retention is on.
+  - Compose: `worker` gets `LOOPI_WORKER_CONCURRENCY: "3"` (two slots for live work, one for at most one chapter/recap job); `api` and `worker` get `ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}`; `models` keeps `OLLAMA_MAX_LOADED_MODELS: "2"` (with the measured numbers in a comment) and gets no `mem_limit` (an OOM kill inside the container could stop a caption mid-job; Task 14 measures memory instead). `.env.example` lists an empty `ANTHROPIC_API_KEY=`. `providers.yaml` keeps every route local (the Anthropic examples stay commented out). README section "Understanding and pages (P2b)".
 
 - [ ] **Step 1: Write the failing tests**
 
-Apply to `brain/tests/test_chapters.py`, `brain/tests/test_web_pipeline.py` and `brain/tests/test_deploy.py`:
-
-```diff
-diff --git a/brain/tests/test_chapters.py b/brain/tests/test_chapters.py
---- a/brain/tests/test_chapters.py
-+++ b/brain/tests/test_chapters.py
-@@ -8,6 +8,7 @@ from helpers import (
-     FakeOllama,
-     fetch_all,
-     fetch_one,
-+    insert_chapter,
-     insert_item,
-     insert_moment,
-     jobs_by_lock,
-@@ -211,6 +212,18 @@ async def test_the_planner_asks_once_for_each_day_with_data(pool, dev, pki_setti
-     assert "chapters:2026-10-13" not in locks  # yesterday had no data
- 
- 
-+async def test_the_planner_also_catches_up_days_analysed_before_chapters_existed(pool, dev, pki_settings, jobs_open):
-+    old = await insert_moment(pool, dev["device_id"], ts=NINE - dt.timedelta(days=30))
-+    async with pool.connection() as conn:  # analysed long ago, by P2a
-+        await conn.execute("UPDATE moment SET created_at = now() - interval '30 days' WHERE id = %s", (old,))
-+    now = NINE + dt.timedelta(days=60)
-+    assert await chapters.plan_chapters(pool, pki_settings.zone, now) == [DAY - dt.timedelta(days=30)]
-+    await insert_chapter(pool, DAY - dt.timedelta(days=30), NINE - dt.timedelta(days=30), NINE - dt.timedelta(days=30))
-+    async with pool.connection() as conn:
-+        await conn.execute("DELETE FROM procrastinate_jobs")
-+    assert await chapters.plan_chapters(pool, pki_settings.zone, now) == []  # it has its chapters now
-+
-+
- async def test_the_worker_builds_the_chapters_a_planner_asked_for(pool, dev, ctx, pki_settings, jobs_open):
-     await _two_scenes(pool, dev["device_id"])
-     assert await chapters.defer_build(pool, DAY, pki_settings.zone) is not None
-```
+Apply to `brain/tests/test_web_pipeline.py` and `brain/tests/test_deploy.py` (the card test reads the card's text with whitespace collapsed, so template indentation cannot break it):
 
 ```diff
 diff --git a/brain/tests/test_web_pipeline.py b/brain/tests/test_web_pipeline.py
 --- a/brain/tests/test_web_pipeline.py
 +++ b/brain/tests/test_web_pipeline.py
-@@ -212,3 +212,19 @@ async def test_retry_all_requeues_every_dead_letter_but_the_embedding_run(web, p
+@@ -212,3 +212,26 @@ async def test_retry_all_requeues_every_dead_letter_but_the_embedding_run(web, p
      assert r.status_code == 200 and "Đã đưa 2 job vào hàng đợi xử lý lại." in r.text
      statuses = {r["task_name"]: r["status"] for r in await fetch_all(pool, "SELECT task_name, status FROM procrastinate_jobs")}
      assert statuses == {"index_marker": "todo", "embed_moments": "failed"}
@@ -7244,35 +7840,38 @@ diff --git a/brain/tests/test_web_pipeline.py b/brain/tests/test_web_pipeline.py
 +    from helpers import insert_chapter
 +
 +    text = (await web.get("/pipeline")).text
-+    assert "Chia chương: mỗi giờ (phút thứ 5) · chương chờ tóm tắt: 0" in text
-+    assert "gần nhất:\n      chưa có" in text and "giữ video thô 7 ngày, audio thô 7 ngày" in text
++    card = " ".join(text.split('<h2>Hiểu ngày</h2>')[1].split("</div>")[0].split())  # whitespace-insensitive
++    assert "Chia chương: mỗi giờ (phút thứ 5) · chương chờ tóm tắt: 0" in card
++    assert "gần nhất: chưa có" in card and "<strong>đang tắt</strong>, không xoá gì" in card
 +    day = dt.date(2026, 10, 14)
 +    await insert_chapter(pool, day, UTC_9AM_SEOUL, UTC_9AM_SEOUL)  # no summary yet
 +    async with pool.connection() as conn:
 +        await conn.execute("INSERT INTO day_recap (day, markdown, model_version, generated_at)"
 +                           " VALUES (%s, 'x', 'x', '2026-10-14T14:30:00Z')", (day,))
++        await conn.execute("INSERT INTO setting (key, value) VALUES ('retention',"
++                           " '{\"video_days\": 7, \"audio_days\": 7, \"enabled\": true}')")
++        job_id = await jobs.enqueue(conn, jobs.WRITE_RECAP, queue="understand", queueing_lock="recap:2026-10-13",
++                                    day="2026-10-13")
++    await _fail_job(pool, job_id)
 +    text = (await web.get("/pipeline")).text
 +    assert "chương chờ tóm tắt: 1" in text
 +    assert '<a href="/?day=2026-10-14">2026-10-14</a> (viết lúc 14/10 23:30)' in text
++    assert "1 recap lỗi (xem Job lỗi)" in text and "đang bật, giữ video thô 7 ngày, audio thô 7 ngày" in text
 ```
 
 ```diff
 diff --git a/brain/tests/test_deploy.py b/brain/tests/test_deploy.py
 --- a/brain/tests/test_deploy.py
 +++ b/brain/tests/test_deploy.py
-@@ -39,7 +39,7 @@ def test_api_reads_the_same_providers_file_and_model_server():
- def test_models_service_is_a_pinned_private_ollama():
-     models = SERVICES["models"]
-     assert models["image"] == "ollama/ollama:0.35.1"
--    assert models["environment"] == {"OLLAMA_KEEP_ALIVE": "30m", "OLLAMA_MAX_LOADED_MODELS": "2",
-+    assert models["environment"] == {"OLLAMA_KEEP_ALIVE": "30m", "OLLAMA_MAX_LOADED_MODELS": "3",
-                                      "OLLAMA_NUM_PARALLEL": "1"}
-     assert models["volumes"] == ["ollama:/root/.ollama"] and "ollama" in COMPOSE["volumes"]
-     assert models["healthcheck"]["test"] == ["CMD", "ollama", "list"]
-@@ -85,3 +85,12 @@ def test_smoke_script_removes_what_it_created_on_every_exit():
+@@ -85,3 +85,17 @@ def test_smoke_script_removes_what_it_created_on_every_exit():
      # selection and yields no keyframe), and the wait ends on either final analysis state.
      assert "smptebars=size=320x240:rate=2" in script and "testsrc" not in script
      assert '[[ "$STATE" == "done" || "$STATE" == "skipped" ]] && break' in script
++
++
++def test_the_worker_has_a_third_slot_for_one_text_model_job():
++    assert SERVICES["worker"]["environment"]["LOOPI_WORKER_CONCURRENCY"] == "3"
++    assert "mem_limit" not in SERVICES["models"]  # a kill would stop a caption mid-job; memory is checked in Task 14
 +
 +
 +def test_the_anthropic_key_is_optional_and_comes_only_from_the_env_file():
@@ -7287,39 +7886,11 @@ diff --git a/brain/tests/test_deploy.py b/brain/tests/test_deploy.py
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd brain && uv run pytest tests/test_chapters.py tests/test_web_pipeline.py tests/test_deploy.py -q`
-Expected: FAIL — `4 failed, 34 passed` (`test_the_planner_also_catches_up_days_analysed_before_chapters_existed`, `test_the_pipeline_page_shows_the_understanding_schedule`, `test_models_service_is_a_pinned_private_ollama`, `test_the_anthropic_key_is_optional_and_comes_only_from_the_env_file`).
+Expected: FAIL — `3 failed, 39 passed` (`test_the_pipeline_page_shows_the_understanding_schedule`, `test_the_worker_has_a_third_slot_for_one_text_model_job`, `test_the_anthropic_key_is_optional_and_comes_only_from_the_env_file`).
 
-- [ ] **Step 3: Catch up old days and show the schedule on /pipeline**
+- [ ] **Step 3: Show the understanding jobs on /pipeline**
 
-Apply to `brain/src/loopi_brain/pipeline/chapters.py`, `brain/src/loopi_brain/pipeline/status.py`, `brain/src/loopi_brain/web/routes.py` and `brain/src/loopi_brain/web/templates/pipeline.html`:
-
-```diff
-diff --git a/brain/src/loopi_brain/pipeline/chapters.py b/brain/src/loopi_brain/pipeline/chapters.py
---- a/brain/src/loopi_brain/pipeline/chapters.py
-+++ b/brain/src/loopi_brain/pipeline/chapters.py
-@@ -313,14 +313,17 @@ async def defer_build(pool: AsyncConnectionPool, day: dt.date, zone) -> int | No
- 
- async def plan_chapters(pool: AsyncConnectionPool, zone, now: dt.datetime | None = None) -> list[dt.date]:
-     """The hourly planner: ask for a build of today, yesterday, every day that got moments in the last 26 hours
--    (a backlog being analysed) and every day with open chapters; return the days asked for."""
-+    (a backlog being analysed), every day with open chapters, and every day with moments but no chapter at all
-+    (days analysed before P2b was installed); return the days asked for."""
-     now = now or dt.datetime.now(dt.UTC)
-     today = local_now(zone, now).date()
-     async with pool.connection() as conn:
-         cur = await conn.execute(
--            "SELECT DISTINCT (ts_start AT TIME ZONE %s)::date AS day FROM moment WHERE created_at > %s"
--            " UNION SELECT day FROM chapter WHERE NOT closed",
--            (zone.key, now - RECENT),
-+            "SELECT DISTINCT (ts_start AT TIME ZONE %(tz)s)::date AS day FROM moment WHERE created_at > %(recent)s"
-+            " UNION SELECT day FROM chapter WHERE NOT closed"
-+            " UNION SELECT d.day FROM (SELECT DISTINCT (ts_start AT TIME ZONE %(tz)s)::date AS day FROM moment) d"
-+            " WHERE NOT EXISTS (SELECT 1 FROM chapter c WHERE c.day = d.day)",
-+            {"tz": zone.key, "recent": now - RECENT},
-         )
-         days = {r["day"] for r in await cur.fetchall()} | {today, today - dt.timedelta(days=1)}
-     return [day for day in sorted(days) if await defer_build(pool, day, zone) is not None]
-```
+Apply to `brain/src/loopi_brain/pipeline/status.py`, `brain/src/loopi_brain/web/routes.py` and `brain/src/loopi_brain/web/templates/pipeline.html`:
 
 ```diff
 diff --git a/brain/src/loopi_brain/pipeline/status.py b/brain/src/loopi_brain/pipeline/status.py
@@ -7333,12 +7904,13 @@ diff --git a/brain/src/loopi_brain/pipeline/status.py b/brain/src/loopi_brain/pi
  from ..config import Settings
  from ..health import HEARTBEAT_MAX_AGE_S
  from ..providers.config import ProvidersConfigError, load_providers
-@@ -138,6 +139,24 @@ async def pipeline_status(pool: AsyncConnectionPool) -> dict:
+@@ -138,6 +139,31 @@ async def pipeline_status(pool: AsyncConnectionPool) -> dict:
      }
  
  
 +async def understanding_status(pool: AsyncConnectionPool, zone) -> dict:
-+    """The understanding jobs at a glance: chapters waiting for a summary, the newest recap, retention days."""
++    """The understanding jobs at a glance: chapters waiting for a summary, the newest recap, failed recaps,
++    retention (days, on or off)."""
 +    async with pool.connection() as conn:
 +        cur = await conn.execute(
 +            "SELECT count(*) AS n FROM chapter WHERE summary_signature IS DISTINCT FROM signature"
@@ -7346,8 +7918,14 @@ diff --git a/brain/src/loopi_brain/pipeline/status.py b/brain/src/loopi_brain/pi
 +        waiting = (await cur.fetchone())["n"]
 +        cur = await conn.execute("SELECT day, generated_at FROM day_recap ORDER BY generated_at DESC LIMIT 1")
 +        recap = await cur.fetchone()
++        cur = await conn.execute(
++            "SELECT count(*) AS n FROM procrastinate_jobs WHERE task_name = %s AND status = 'failed'",
++            (jobs.WRITE_RECAP,),
++        )
++        recaps_failed = (await cur.fetchone())["n"]
 +    return {
 +        "chapters_waiting": waiting,
++        "recaps_failed": recaps_failed,
 +        "last_recap": (
 +            {"day": recap["day"], "at": recap["generated_at"].astimezone(zone).strftime("%d/%m %H:%M")} if recap else None
 +        ),
@@ -7388,8 +7966,8 @@ diff --git a/brain/src/loopi_brain/web/templates/pipeline.html b/brain/src/loopi
 +  <ul>
 +    <li>Chia chương: mỗi giờ (phút thứ 5) · chương chờ tóm tắt: {{ u.chapters_waiting }}</li>
 +    <li>Recap: lúc 23:30, và cho ngày trước khi mọi chương của ngày đó đã xong · gần nhất:
-+      {% if u.last_recap %}<a href="/?day={{ u.last_recap.day }}">{{ u.last_recap.day }}</a> (viết lúc {{ u.last_recap.at }}){% else %}chưa có{% endif %}</li>
-+    <li>Dọn dữ liệu cũ: 03:00 mỗi đêm · giữ video thô {{ u.retention.video_days }} ngày, audio thô {{ u.retention.audio_days }} ngày (<a href="/settings">Cài đặt</a>)</li>
++      {% if u.last_recap %}<a href="/?day={{ u.last_recap.day }}">{{ u.last_recap.day }}</a> (viết lúc {{ u.last_recap.at }}){% else %}chưa có{% endif %}{% if u.recaps_failed %} · <span class="err">{{ u.recaps_failed }} recap lỗi (xem Job lỗi)</span>{% endif %}</li>
++    <li>Dọn dữ liệu cũ: 03:00 mỗi đêm · {% if u.retention.enabled %}đang bật, giữ video thô {{ u.retention.video_days }} ngày, audio thô {{ u.retention.audio_days }} ngày{% else %}<strong>đang tắt</strong>, không xoá gì{% endif %} (<a href="/settings">Cài đặt</a>)</li>
 +  </ul>
 +</div>
  <div class="card">
@@ -7414,25 +7992,28 @@ diff --git a/deploy/docker-compose.yml b/deploy/docker-compose.yml
      volumes:
        - ${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi
        - ./providers.yaml:/etc/loopi/providers.yaml:ro
-@@ -51,6 +53,7 @@ services:
+@@ -51,6 +53,10 @@ services:
        LOOPI_PROVIDERS_FILE: /etc/loopi/providers.yaml
        LOOPI_MODEL_DIR: /srv/loopi/models
        LOOPI_ASR_MAX_GAIN_DB: ${LOOPI_ASR_MAX_GAIN_DB:-30}
++      # Two slots for live work (video, captions, ASR, markers, embeddings) and one more, used by at most one
++      # chapter/recap job at a time (job lock "llm"; those jobs also have the lowest priority).
++      LOOPI_WORKER_CONCURRENCY: "3"
 +      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
        # The container user has no home directory; Hugging Face caches go next to the models.
        HF_HOME: /srv/loopi/models/hf
        # Whisper sets its own thread count (LOOPI_WHISPER_CPU_THREADS); keep every other library
-@@ -80,7 +83,9 @@ services:
+@@ -80,6 +86,10 @@ services:
      image: ollama/ollama:0.35.1
      environment:
        OLLAMA_KEEP_ALIVE: 30m
--      OLLAMA_MAX_LOADED_MODELS: "2"
-+      # The vision and embedding models stay loaded all day; a third slot holds the text model of a chapter, recap
-+      # or chat run, which the brain asks to unload 5 minutes after its last request (LOOPI_OLLAMA_TEXT_KEEP_ALIVE).
-+      OLLAMA_MAX_LOADED_MODELS: "3"
++      # Two models at most (measured 2026-10-16: minicpm-v ≈ 2.9 GB, qwen3-embedding ≈ 1.3 GB, qwen3:8b with an
++      # 8192-token context ≈ 6–6.5 GB, qwen3:4b ≈ 3.5 GB; the host had 7.5 GB available). A chapter, recap or
++      # chat run unloads one of the two all-day models and leaves 1 minute after its last request
++      # (LOOPI_OLLAMA_TEXT_KEEP_ALIVE): peak ≈ 9.4–10 GB instead of ≈ 4.2 GB.
+       OLLAMA_MAX_LOADED_MODELS: "2"
        OLLAMA_NUM_PARALLEL: "1"
      volumes:
-       - ollama:/root/.ollama
 ```
 
 ```diff
@@ -7467,7 +8048,7 @@ diff --git a/deploy/.env.example b/deploy/.env.example
 diff --git a/deploy/README.md b/deploy/README.md
 --- a/deploy/README.md
 +++ b/deploy/README.md
-@@ -50,3 +50,26 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
+@@ -50,3 +50,33 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
    `view/**/*.opus` to rebuild the cached copies.
  - `docker compose logs -f worker` follows the pipeline; `docker compose exec worker loopi-brain worker-health`
    checks its heartbeat.
@@ -7479,19 +8060,26 @@ diff --git a/deploy/README.md b/deploy/README.md
 +  `thumbs/`), marked moments and speech (with playback while the raw audio is kept). "Chi tiết theo giờ" (`/hours`)
 +  is the P2a hourly view.
 +- Chapters are built every hour (minute 5) by `qwen3:4b`; a day's chapters settle ("closed") once everything recorded
-+  up to them is analysed and 30 minutes old. The recap (`qwen3:8b`) is written at 23:30, and for an earlier day as
-+  soon as all its chapters are settled; "Tạo lại recap" on the Day page asks for a new one. Days analysed before this
-+  upgrade get their chapters and recap by themselves within a few hours.
++  up to them is analysed and 30 minutes old. The recap (`qwen3:8b`) is written at 23:30 (again at 23:30 if
++  "Tạo lại recap" wrote one earlier), and for an earlier day as soon as all its chapters are settled, and once more
++  if its chapters change afterwards. Days analysed before this upgrade get chapters one day per hour, newest first,
++  then their recaps. A failed recap shows on its Day page and on "Xử lý".
++- The worker runs 3 jobs at once (`LOOPI_WORKER_CONCURRENCY`); chapter and recap jobs take at most one slot and
++  wait behind captions and transcriptions (lowest priority), so live recordings keep their latency.
 +- **Tìm kiếm** (`/search`): plain search by meaning and by words; "Hỏi" answers from the matching moments only, cites
 +  them, and streams the answer (on a CPU the first words take tens of seconds). No matching moment: "Không tìm thấy".
 +- **Cài đặt** (`/settings`): providers (read only; edit `deploy/providers.yaml`, then
 +  `docker compose up -d api worker`), how many days raw video and audio are kept (7 and 7 by default, spec D20),
-+  "Quên khoảng thời gian" (preview, then permanent deletion of everything recorded in the range, at most 31 days at a
++  "Quên khoảng thời gian" (preview, then permanent deletion of everything recorded in the range, at most 7 days at a
 +  time; an audit row keeps the counts only), and reprocessing a day with the current models.
-+- Retention runs at 03:00 local time: raw files (and their MP4/playback copies) of finished recordings older than the
-+  kept days are deleted; the pages then say "đã hết hạn". Keyframes, transcripts, chapters and recaps stay.
-+- Memory: `qwen3:8b` (≈ 5.2 GB, 8192-token context) joins the vision and embedding models (≈ 2.2 GB), so Ollama may
-+  hold ≈ 8.5 GB at the 23:30 recap or during a chat; text models unload 5 minutes after their last request.
++- Retention is **off** after installing: Cài đặt shows how many recordings (and GB) it would delete; once turned on
++  there, it runs at 03:00 local time: raw files (and their MP4/playback copies) of finished recordings older than the
++  kept days are deleted and the pages say "đã hết hạn". Keyframes, transcripts, chapters and recaps stay. The same
++  03:00 run (on or off) retries files a "Quên khoảng thời gian" could not delete at once.
++- Memory: Ollama keeps at most 2 models (`OLLAMA_MAX_LOADED_MODELS`). Measured: minicpm-v ≈ 2.9 GB, qwen3-embedding
++  ≈ 1.3 GB; `qwen3:8b` with its 8192-token context ≈ 6–6.5 GB and `qwen3:4b` ≈ 3.5 GB, so a recap or a chat raises
++  Ollama from ≈ 4.2 GB to ≈ 9.4–10 GB; text models unload 1 minute after their last request. A text request may
++  take up to 15 minutes on the CPU (`LOOPI_LLM_TIMEOUT_S`, 900 s).
 +- Optional Anthropic text provider: set `ANTHROPIC_API_KEY` in `deploy/.env` and route a text task to `anthropic` in
 +  `deploy/providers.yaml` (examples there). Images and audio are never sent; without the key those routes are skipped.
 ```
@@ -7501,20 +8089,19 @@ diff --git a/deploy/README.md b/deploy/README.md
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd brain && uv run pytest tests/test_chapters.py tests/test_web_pipeline.py tests/test_deploy.py -q && bash -n ../deploy/smoke.sh && echo smoke-syntax-ok`
-Expected: `38 passed` and `smoke-syntax-ok`.
+Expected: `42 passed` and `smoke-syntax-ok`.
 
 Run: `cd brain && uv run pytest --cov=loopi_brain -q`
-Expected: `486 passed, 1 skipped`, `TOTAL … 98%`.
+Expected: `515 passed, 1 skipped`, `TOTAL … 98%`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add brain/src/loopi_brain/pipeline/chapters.py brain/src/loopi_brain/pipeline/status.py \
-  brain/src/loopi_brain/web/routes.py brain/src/loopi_brain/web/templates/pipeline.html \
-  brain/tests/test_chapters.py brain/tests/test_web_pipeline.py brain/tests/test_deploy.py \
+git add brain/src/loopi_brain/pipeline/status.py brain/src/loopi_brain/web/routes.py \
+  brain/src/loopi_brain/web/templates/pipeline.html brain/tests/test_web_pipeline.py brain/tests/test_deploy.py \
   deploy/docker-compose.yml deploy/providers.yaml deploy/.env.example deploy/README.md
 git commit -F - <<'EOF'
-feat(deploy): P2b schedules on /pipeline, catch-up of old days, optional Anthropic key, 3 loaded models
+feat(deploy): P2b on /pipeline, 3 worker slots, 2 loaded models, optional Anthropic key
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
@@ -7527,7 +8114,7 @@ After this task: the final whole-branch review (`54e22f3..feat/p2b`) and its fix
 
 ### Task 14: Deploy on the live stack, first chapters and recaps, measurements, handoff (controller-executed)
 
-This task replaces the live P2a stack with P2b and runs it on the owner's real recordings. The controller runs it, not a subagent, after the Tasks 1–13 final review and fix wave, and **only after the owner's yes**. Stop and ask the owner before Step 3 (it migrates the live database) and before committing anything that quotes recorded speech or captions (nothing in this task should).
+This task replaces the live P2a stack with P2b and runs it on the owner's real recordings. The controller runs it, not a subagent, after the Tasks 1–13 final review and fix wave, **not before 2026-10-17 04:28 KST** (the end of P2a Task 11's 24 h CPU window: restarting the worker earlier invalidates it) and **only after the owner's yes**. Stop and ask the owner before Step 3 (it migrates the live database), at Step 7 (memory threshold), at Step 8 (retention deletes recordings) and before committing anything that quotes recorded speech or captions (nothing in this task should).
 
 **Files:**
 - Modify: `docs/HANDOFF.md` (one rewrite), create `docs/superpowers/ledgers/p2b-progress.md` (the sanitized ledger)
@@ -7535,22 +8122,36 @@ This task replaces the live P2a stack with P2b and runs it on the owner's real r
 
 **Interfaces:**
 - Consumes: the whole branch; the live compose project `deploy` running from `/home/soul/loopi-p2/deploy` (data dir and secrets from `/home/soul/loopi-p2/deploy/.env`, volumes `deploy_db`, `deploy_ollama`, `deploy_caddy_data`).
-- Produces: P2b live; first chapters, recaps and commitments on real data; memory and latency numbers in the ledger; the handoff.
+- Produces: P2b live; first chapters, recaps and commitments on real data; latency, memory and timing numbers in the ledger; the owner's decision on retention; the handoff.
 
-Facts: every compose command names the project (`-p deploy`); never pass `-v` to `down`, never prune. Rollback to P2a: `cd /home/soul/loopi-p2 && git checkout --detach 54e22f3 && cd deploy && docker compose -p deploy up -d --build` (P2a ignores the new tables and the new column, so no restore is needed), then `git checkout feat/phase2` once fixed. Restore the dump only if the migrated database itself must go.
+Facts: every compose command names the project (`-p deploy`); never pass `-v` to `down`, never prune. The P2b worker sets `LOOPI_WORKER_CONCURRENCY=3` and Ollama keeps 2 models (Task 13).
+
+**Rollback to P2a** (any step; uses `$ROLLBACK` from Step 3):
+
+```bash
+cd /home/soul/loopi-p2/deploy
+docker compose -p deploy stop worker
+docker compose -p deploy exec -T db psql -U loopi -d loopi -c "
+DELETE FROM procrastinate_jobs WHERE task_name IN
+  ('plan_chapters', 'build_chapters', 'plan_recaps', 'write_recap', 'apply_retention');"
+cd /home/soul/loopi-p2 && git checkout --detach "$ROLLBACK" && cd deploy && docker compose -p deploy up -d --build
+```
+
+The worker is stopped first so no P2b job is running; P2b's job rows (waiting, failed or done) are removed because the P2a worker does not know those task names and would dead-letter them; their periodic records are unlinked by Procrastinate's delete trigger. P2a ignores the new tables and the new column, so no restore is needed (restore the Step 2 dump only if the migrated database itself must go). Back on P2b later: `git -C /home/soul/loopi-p2 checkout feat/phase2` and `up -d --build`.
 
 - [ ] **Step 1: Preconditions**
 
-Ask the owner (Vietnamese): "P2b đã qua review. Mình sẽ đưa `feat/phase2` lên `feat/p2b`, sao lưu database rồi build lại stack đang chạy (api, worker, models; mất vài phút). Đồng ý không?" Continue only on yes.
-
 ```bash
+date '+%F %T %Z'                                            # must be after 2026-10-17 04:28 KST
+git -C /home/soul/loopi-p2 log -1 --format=%s -- docs/superpowers/ledgers/p2a-progress.md
+grep -n "Task 11" /home/soul/loopi-p2/docs/superpowers/ledgers/p2a-progress.md | tail -3   # Task 11 closed?
 git -C /home/soul/loopi-p2b status --short                 # must print nothing
 git -C /home/soul/loopi-p2 status --short                  # must print nothing (deploy/.env is git-ignored)
 git -C /home/soul/loopi-p2 rev-parse --abbrev-ref HEAD     # expected: feat/phase2
 git -C /home/soul/loopi-p2b merge-base --is-ancestor feat/phase2 feat/p2b && echo "fast-forward possible"
 ```
 
-If `feat/phase2` moved since `54e22f3` (e.g. P2a Task 11 measurement commits), merge it into `feat/p2b` first, test, commit, and check again:
+If it is earlier than 2026-10-17 04:28 KST, or the P2a ledger does not record Task 11's measurement window as finished, stop and wait. If `feat/phase2` moved since `54e22f3` (e.g. the P2a Task 11 report), merge it into `feat/p2b` first, test, commit, and check again:
 
 ```bash
 cd /home/soul/loopi-p2b && git merge --no-ff --no-commit feat/phase2
@@ -7563,19 +8164,34 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
-- [ ] **Step 2: Back up the live database**
+Ask the owner (Vietnamese): "P2b đã qua review. Mình sẽ đưa `feat/phase2` lên `feat/p2b`, sao lưu database rồi build lại stack đang chạy (api, worker, models; mất vài phút). Việc dọn dữ liệu cũ (xoá video/audio thô cũ hơn 7 ngày) vẫn tắt cho tới khi bạn đồng ý riêng. Đồng ý không?" Continue only on yes.
+
+- [ ] **Step 2: Baselines, then back up the live database**
+
+Before anything changes, record the P2a latency and memory baseline in the ledger (open `https://<LAN IP>:8443/pipeline` with the owner, or read the same numbers in SQL):
 
 ```bash
+cd /home/soul/loopi-p2/deploy
+docker compose -p deploy exec -T db psql -U loopi -d loopi -c "
+SELECT 'video→caption' AS path, count(*), round((percentile_cont(0.95) WITHIN GROUP (ORDER BY s) / 60)::numeric, 1) AS p95_min
+  FROM (SELECT extract(epoch FROM k.captioned_at - i.ended_at)::float8 AS s FROM keyframe k JOIN item i ON i.id = k.item_id
+         WHERE k.captioned_at > now() - interval '24 hours') t
+UNION ALL
+SELECT 'audio→transcript', count(*), round((percentile_cont(0.95) WITHIN GROUP (ORDER BY s) / 60)::numeric, 1)
+  FROM (SELECT extract(epoch FROM analyzed_at - ended_at)::float8 AS s FROM item
+         WHERE kind = 'audio' AND analysis_state = 'done' AND analyzed_at > now() - interval '24 hours') t;"
+free -m; swapon --show
 mkdir -p ~/loopi-backups
-cd /home/soul/loopi-p2/deploy && docker compose -p deploy exec -T db pg_dump -U loopi -Fc loopi > ~/loopi-backups/p2a-$(date +%F-%H%M).dump
+docker compose -p deploy exec -T db pg_dump -U loopi -Fc loopi > ~/loopi-backups/p2a-$(date +%F-%H%M).dump
 ls -l ~/loopi-backups/
 ```
 
-Expected: a new, non-empty `.dump` file.
+Expected: two latency rows (the P2a baseline), the memory and swap figures, and a new, non-empty `.dump` file.
 
 - [ ] **Step 3: Fast-forward `feat/phase2`, check the models, redeploy, smoke test**
 
 ```bash
+ROLLBACK="$(git -C /home/soul/loopi-p2 rev-parse feat/phase2)"; echo "rollback target: $ROLLBACK"   # into the ledger
 git -C /home/soul/loopi-p2 merge --ff-only feat/p2b
 git -C /home/soul/loopi-p2 log --oneline -1                # the feat/p2b head
 cd /home/soul/loopi-p2/deploy
@@ -7589,9 +8205,10 @@ docker compose -p deploy up -d --build                      # api applies 003_un
 docker compose -p deploy ps                                 # db, api, worker, models, proxy: running / healthy
 COMPOSE_PROJECT_NAME=deploy SMOKE_ANALYSIS_TIMEOUT=600 ./smoke.sh   # → OK: smoke test passed
 docker compose -p deploy exec -T db psql -U loopi -d loopi -tAc "SELECT name FROM schema_migration ORDER BY applied_at DESC LIMIT 2"
+docker compose -p deploy exec -T db psql -U loopi -d loopi -tAc "SELECT value FROM setting WHERE key = 'retention'"
 ```
 
-Expected: the smoke test passes; `003_understanding.sql` is listed.
+Expected: the smoke test passes; `003_understanding.sql` is listed; no `retention` row (retention is off by default).
 
 - [ ] **Step 4: The pages answer**
 
@@ -7606,11 +8223,11 @@ for path in ("/", "/hours", "/search?q=test", "/settings", "/pipeline"):
 PY
 ```
 
-Expected: `200` for each path. Then ask the owner to open `https://<LAN IP>:8443/` and check "Hôm nay", "Tìm kiếm", "Cài đặt" and the "Hiểu ngày" card on "Xử lý".
+Expected: `200` for each path. Then ask the owner to open `https://<LAN IP>:8443/` and check "Hôm nay", "Tìm kiếm", "Cài đặt" (retention: "đang tắt") and the "Hiểu ngày" card on "Xử lý".
 
 - [ ] **Step 5: First chapters, recaps and commitments on real data**
 
-The hourly planner runs at minute 5; the days analysed by P2a get their chapters by the catch-up rule (Task 13). Wait (Monitor with an until-loop) until `SELECT count(*) FROM chapter` is above 0 and no `build_chapters` job is `todo` or `doing`, then:
+The hourly planner runs at minute 5: it builds today and yesterday at once and the older days analysed by P2a one per hour, newest first (Task 4). Wait (Monitor with an until-loop) until `SELECT count(*) FROM chapter` is above 0 and no `build_chapters` job is `todo` or `doing`, then:
 
 ```bash
 docker compose -p deploy exec -T db psql -U loopi -d loopi <<'SQL'
@@ -7625,24 +8242,22 @@ SELECT task, day, left(error, 200) AS error FROM day_job_error;
 SQL
 ```
 
-Expected: every earlier day with moments has chapters, all closed and summarised by `ollama:qwen3:4b`; those days get a recap (`ollama:qwen3:8b`) within about 15 minutes of their chapters closing; no `failed` job and no `day_job_error` row. Show titles, summaries and the recaps to the owner **in the browser** (nothing quoted into the repository); ask whether the chapter cuts look right (P2c tunes `ChapterParams` and the prompts; note the owner's remarks in the ledger).
+Expected: the days built so far have chapters, closed and summarised by `ollama:qwen3:4b`; each settled day gets a recap (`ollama:qwen3:8b`) within about 15 minutes of its chapters closing; no `failed` job and no `day_job_error` row. Show titles, summaries and the recaps to the owner **in the browser** (nothing quoted into the repository); ask whether the chapter cuts look right (P2c tunes `ChapterParams` and the prompts; note the owner's remarks in the ledger).
 
-- [ ] **Step 6: Measure the text models: memory and latency**
+- [ ] **Step 6: Live latency during and after the catch-up**
+
+While old days are being caught up (chapter and recap jobs running), and again the next day, run the latency query of Step 2 and compare with the baseline. Expected: the p95 recording → caption and recording → transcript stay within the spec's 15 minutes between 08:00 and 22:00 (chapter and recap jobs have the lowest priority and at most one of the worker's 3 slots). If p95 grows beyond 15 minutes during the catch-up, record it and tell the owner; the catch-up ends by itself (one old day per hour).
+
+- [ ] **Step 7: Memory and timing of the text models — a controlled peak test**
+
+Measure memory before, during and after the first recap and a chat, while captions run:
 
 ```bash
 cd /home/soul/loopi-p2/deploy
-docker compose -p deploy exec -T models cat /sys/fs/cgroup/memory.peak    # bytes, since the container started
-docker compose -p deploy exec -T models ollama ps                         # models loaded right now
-free -m
-docker compose -p deploy exec -T db psql -U loopi -d loopi -c "
-SELECT j.task_name, j.args->>'day' AS day, extract(epoch FROM s.at - st.at)::int AS seconds
-  FROM procrastinate_jobs j
-  JOIN LATERAL (SELECT max(at) AS at FROM procrastinate_events WHERE job_id = j.id AND type = 'started') st ON true
-  JOIN LATERAL (SELECT max(at) AS at FROM procrastinate_events WHERE job_id = j.id AND type = 'succeeded') s ON true
- WHERE j.task_name IN ('build_chapters', 'write_recap') AND s.at IS NOT NULL ORDER BY j.id;"
+free -m; swapon --show; docker compose -p deploy exec -T models ollama ps     # before
 ```
 
-Chat latency (prints event names and times only, never text):
+Ask for a recap of an earlier day now (the owner clicks "Tạo lại recap" on that day's page) and, while it runs, ask one question (chat latency, event names and times only, never text):
 
 ```bash
 docker compose -p deploy exec -T api python - <<'PY'
@@ -7650,7 +8265,7 @@ import time, urllib.parse, urllib.request
 body = urllib.parse.urlencode({"q": "Hôm qua mình đã làm gì?"}).encode()
 request = urllib.request.Request("http://127.0.0.1:8000/chat", data=body, headers={"HX-Request": "true"})
 start, first_token = time.monotonic(), None
-with urllib.request.urlopen(request, timeout=600) as response:
+with urllib.request.urlopen(request, timeout=1200) as response:
     for raw in response:
         line = raw.decode().strip()
         if line.startswith("event: "):
@@ -7663,13 +8278,34 @@ print(f"first token at {first_token:.1f} s" if first_token else "no token (not f
 PY
 ```
 
-Ask the owner to ask one question in the browser and confirm the answer appears piece by piece (Caddy must flush `text/event-stream`; if it only appears at the end, add `flush_interval -1` to the web `reverse_proxy` in `deploy/Caddyfile`, test-first in `test_deploy.py`, and record the ruling).
+During the recap, sample every 30 s (Monitor) `free -m`, `swapon --show` and `docker compose -p deploy exec -T models ollama ps`; after it, read `docker compose -p deploy exec -T models cat /sys/fs/cgroup/memory.peak` and the job times:
 
-Record in the ledger: memory peak of `models`, what `ollama ps` showed, `free -m` (available), seconds per chapter build and per recap, chat times. If the host's available memory at the peak is under 1 GB, set `OLLAMA_MAX_LOADED_MODELS` back to `"2"` (compose and `test_deploy.py`), redeploy `models`, and record the ruling.
+```bash
+docker compose -p deploy exec -T db psql -U loopi -d loopi -c "
+SELECT j.task_name, j.args->>'day' AS day, extract(epoch FROM s.at - st.at)::int AS seconds
+  FROM procrastinate_jobs j
+  JOIN LATERAL (SELECT max(at) AS at FROM procrastinate_events WHERE job_id = j.id AND type = 'started') st ON true
+  JOIN LATERAL (SELECT max(at) AS at FROM procrastinate_events WHERE job_id = j.id AND type = 'succeeded') s ON true
+ WHERE j.task_name IN ('build_chapters', 'write_recap') AND s.at IS NOT NULL ORDER BY j.id;"
+```
 
-- [ ] **Step 7: Retention**
+Written thresholds (record every number in the ledger):
+- **Memory:** if `available` in `free -m` drops below 1 GB, or swap use grows by more than 1 GB during the test, the host swaps hard: stop, tell the owner, and roll back (see above) unless the owner prefers to stay on P2b with `LOOPI_LLM_NUM_CTX=4096` (smaller KV cache; then also lower the recap's `PROMPT_BUDGET` test-first) — record the ruling.
+- **Timing:** if a recap run takes more than 630 s (70 % of `LOOPI_LLM_TIMEOUT_S`), tell the owner and lower `RECAP_MAX_TOKENS` / `PROMPT_BUDGET` test-first (or raise the timeout), and record the ruling. A recap that still times out is retried 3 times and then shown as failed on its Day page and on "Xử lý" — never silently.
+- **Streaming:** ask the owner to ask one question in the browser and confirm the answer appears piece by piece (Caddy must flush `text/event-stream`; if it only appears at the end, add `flush_interval -1` to the web `reverse_proxy` in `deploy/Caddyfile`, test-first in `test_deploy.py`, and record the ruling).
 
-Nothing runs before 03:00. Tell the owner: "Lúc 03:00 đêm nay, video và audio thô cũ hơn 7 ngày (đã phân tích xong) sẽ bị xoá; đổi số ngày trong Cài đặt trước giờ đó nếu muốn giữ lâu hơn." The next day, check:
+- [ ] **Step 8: Retention — stop and ask before anything is deleted**
+
+Retention is off. Read what it would delete with the current kept days (read only):
+
+```bash
+docker compose -p deploy exec -T db psql -U loopi -d loopi -c "
+SELECT kind, count(*) AS recordings, round(sum(size_bytes) / 1e9, 2) AS gb FROM item
+ WHERE kind IN ('video', 'audio') AND raw_deleted_at IS NULL AND analysis_state IN ('done', 'skipped')
+   AND ended_at < now() - interval '7 days' GROUP BY kind;"
+```
+
+(The same numbers are on Cài đặt: "Nếu chạy bây giờ sẽ xoá …".) Tell the owner the counts and GB and ask: "Bật dọn dữ liệu cũ không? Mỗi đêm lúc 03:00 sẽ xoá vĩnh viễn video và audio thô cũ hơn 7 ngày (đã phân tích xong; keyframe, transcript, chương, recap vẫn giữ). Bản sao lưu database không chứa file media." **Only on an explicit yes**, the owner ticks "Bật dọn dữ liệu cũ" on Cài đặt (or, with that yes, the controller runs `docker compose -p deploy exec -T db psql -U loopi -d loopi -c "INSERT INTO setting (key, value) VALUES ('retention', '{\"video_days\": 7, \"audio_days\": 7, \"enabled\": true}') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"`). Without a yes, retention stays off; record the decision as a ruling. The day after it is turned on, check:
 
 ```bash
 docker compose -p deploy exec -T db psql -U loopi -d loopi -c "
@@ -7679,9 +8315,9 @@ docker compose -p deploy logs --since 24h worker | grep -c "retention (video"
 
 Expected: one retention log line per night; only video and audio rows older than the kept days are expired.
 
-- [ ] **Step 8: Handoff and ledger**
+- [ ] **Step 9: Handoff and ledger**
 
-Rewrite `docs/HANDOFF.md` once, covering: P1c (done, with waivers: its execution ledger is the git-ignored `/home/soul/loopi/.superpowers/sdd/2026-10-14-p1c-buildroot-dev-image/`; ask the owner before committing a sanitized copy as `docs/superpowers/ledgers/p1c-progress.md`), the audio level work (D19; the agent gain is on `feat/phase1`, smoke8 flashed), P2a (live since 2026-10-15 23:51 KST; its Task 11 state), D20 and P2b (this plan, commit range, Task 14 results), where the live stack runs from (`/home/soul/loopi-p2/deploy`, branch `feat/phase2`) and the warning that this worktree must not be removed before the stack is redeployed elsewhere, the branches (`feat/phase1`: agent + OS + D19 spec; `feat/phase2` = P2; `main`), and what comes next (P2c evaluation; P3 MCP + vlog). Copy the sanitized ledger to `docs/superpowers/ledgers/p2b-progress.md`.
+Rewrite `docs/HANDOFF.md` once, covering: P1c (done, with waivers: its execution ledger is the git-ignored `/home/soul/loopi/.superpowers/sdd/2026-10-14-p1c-buildroot-dev-image/`; ask the owner before committing a sanitized copy as `docs/superpowers/ledgers/p1c-progress.md`), the audio level work (D19; the agent gain is on `feat/phase1`, smoke8 flashed), P2a (live since 2026-10-15 23:51 KST; its Task 11 results), D20 and P2b (this plan, commit range, Task 14 results: latency before/during/after, memory peak, recap and chat times, the retention decision), where the live stack runs from (`/home/soul/loopi-p2/deploy`, branch `feat/phase2`) and the warning that this worktree must not be removed before the stack is redeployed elsewhere, the rollback procedure above, the branches (`feat/phase1`: agent + OS + D19 spec; `feat/phase2` = P2; `main`), and what comes next (P2c evaluation; P3 MCP + vlog). Copy the sanitized ledger to `docs/superpowers/ledgers/p2b-progress.md`.
 
 ```bash
 cd /home/soul/loopi-p2b
@@ -7705,34 +8341,34 @@ Copy these into the ledger before Task 1. Each: decision — why — cost if wro
 
 - **R1** Task 1 first takes the spec from `feat/phase1` (its only difference is the D19 text), then adds D20; the brief's "§9.2 audio step 3" is step 4 once D19 is in — `feat/p2b` was branched before D19 reached the spec although the brain code already cites "spec D19" — cost if wrong: the next merge of `feat/phase1` conflicts on four spec lines, resolved by taking `feat/p2b`'s (a superset).
 - **R2** Local schedules are decided in Python, not by cron: Procrastinate evaluates cron in UTC and `LOOPI_TZ` is a runtime setting (DST too). Chapters: planner at `5 * * * *` (hourly in any whole-hour zone); recap: planner every 15 minutes, today from 23:30 local; retention: hourly tick that acts only when the tick's local hour is 3 — cost if wrong: a recap can come up to 15 minutes after 23:30; a half-hour time zone gets chapters at :35.
-- **R3** The recap planner also writes earlier days once every chapter of the day is closed (backlog days, a worker that was down at 23:30), and never re-defers a day whose recap job waits, runs or failed — spec: "Recap tự sinh mỗi tối" must hold after outages — cost if wrong: a backlog of days produces several recap runs in a row (CPU, at night).
+- **R3** The recap planner also writes earlier days once every chapter of the day is closed (backlog days, a worker that was down at 23:30), and again once when the day changed after its recap (R39); it never re-defers a day whose recap job waits, runs or failed — spec: "Recap tự sinh mỗi tối" must hold after outages — cost if wrong: a backlog of days produces several recap runs in a row (CPU, at night, lowest priority).
 - **R4** A chapter closes when the next one starts before the horizon `min(now − 30 min, first analysis still to come that day)` (pending items, uncaptioned keyframes, unembedded moments; dead-lettered work does not count); the last one when the whole day is behind it. Moments appearing or vanishing inside closed chapters (count mismatch) reopen the day. This is how "only the open tail is recomputed" stays correct with backlogs and offline devices — cost if wrong: a day with a moment that never gets embedded stays open (rebuilt every hour without model calls until it settles).
 - **R5** Segmentation parameters live in `ChapterParams` (gap 20 min, min 10 min, max 3 h, caption drift 0.35, speech drift 0.45, window 4, confirmation by the next moment of the same kind), not in env settings — P2c tunes them with the golden set; fewer knobs — cost if wrong: a change needs a deploy.
 - **R6** A summary is rewritten only when the chapter's members change (`signature` vs `summary_signature`); today's open chapter is summarised once it has 3 moments; a changed chapter keeps its row and shows the old summary marked "(đang cập nhật)" until the new one is written — cost if wrong: the open chapter is summarised again up to once an hour (≈ 30–60 s of `qwen3:4b`).
 - **R7** No per-day bookkeeping table: per-day jobs are found by their queueing locks (`chapters:<day>`, `recap:<day>`) and their last error is in `day_job_error` (Procrastinate keeps no error text) — cost if wrong: queries on `procrastinate_jobs` by queueing lock (a small table, pruned weekly).
-- **R8** `build_chapters` and the planners are auto-rerun (no retry button, newest failure kept); `write_recap` keeps its retry button, and "Tạo lại recap" on the Day page asks for a new one at any time — cost if wrong: a failed recap waits for a click.
+- **R8** `build_chapters` and the planners are auto-rerun (no retry button, newest failure kept; the label says when: "tự chạy lại ở lần lên lịch chia chương (mỗi giờ; chương tóm tắt lỗi: sau 6 giờ)", R40); `write_recap` keeps its retry button, "Tạo lại recap" on the Day page asks for a new one at any time, and a failed recap is shown on its Day page and on the "Hiểu ngày" card (R44) — cost if wrong: a failed recap waits for a click.
 - **R9** Outages: `ProviderUnavailable` while summarising stops the build without an error; the recap job returns without writing; the recap planner defers nothing while `task_ready("recap")` is false (P2a's "no job just to fail") — cost if wrong: with an Anthropic-only route (which cannot be health-checked) an outage costs one cheap failing run per 15 minutes.
 - **R10** The recap model answers JSON lists; the brain writes the markdown with the three fixed headings of §10.2; commitments cite short references (`S3`, `M1`) that the brain maps to moment ids — small models mangle 26-character ULIDs, and the recap's third section and the commitment list always agree — cost if wrong: the model cannot style the markdown.
 - **R11** The recap reads the chapters, every marker and the day's 60 longest speech lines (≤ 9000 characters): a lone "Thank you." goes first — cost if wrong: a short but real promise ("Ừ, mai 9 giờ") can be left out on a talkative day.
 - **R12** Writing a recap again keeps the commitments the user marked done or dismissed and skips new ones with the same source moment or text — cost if wrong: a reworded duplicate reappears as open.
 - **R13** `commitment.source_moment_id` is `ON DELETE SET NULL` (reprocessing transcripts must not erase the user's list); "Quên khoảng thời gian" deletes the commitments sourced in its range explicitly — cost if wrong: a reprocessed day's commitments lose their link to the source.
-- **R14** Text models get `keep_alive` 5 minutes (`LOOPI_OLLAMA_TEXT_KEEP_ALIVE`) and `num_ctx` 8192 (`LOOPI_LLM_NUM_CTX`) per request; `OLLAMA_MAX_LOADED_MODELS` goes from 2 to 3 so a text model does not evict the vision and embedding models that work all day (P2a deferred M14) — cost if wrong: Ollama peaks near 8.5 GB at the recap; Task 14 measures it and goes back to 2 if the host runs short.
+- **R14** Text models get `keep_alive` 1 minute (`LOOPI_OLLAMA_TEXT_KEEP_ALIVE`), `num_ctx` 8192 (`LOOPI_LLM_NUM_CTX`) and a 900 s timeout (`LOOPI_LLM_TIMEOUT_S`) per request; `OLLAMA_MAX_LOADED_MODELS` **stays 2** and the models service gets no `mem_limit` (R43) — cost if wrong: a chapter, recap or chat run unloads the vision or embedding model, which reloads afterwards (seconds from the page cache).
 - **R15** Prompts are bounded in characters (7000 for a chapter, 9000 for the recap, 8 × 400 for chat sources), not tokens — no tokenizer in the brain — cost if wrong: dense Korean text can approach 6000 tokens, still inside 8192 with the answer.
 - **R16** Chat citations are `[n]` source numbers that the brain maps to `moment_id`s (spec "trích nguồn bằng moment_id"); numbers that are not sources are dropped; an answer citing nothing gets a warning — cost if wrong: none expected.
-- **R17** The time filter is days only (local), read by the chat model as JSON `{"from", "to"}` and cleaned (order, one end copies the other, no future, ≤ 366 days); anything unusable means no filter (the brief's "deterministic fallback"). Two `qwen3:8b` calls per question — cost if wrong: "sáng nay" searches the whole day; 5–15 s more per question on a CPU.
+- **R17** The time filter is days only (local), read by the chat model as JSON `{"from", "to"}` and cleaned (order, one end copies the other, no future, ≤ 366 days); anything unusable means no filter (the brief's "deterministic fallback"); a question without a time word (`chat.mentions_time`, vi/en/ko words or a date) skips that call (review M16) — cost if wrong: "sáng nay" searches the whole day; a question with a time word costs one more `qwen3:8b` call (5–15 s on a CPU); a time expression the word list misses gets no filter.
 - **R18** Retrieval: cosine distance ≤ 0.6 (`LOOPI_SEARCH_MAX_DISTANCE`), word similarity ≥ 0.3 (`LOOPI_SEARCH_MIN_SIMILARITY`), 40 candidates each, RRF k = 60, 8 chat sources, 30 search results; the question carries Qwen3-Embedding's query instruction — P2c sets the thresholds from recall@5 — cost if wrong: until tuned, weak sources or "không tìm thấy" for paraphrases; Vietnamese typed without diacritics only matches by meaning (trigram similarity 0.29).
 - **R19** The chat answer streams as SSE over a `fetch` POST with `HX-Request: true` (an `EventSource` can only GET, which would break the CSRF rule); payloads are JSON; sources and the final answer are server-escaped HTML, tokens plain text — cost if wrong: needs a browser with fetch streams (every current one).
 - **R20** The Day page is the landing page `/` ("Hôm nay"); the P2a hourly view moves to `/hours` ("Chi tiết theo giờ"). Nine P2a test calls in `test_web.py`, `test_web_pipeline.py` and `test_audio_playback.py` move to `/hours`, and the hourly view's picture assertion expects a thumbnail — cost if wrong: an old bookmark of `/?day=…` shows the chapter view of the same day.
 - **R21** Thumbnails are made on demand by the api (Pillow, 320 px wide, kept under `thumbs/`), also on `/hours` (P2a deferred M8); every stored path is checked with `media.inside` before a file is read, written or deleted — cost if wrong: the first view of a busy day makes ~300 thumbnails (≈ 10 ms each).
 - **R22** A 40-line markdown renderer of our own (headings, lists, paragraphs, bold; everything escaped first) instead of a dependency — cost if wrong: richer markdown from a model shows as plain text.
-- **R23** Retention days live in the `setting` table (default 7 and 7, D20), edited on Cài đặt; retention deletes files first, then marks the row (`raw_deleted_at`, `view_path` NULL); a row whose file cannot be deleted is tried again the next night; at most 40 batches of 500 recordings of each kind per night — cost if wrong: a backlog above 20 000 recordings of a kind takes more than one night.
-- **R24** "Quên khoảng thời gian": a recording that overlaps the range goes whole; at most 31 days per request; the recaps of touched days are deleted (they quote what is forgotten) and overlapping chapters lose their title and summary at once; the audit row keeps the range and counts only; files go after the commit. Uploads the device still holds for that range (offline) are not blocked — the device contract cannot change, and the page says so — cost if wrong: up to 60 s beyond each edge is forgotten too; data the device sends later reappears.
+- **R23** Retention days and the on/off switch live in the `setting` table (default 7 and 7, D20, **off**), edited on Cài đặt (R46); when on, each batch holds its rows (`FOR UPDATE SKIP LOCKED`) while their files go, then marks them (`raw_deleted_at`, `view_path` NULL); a row whose file cannot be deleted is tried again the next night; at most 40 batches of 500 recordings of each kind per night — cost if wrong: a backlog above 20 000 recordings of a kind takes more than one night.
+- **R24** "Quên khoảng thời gian": a recording that overlaps the range goes whole; at most **7 days** per request (review M10: a request stays a few seconds); the recaps of touched days are **deleted**, not marked for regeneration — a **deliberate deviation from §9.5's wording** ("đánh dấu … cần sinh lại"), because they quote what is forgotten; the planners regenerate them (review M15) — and overlapping chapters lose their title and summary at once; the transaction holds the touched days' locks (R41); the audit row keeps the range, counts and the paths still to delete (R49), never content; files go after the commit. Uploads the device still holds for that range (offline) are not blocked — the device contract cannot change, and the page says so (review M3, deferred) — cost if wrong: up to 60 s beyond each edge is forgotten too; data the device sends later reappears.
 - **R25** Reprocess-by-day offers captions, transcripts (only while the raw audio is kept), chapters and recap; keyframe selection is not redone (keyframes are kept for ever; the raw video may be gone) — cost if wrong: re-captioning a whole day queues ≈ 300 caption jobs.
-- **R26** Anthropic is called with plain httpx (the brief: no SDK dependency), for text tasks only, without `temperature` (Claude Haiku 5.5 and Sonnet 5.5 reject non-default sampling), `effort: "low"` (they think by default), strict JSON schemas (limits stripped; answers still clipped by the brain); 429/5xx/529 and connection failures are `ProviderUnavailable` (fall back, no retry spent), 400/401/403/404, refusals and empty answers `ProviderError` (fall back; dead letter when nothing is left). A route to anthropic without `ANTHROPIC_API_KEY` is skipped and Cài đặt says so — cost if wrong: a model id the account lacks shows as dead letters on chat/recap if no local fallback is configured.
+- **R26** Anthropic is called with plain httpx (the brief: no SDK dependency), for text tasks only, without `temperature` (Claude Haiku 5.5 and Sonnet 5.5 reject non-default sampling), `effort: "low"`, thinking set explicitly with a `max_tokens` floor (R47), strict JSON schemas (limits stripped; answers still clipped by the brain); 429/5xx/529 and connection failures are `ProviderUnavailable` (fall back, no retry spent), 400/401/403/404, refusals, empty answers and answers cut off before any text `ProviderError` (fall back; dead letter when nothing is left). A route to anthropic without `ANTHROPIC_API_KEY` is skipped and Cài đặt says so — cost if wrong: a model id the account lacks shows as dead letters on chat/recap if no local fallback is configured.
 - **R27** Privacy: `LOCAL_PROVIDERS = {"ollama", "local"}` is an allow-list (every other provider is cloud); `task_ready` counts only routes that may take the request (images: local only) and whose provider is set up. Two P2a tests change accordingly: `test_invalid_routes_are_rejected_at_load_time` loses the recap→anthropic case (valid now) and gains caption→anthropic and embed→anthropic; `test_routes_the_health_check_cannot_see_count_as_ready` gives the router a configured anthropic provider and asserts that without one the route is not ready — cost if wrong: none expected.
-- **R28** Chapter builds and recaps share one job lock (`llm`) so two text-model runs never compete for the CPU; chat (in the api) is not serialised with them — cost if wrong: a question asked during the 23:30 recap is slower.
-- **R29** The hourly planner also builds every day that has moments and no chapter (Task 13): without it the days P2a analysed before this upgrade would never get chapters or recaps — cost if wrong: one `DISTINCT` scan of `moment` per hour (≈ 0.1 s with a year of data).
-- **R30** `/pipeline` gets a "Hiểu ngày" card (schedules, chapters waiting for a summary, newest recap, kept days) and the new tasks get Vietnamese labels on the failed list — the brief's "appear on /pipeline" — cost if wrong: none.
+- **R28** Chapter builds and recaps share one job lock (`llm`) so two text-model runs never compete for the CPU; chat (in the api) is not serialised with them, and with `OLLAMA_NUM_PARALLEL=1` a question asked during the 23:30 recap waits until the recap's model call ends (minutes; review M11) — the 900 s timeout covers it and the time-word check (R17) usually saves one of its two calls — cost if wrong: a question during the recap takes minutes to start answering.
+- **R29** The hourly planner (Task 4) also builds the newest day that has moments and no chapter (days P2a analysed before this upgrade), **one per run** (review I4/M8: the catch-up must not crowd out live work, and it now ships with the first half) — cost if wrong: one `DISTINCT` scan of `moment` per hour (≈ 0.1 s with a year of data); N old days take N hours.
+- **R30** `/pipeline` gets a "Hiểu ngày" card (schedules, chapters waiting for a summary, newest recap, failed recaps, retention on/off and kept days) and the new tasks get Vietnamese labels on the failed list — the brief's "appear on /pipeline" — cost if wrong: none.
 - **R31** The timezone is not editable in the UI: `LOOPI_TZ` (env) is shown read-only on Cài đặt — changing it would move every day boundary, chapter and recap — cost if wrong: changing the zone needs an env edit and a reprocess of the affected days.
 - **R32** `deploy/smoke.sh` is not changed: it cannot log in to the web UI (only the bcrypt hash is known); Task 14 checks the pages through the api container. A smoke run's marker can appear in a chapter until the next hourly build (its moments are deleted; the count check reopens the day) — cost if wrong: a "smoke" line in a chapter summary for up to an hour.
 - **R33** The api gets a second http client for the models (300 s timeout; `create_app(llm_client=…)`); the 5 s status client is unchanged — cost if wrong: none.
@@ -7740,7 +8376,26 @@ Copy these into the ledger before Task 1. Each: decision — why — cost if wro
 - **R35** The spec's §9.4 table lists "trường chính"; the extra chapter columns (`closed`, `signature`, `summary_signature`, `last_moment_at`, …) and the tables `setting`, `forget_log`, `day_job_error` are documented in `003_understanding.sql`, not added to the spec — cost if wrong: a reader of the spec alone misses bookkeeping columns.
 - **R36** Task 14 does not merge `feat/phase1` (agent and OS only; the brain does not need it) — cost if wrong: the branches stay apart until the owner merges them; the spec merge is covered by R1.
 - **R37** Execution: subagent-driven, one implementer and one reviewer per task, then a final whole-branch review and one fix wave before Task 14, as in P2a.
-- **R38** P2a tests changed on purpose (nothing removed): `test_db.py` (migration lists, tables and indexed foreign keys gain the 003 objects; Task 1), `test_providers.py` (`text_models` options, Task 2; R27, Task 12), `test_web.py`, `test_web_pipeline.py`, `test_audio_playback.py` (`/hours` and its thumbnails, R20; the "Hiểu ngày" card, Task 13), `test_deploy.py` (`OLLAMA_MAX_LOADED_MODELS` "3", R14; the key, Task 13), `helpers.py` and `conftest.py` (extended) — cost if wrong: none; each change is shown as a diff in its task.
+- **R38** P2a tests changed on purpose (nothing removed): `test_db.py` (migration lists, tables and indexed foreign keys gain the 003 objects; Task 1), `test_providers.py` (`text_models` options and timeouts, Task 2; R27, Task 12), `test_config.py` (new settings, Task 2), `test_web.py`, `test_web_pipeline.py`, `test_audio_playback.py` (`/hours` and its thumbnails, R20; the "Hiểu ngày" card, Task 13), `test_deploy.py` (worker concurrency and the key, Task 13), `helpers.py` and `conftest.py` (extended) — cost if wrong: none; each change is shown as a diff in its task.
+
+
+### Rulings on the independent plan review (2026-10-16, "Ready with fixes"; controller rulings applied)
+
+- **R39 (I1)** A recap is written again when the day changed after it: today's at 23:30 if a fresh recap exists from before 23:30 (e.g. "Tạo lại recap" at noon); an earlier day's once all its chapters are closed again and `max(chapter.updated_at)` is newer than the recap; `rebuild_chapters` writes a row only when it changed, so `updated_at` means a real change (review M14) — cost if wrong: at most one extra night-time recap per day and per change.
+- **R40 (I2)** The hourly planner also asks for a build of every day with a chapter still waiting for its summary (closed, or ≥ 3 moments), while `chapter_summary` can run (`task_ready`), except chapters whose summary failed less than 6 hours ago (`chapter.summary_error_at`, new in migration 003); the `build_chapters` label is corrected accordingly — cost if wrong: a chapter that always fails costs one model call every 6 hours.
+- **R41 (I3)** One transaction lock per local day (`state.lock_day`, `day:<date>`) is taken by chapter rebuilds, stored summaries, stored recaps and "Quên khoảng thời gian"; summaries and recaps read the number of overlapping forget requests (`state.forgotten`) before calling the model and store their answer only if it is unchanged under the lock (else nothing is stored and the planners ask again) — cost if wrong: a forget during a summary or recap discards that model run.
+- **R42 (I4)** The worker gets 3 slots (`LOOPI_WORKER_CONCURRENCY: "3"`); chapter and recap jobs keep the `llm` lock (at most one at a time) and get priority −10 (`jobs.LLM_PRIORITY`, Procrastinate 3.10 `priority`), so a free slot always takes waiting live work first; the catch-up of old days is one day per hourly run (R29); Task 14 records caption/transcript p95 latency before the deploy, during the catch-up and the next day — cost if wrong: a third concurrent job (a caption or an ASR run) competes for the 4 cores with a text model.
+- **R43 (I5)** Memory: Ollama keeps at most **2** models (measured: minicpm-v ≈ 2.9 GB, qwen3-embedding ≈ 1.3 GB, qwen3:8b at 8192 tokens ≈ 6–6.5 GB, qwen3:4b ≈ 3.5 GB; 7.5 GB available, 3.4 GB of swap in use): peak ≈ 9.4–10 GB instead of ≈ 4.2 GB; text models unload after 1 minute; **no `mem_limit`** (an OOM kill inside the models container could stop a caption mid-job); Task 14 runs a controlled peak test (recap + chat while captions run) with written thresholds (available < 1 GB or swap growth > 1 GB → stop, roll back or shrink `LOOPI_LLM_NUM_CTX` on the owner's word) — cost if wrong: the host swaps during the test, caught there.
+- **R44 (I6)** Text-model requests wait up to 900 s (`LOOPI_LLM_TIMEOUT_S`, streams too) instead of the client's 300 s; the recap answer is capped at 1000 tokens with smaller lists (8 events, 5 memorable, 8 commitments, 200 characters each); a recap that still times out is retried 3 times, then shown on its Day page ("Viết recap lỗi: …") and counted on the "Hiểu ngày" card, never silently; Task 14 stops if a recap run takes more than 630 s — cost if wrong: a slow night costs up to 4 × 15 minutes of CPU before the failure shows.
+- **R45 (I7)** Task 14 starts only after 2026-10-17 04:28 KST with P2a Task 11 closed and the owner's yes; the rollback target is `git rev-parse feat/phase2` recorded before the fast-forward; rolling back stops the worker and deletes P2b's job rows (the P2a worker would dead-letter unknown task names) before redeploying P2a — cost if wrong: none expected.
+- **R46 (I8)** Retention ships **off** (`Retention.enabled = False`): Cài đặt shows what it would delete (recordings and GB per kind) and has the switch; Task 14 stops to show the owner the counts and turns it on only on an explicit yes, otherwise it stays off and the decision is a ruling — cost if wrong: raw files pile up until the owner decides (≈ 5–10 GB of video per day).
+- **R47 (I9)** Anthropic thinking is set explicitly: Haiku 5.5 `{"type": "disabled"}`, Sonnet 5.5 `{"type": "between_tools"}` (it rejects "disabled"), each with `max_tokens` ≥ 1024; any other model keeps thinking with `max_tokens` 8192; an answer cut off by `max_tokens` before any text is a `ProviderError`. Anthropic stays optional and off by default — cost if wrong: a slightly larger token bill on the rare long answer.
+- **R48 (M1)** Today's page also lists the commitments still open from the previous 7 days ("Việc còn mở từ những ngày trước") — cost if wrong: none.
+- **R49 (M2)** "Quên khoảng thời gian" stores the media paths to delete on its audit row (`forget_log.pending_files`, paths only) and keeps the ones it could not delete; the 03:00 tick (retention on or off) retries them — cost if wrong: a file that can never be deleted is retried every night (logged).
+- **R50 (M4)** Retention holds each batch's rows while deleting their files, so a reprocess that resets an item waits and then sees `raw_deleted_at` (it only resets `done` items whose raw file is kept) — cost if wrong: none expected.
+- **R51 (M6, M16)** A model answer of "Không tìm thấy trong ký ức." that cites nothing is shown as a not-found answer, without the "không trích nguồn" warning; questions without a time word skip the time-filter call (R17) — cost if wrong: none expected.
+- **R52 (M7, M8, M9, M12, M14, M15)** Moments outside any chapter are shown in time order between the chapters (each run its own "Chưa chia chương" block); the "first half shippable" claim now says what an early deploy also needs; Cài đặt says which tasks send text to the cloud when a key is set; the "Hiểu ngày" test reads the card with whitespace collapsed; rebuilds touch only changed rows; R24 tags the recap deletion as a deliberate deviation from §9.5 — cost if wrong: none expected.
+- **R53 (deferred minors)** M3 (drop late uploads inside a forgotten range: changes "PUT behaves exactly as before", the owner's call — listed under Deferred), M5 (dead-lettered items keep their raw files: the safe direction; `skipped` items lose theirs after the kept days as the spec says — listed), M11 (documented in R28), M13 (a caption job already running when "captions" are reprocessed stores its old-model caption: rare, and a second reprocess fixes it — listed) — cost if wrong: see each item under Deferred.
 
 ## Deferred (out of scope for P2b)
 
@@ -7749,3 +8404,6 @@ Copy these into the ledger before Task 1. Each: decision — why — cost if wro
 - Forgetting data the device has not uploaded yet (would need a device-contract change).
 - Vietnamese search without diacritics (needs `unaccent` or a normalised text column): P2c, with recall@5.
 - Orphan JPEGs after a worker crash (P2a deferred M7): retention does not sweep files without a row.
+- Review M3: ingest could accept (201) but discard items whose `started_at` falls in a forgotten range — it would change "PUT /v1/items behaves exactly as before", so it is the owner's decision.
+- Review M5: show on /pipeline how many dead-lettered items keep their raw files; keep `skipped` (unusable) recordings longer for investigation.
+- Review M13: a caption job already running when "captions" are reprocessed stores the old model's caption (check the job id on write).
