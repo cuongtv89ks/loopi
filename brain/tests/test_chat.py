@@ -66,6 +66,10 @@ async def _events(ctx_gen) -> list[tuple[str, dict]]:
     ({"from": "2027-01-01", "to": "2027-01-02"}, (None, None)),  # all in the future: no filter
     ({"from": "2020-01-01", "to": "2026-10-14"}, (TODAY - dt.timedelta(days=365), TODAY)),  # at most 366 days
     ({"from": "", "to": ""}, (None, None)),
+    ({"from": "0001-01-01", "to": "0001-01-01"}, (None, None)),  # a placeholder year: it used to overflow
+    ({"from": "0001-06-01", "to": ""}, (None, None)),
+    ({"from": "1999-12-31", "to": "1999-12-31"}, (None, None)),  # before 2000: unusable
+    ({"from": "0001-01-01", "to": "2026-10-13"}, (TODAY - dt.timedelta(days=1), TODAY - dt.timedelta(days=1))),
     ({"from": "hôm qua", "to": "13/10"}, (None, None)),
     ("not json at all", (None, None)),
 ])
@@ -127,7 +131,7 @@ async def test_an_answer_that_breaks_off_is_reported_after_the_sources(pool, dev
     events = await _events(chat.chat_events(pool, router, "Mai mình phải làm gì?", pki_settings, now=NOW))
     names = [n for n, _ in events]
     assert "sources" in names and names[-2:] == ["error", "done"] and "answer" not in names
-    assert "máy chủ model" in events[-2][1]["text"]
+    assert "máy chủ model" in events[-2][1]["text"] and "ở dưới" in events[-2][1]["text"]  # sources render below
 
 
 @pytest.mark.parametrize(("question", "expected"), [
@@ -288,7 +292,8 @@ async def test_without_models_the_sources_are_shown_and_no_answer_is_attempted(p
     events = await _events(chat.chat_events(pool, None, "Mai 9 giờ mình đi khám răng", pki_settings, now=NOW))
     assert [n for n, _ in events] == ["status", "status", "sources", "error", "done"]
     assert [h.id for h in events[2][1]["hits"]] == [ids["dentist"]]  # found by its words alone
-    assert "cấu hình provider lỗi" in events[3][1]["text"] and ollama.requests == []
+    assert "cấu hình provider lỗi" in events[3][1]["text"] and "ở dưới" in events[3][1]["text"]
+    assert ollama.requests == []
 
 
 async def test_a_broken_providers_file_still_shows_the_sources_over_http(pool, dev, pki_settings, jobs_open, ollama,
@@ -375,3 +380,53 @@ async def test_a_stream_without_any_text_ends_without_trying_the_fallback(router
     ollama.reply = lambda body: ""
     assert [p async for p in router.stream_chat("chat", [{"role": "user", "content": "x"}])] == []
     assert len([1 for path, _ in ollama.requests if path == "/api/chat"]) == 1
+
+
+# --- fix round 1 -------------------------------------------------------------------------------------------------
+
+
+def test_a_date_that_cannot_be_clamped_means_no_filter():
+    assert chat.clean_filter(dt.date.min, dt.date.min, TODAY) == (None, None)  # last - 365 days overflows
+    assert chat.clean_filter(dt.date.min, TODAY, TODAY) == (TODAY - dt.timedelta(days=365), TODAY)  # still clamps
+
+
+async def test_a_year_one_date_from_the_model_does_not_break_the_answer(pool, dev, router, ollama, pki_settings):
+    await _memories(pool, dev["device_id"])
+    ollama.reply = lambda body: {"from": "0001-01-01", "to": "0001-01-01"} if "format" in body else ANSWER
+    events = await _events(chat.chat_events(pool, router, "Hôm qua có gì?", pki_settings, now=NOW))
+    names = [n for n, _ in events]
+    assert "filter" not in names and "error" not in names and names[-2:] == ["answer", "done"]
+    assert "sources" in names  # no filter: all the history is searched
+
+
+@pytest.mark.parametrize(("now", "stated"), [
+    (NOW, "Now is Wednesday, 2026-10-14 21:00 (Asia/Seoul)."),
+    (dt.datetime(2026, 10, 14, 16, 0, tzinfo=dt.UTC), "Now is Thursday, 2026-10-15 01:00 (Asia/Seoul)."),  # local, not UTC
+])
+async def test_the_answer_prompt_states_the_local_date_and_time(pool, dev, router, ollama, pki_settings, now, stated):
+    await _memories(pool, dev["device_id"])
+    await _events(chat.chat_events(pool, router, "Mai mình phải làm gì?", pki_settings, now=now))
+    [body] = [b for path, b in ollama.requests if path == "/api/chat" and b["stream"]]
+    system = body["messages"][0]["content"]
+    assert stated in system
+    assert "[2] or [1][3]" in system and chat.NOT_FOUND in system and ASR_CAVEAT in system  # the rest is unchanged
+    assert "relative to its own date" in system  # an old "mai" is not today's plan
+
+
+@pytest.mark.parametrize("silence", ["", "  \n "])
+async def test_a_model_that_writes_nothing_is_an_error_not_an_empty_answer(pool, dev, router, ollama, pki_settings,
+                                                                          silence):
+    await _memories(pool, dev["device_id"])
+    ollama.reply = lambda body: {"from": "", "to": ""} if "format" in body else silence
+    events = await _events(chat.chat_events(pool, router, "Mai mình phải làm gì?", pki_settings, now=NOW))
+    names = [n for n, _ in events]
+    assert "sources" in names and names[-2:] == ["error", "done"] and "answer" not in names
+    assert events[-2][1]["text"] == chat.ANSWER_FAILED and "ở dưới" in chat.ANSWER_FAILED
+
+
+async def test_the_chat_endpoint_reports_an_empty_answer(web, pool, dev, ollama):
+    await _memories(pool, dev["device_id"])
+    ollama.reply = lambda body: {"from": "", "to": ""} if "format" in body else ""
+    async with web.stream("POST", "/chat", data={"q": "Mai mình phải làm gì?"}, headers=HX) as r:
+        events = _parse((await r.aread()).decode())
+    assert [n for n, _ in events][-2:] == ["error", "done"] and "answer" not in dict(events)

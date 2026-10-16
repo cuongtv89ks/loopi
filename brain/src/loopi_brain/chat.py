@@ -34,6 +34,7 @@ SOURCE_TEXT_MAX = 400
 ANSWER_MAX_TOKENS = 600
 FILTER_MAX_TOKENS = 60
 MAX_FILTER_DAYS = 366
+MIN_FILTER_DATE = dt.date(2000, 1, 1)  # earlier dates are a model's placeholders ("0001-01-01"), not memories
 CITATION = re.compile(r"\[(\d+(?:\s*[,;]\s*\d+)*)\]")
 # Words (vi, en, ko) or date-like numbers that can name a time; without one, no time filter is asked for.
 TIME_WORDS = re.compile(
@@ -59,7 +60,12 @@ ANSWER_SYSTEM = (
     f"camera and a microphone in their home recorded. {PICTURE_NOTE} {ASR_CAVEAT} Answer briefly, in the "
     "language of the question (usually Vietnamese). Cite every fact with the number of its source in square "
     "brackets, like [2] or [1][3]. If the sources do not answer the question, say exactly "
-    f"\"{NOT_FOUND}\" and do not guess."
+    f"\"{NOT_FOUND}\" and do not guess. Each source starts with its own date and time: words like \"mai\" or "
+    "\"tomorrow\" inside a source are relative to its own date, not to now."
+)
+NOW_LINE = "Now is {now:%A, %Y-%m-%d %H:%M} ({zone})."
+ANSWER_FAILED = (
+    "Không trả lời được lúc này: máy chủ model đang lỗi hoặc không chạy. Các nguồn liên quan ở dưới."
 )
 KIND_WORDS = {"visual": "picture", "speech": "speech", "marker": "marked moment"}
 
@@ -76,10 +82,12 @@ def mentions_time(question: str) -> bool:
 
 
 def _date(text: str) -> dt.date | None:
+    """A model's date, or None when it is not an ISO date or is older than MIN_FILTER_DATE."""
     try:
-        return dt.date.fromisoformat(text.strip())
+        day = dt.date.fromisoformat(text.strip())
     except ValueError:
         return None
+    return day if day >= MIN_FILTER_DATE else None
 
 
 def clean_filter(first: dt.date | None, last: dt.date | None, today: dt.date) -> tuple[dt.date | None, dt.date | None]:
@@ -93,7 +101,10 @@ def clean_filter(first: dt.date | None, last: dt.date | None, today: dt.date) ->
     if first > today:
         return None, None
     last = min(last, today)
-    first = max(first, last - dt.timedelta(days=MAX_FILTER_DAYS - 1))
+    try:
+        first = max(first, last - dt.timedelta(days=MAX_FILTER_DAYS - 1))
+    except OverflowError:  # an end near year 1: not a usable range
+        return None, None
     return first, last
 
 
@@ -127,10 +138,11 @@ def source_lines(hits: list[Hit], zone) -> list[str]:
     return lines
 
 
-def answer_messages(question: str, hits: list[Hit], zone) -> list[dict]:
+def answer_messages(question: str, hits: list[Hit], zone, now: dt.datetime) -> list[dict]:
+    """The prompt: sources and ``now`` (an aware time in ``zone``) are both stated in local time."""
     sources = "\n".join(source_lines(hits, zone))
     return [
-        {"role": "system", "content": ANSWER_SYSTEM},
+        {"role": "system", "content": f"{NOW_LINE.format(now=now, zone=zone)} {ANSWER_SYSTEM}"},
         {"role": "user", "content": f"Sources:\n{sources}\n\nQuestion: {question}"},
     ]
 
@@ -167,9 +179,10 @@ async def chat_events(
         yield "done", {}
         return
     yield "status", {"text": "Đang hiểu câu hỏi…"}
+    local = local_now(zone, now)
     first = last = None
     if router is not None and mentions_time(question):
-        first, last = await time_filter(router, question, local_now(zone, now).date())
+        first, last = await time_filter(router, question, local.date())
     if first is not None:
         yield "filter", {"text": describe_filter(first, last)}
     yield "status", {"text": "Đang tìm trong ký ức…"}
@@ -184,23 +197,27 @@ async def chat_events(
         return
     yield "sources", {"hits": result.hits}
     if router is None:
-        yield "error", {"text": "Không trả lời được: cấu hình provider lỗi. Các nguồn liên quan ở trên."}
+        yield "error", {"text": "Không trả lời được: cấu hình provider lỗi. Các nguồn liên quan ở dưới."}
         yield "done", {}
         return
     yield "status", {"text": "Đang viết câu trả lời…"}
     pieces: list[str] = []
     try:
-        async for piece, _version in router.stream_chat("chat", answer_messages(question, result.hits, zone),
+        async for piece, _version in router.stream_chat("chat", answer_messages(question, result.hits, zone, local),
                                                         max_tokens=ANSWER_MAX_TOKENS):
             pieces.append(piece)
             yield "token", {"text": piece}
     except ProviderError as exc:
         log.warning("chat answer failed: %s", exc)
-        yield "error", {"text": "Không trả lời được lúc này: máy chủ model đang lỗi hoặc không chạy. "
-                                "Các nguồn liên quan ở trên."}
+        yield "error", {"text": ANSWER_FAILED}
         yield "done", {}
         return
     text = "".join(pieces).strip()
+    if not text:  # the model wrote nothing: an error, not an empty answer
+        log.warning("chat answer was empty")
+        yield "error", {"text": ANSWER_FAILED}
+        yield "done", {}
+        return
     # "Không tìm thấy" from the model, citing nothing, is a not-found answer, not an uncited one.
     not_found = text.startswith(NOT_FOUND.rstrip(".")) and not cited(text, len(result.hits))
     yield "answer", {"text": text, "not_found": not_found}
