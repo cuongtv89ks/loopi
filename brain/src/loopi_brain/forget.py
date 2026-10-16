@@ -4,7 +4,9 @@ In one transaction: the recordings (items) that touch the range, with their keyf
 and moments (embeddings included), every other moment of the range, the commitments sourced in it, and the
 recaps of the days it touches; the chapters of those days are reopened and the ones that overlap what goes lose
 their title, summary and summary error (they quoted it); the days' stored job errors and failed recap runs go too
-(an error may quote a model's answer; a failed run would keep the planner from writing the recap again). A
+(an error may quote a model's answer; a failed run would keep the planner from writing the recap again), and so do
+the golden-set samples taken from it (spec D21: clips, keyframes, correct moments of questions; their copies under
+LOOPI_EVAL_DIR are swept after the commit). A
 recording is deleted whole even when only part of it lies in the range, so "what goes" is the range widened to
 those recordings (the span): chapters, recaps and the audit row follow the span, not just the range, and may reach
 into the neighbouring day.
@@ -33,6 +35,7 @@ from psycopg_pool import AsyncConnectionPool
 from . import devices, media, thumbs
 from .config import Settings
 from .days import local_day
+from .evaluation import golden
 from .pipeline import chapters as chapter_rules
 from .pipeline import recap as recap_rules
 from .pipeline.state import lock_day
@@ -55,6 +58,7 @@ class ForgetCounts:
     commitments: int = 0
     chapters: int = 0  # chapters that lose their title and summary
     recaps: int = 0
+    golden: int = 0  # golden clips, keyframes and correct moments of questions
     files: int = 0
     files_failed: int = 0
 
@@ -127,7 +131,10 @@ async def _derived(conn: AsyncConnection, targets: dict, days: list[dt.date], sp
     )
     chapters = (await cur.fetchone())["n"]
     cur = await conn.execute("SELECT count(*) AS n FROM day_recap WHERE day = ANY(%s)", (days,))
-    return {"commitments": commitments, "chapters": chapters, "recaps": (await cur.fetchone())["n"]}
+    recaps = (await cur.fetchone())["n"]
+    golden_count = await golden.forget_rows(conn, [i["id"] for i in targets["items"]],
+                                            [k["id"] for k in targets["keyframes"]], moment_ids, delete=False)
+    return {"commitments": commitments, "chapters": chapters, "recaps": recaps, "golden": golden_count}
 
 
 async def preview_span(
@@ -207,6 +214,7 @@ async def _delete_rows(
         derived = await _derived(conn, targets, affected, span)
         item_ids = [r["id"] for r in targets["items"]]
         moment_ids = [m["id"] for m in targets["moments"]]
+        await golden.forget_rows(conn, item_ids, [k["id"] for k in targets["keyframes"]], moment_ids, delete=True)
         await conn.execute("DELETE FROM commitment WHERE source_moment_id = ANY(%s)", (moment_ids,))
         await conn.execute("DELETE FROM moment WHERE id = ANY(%s)", (moment_ids,))
         cur = await conn.execute("DELETE FROM transcript_segment WHERE item_id = ANY(%s)", (item_ids,))
@@ -267,6 +275,10 @@ async def forget_range(pool: AsyncConnectionPool, settings: Settings, start: dt.
     except Exception:  # the audit row still lists every path: the nightly run deletes them
         log.exception("deleting the media files failed; they stay listed on the audit row %s", log_id)
         deleted, failed = 0, files
+    try:  # the golden copies of the forgotten samples; anything left is swept again at 03:00
+        await golden.sweep(pool, settings.eval_dir)
+    except Exception:
+        log.exception("could not sweep the golden copies after the forget %s; the 03:00 run tries again", log_id)
     counts = ForgetCounts(**{**asdict(counts), "files": deleted, "files_failed": len(failed)})
     keep = await anyio.to_thread.run_sync(retryable, settings.media_root, failed, owners)
     try:

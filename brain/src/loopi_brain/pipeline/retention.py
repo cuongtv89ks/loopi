@@ -4,8 +4,9 @@ Every night at 03:00 local time — **only once the owner turned it on in Cài �
 what it would delete first) — raw recordings older than the kept days (7 and 7 by default) lose their raw file
 and the copy the web plays (video MP4, normalised audio): only recordings whose analysis is finished, never
 markers. The item row stays, marked ``raw_deleted_at`` so the pages say "đã hết hạn"; keyframes, thumbnails,
-transcripts, captions, moments, chapters and recaps are never deleted here. The same nightly run (on or off)
-retries the media files a "Quên khoảng thời gian" could not delete at once.
+transcripts, captions, moments, chapters and recaps are never deleted here, nor the golden-set copies under
+LOOPI_EVAL_DIR (spec D21). The same nightly run (on or off) retries the media files a "Quên khoảng thời gian" could
+not delete at once and sweeps the golden copies whose sample is gone (``evaluation.golden.sweep``).
 
 Order of work per batch: the rows are marked ``raw_deleted_at`` under their row locks (``FOR UPDATE SKIP LOCKED``:
 a row someone else holds, say a reprocess resetting it, is left for the next night) and that is committed
@@ -37,6 +38,7 @@ from psycopg_pool import AsyncConnectionPool
 from .. import forget, media, store
 from ..config import Settings
 from ..days import local_now
+from ..evaluation import golden
 from . import jobs
 from .context import get_context
 from .jobs import job_app
@@ -225,8 +227,12 @@ def due(timestamp: int | None, zone) -> bool:
 @job_app.task(name=jobs.APPLY_RETENTION, queue="light", queueing_lock="apply_retention")
 async def apply_retention_job(timestamp: int | None = None) -> None:
     """Hourly tick (Procrastinate's cron runs in UTC, so the local 03:00 is found here): retry the files of a
-    forgotten range, on or off; then apply retention when the owner turned it on."""
+    forgotten range and sweep the golden copies, on or off; then apply retention when the owner turned it on."""
     ctx = get_context()
     if due(timestamp, ctx.settings.zone):
         await retry_forgotten_files(ctx.pool, ctx.settings)
+        try:
+            await golden.sweep(ctx.pool, ctx.settings.eval_dir)
+        except Exception:  # never stops retention
+            log.exception("could not sweep the golden copies")
         await apply_retention(ctx.pool, ctx.settings)

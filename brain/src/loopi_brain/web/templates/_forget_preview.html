@@ -1,7 +1,8 @@
 <div class="card">
   <p>Từ {{ first.strftime("%d/%m/%Y %H:%M") }} đến {{ last.strftime("%d/%m/%Y %H:%M") }} sẽ bị xoá vĩnh viễn:
      {{ c.items }} đoạn ghi, {{ c.keyframes }} khung hình, {{ c.transcript_segments }} đoạn transcript,
-     {{ c.moments }} khoảnh khắc, {{ c.commitments }} việc cần làm; {{ c.chapters }} chương mất tóm tắt và
+     {{ c.moments }} khoảnh khắc, {{ c.commitments }} việc cần làm, {{ c.golden }} mẫu đánh giá (đoạn ghi, khung hình và moment đúng của câu hỏi; bản thân câu hỏi đánh giá vẫn
+     giữ); {{ c.chapters }} chương mất tóm tắt và
      {{ c.recaps }} recap sẽ được viết lại.</p>
   {% if widened %}<p><strong>Thực tế sẽ xoá từ {{ span_start.strftime("%d/%m/%Y %H:%M:%S") }} đến {{ span_end.strftime("%d/%m/%Y %H:%M:%S") }}</strong>,
      vì có đoạn ghi nằm vắt qua ranh giới của khoảng này và chỉ xoá được trọn vẹn.</p>{% endif %}

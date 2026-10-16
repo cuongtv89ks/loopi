@@ -440,3 +440,43 @@ def write_media(settings, rel: str, data: bytes = b"x") -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return rel
+
+
+async def analysed_audio(pool, settings, device_id: str, start: dt.datetime, *, seconds: float = 5,
+                         source: str = "anullsrc=r=16000:cl=mono") -> str:
+    """A finished audio recording with a real Ogg/Opus file (``source``: an ffmpeg lavfi signal); return its id."""
+    item_id = await insert_item(pool, device_id, kind="audio", started_at=start, seconds=seconds)
+    row = await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item_id,))
+    make_opus(settings.media_root / row["raw_path"], source, seconds)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET analysis_state = 'done', analyzed_at = now() WHERE id = %s", (item_id,))
+    return item_id
+
+
+async def insert_segment(pool, item_id: str, device_id: str, start: dt.datetime, text: str, *, lang: str = "vi",
+                         seconds: float = 2, lang_prob: float | None = 0.9, avg_logprob: float = -0.3) -> str:
+    """A transcript segment of ``item_id`` starting at ``start``; return its id."""
+    segment_id = new_ulid()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO transcript_segment (id, item_id, device_id, start_ts, end_ts, lang, text, lang_prob,"
+            " avg_logprob, no_speech_prob, model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0.0, 'test')",
+            (segment_id, item_id, device_id, start, start + dt.timedelta(seconds=seconds), lang, text, lang_prob,
+             avg_logprob),
+        )
+    return segment_id
+
+
+async def captioned_keyframe(pool, settings, device_id: str, ts: dt.datetime, *, caption: dict | None = None,
+                             model: str = "ollama:minicpm-v4.6:1b") -> str:
+    """A keyframe (with its video item and a real JPEG) captioned by ``model``; return the keyframe id."""
+    from psycopg.types.json import Jsonb
+
+    item_id = await insert_item(pool, device_id, kind="video", started_at=ts - dt.timedelta(seconds=10))
+    kf_id = await insert_keyframe(pool, settings, item_id, device_id, ts)
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE keyframe SET caption = %s, caption_model = %s, captioned_at = now() WHERE id = %s",
+            (Jsonb(caption or DEFAULT_CAPTION), model, kf_id),
+        )
+    return kf_id

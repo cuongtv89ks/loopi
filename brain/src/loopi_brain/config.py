@@ -1,4 +1,5 @@
 """Runtime settings, read from LOOPI_* environment variables."""
+import datetime as dt
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -60,6 +61,9 @@ class Settings(BaseSettings):
     # Evaluation (P2c, spec D21): the owner's golden set — copies of the chosen recordings and keyframes — lives
     # here, in the brain's data dir and never in git; retention never deletes it.
     eval_dir: Path = Path("/srv/loopi/eval")
+    # Golden clips are proposed only from recordings made since this time: the device's +20 dB gain (D19) reached
+    # the live device then (smoke8, 2026-10-16 08:41 KST), so the set holds one capture condition.
+    eval_audio_since: dt.datetime = dt.datetime(2026, 10, 16, 8, 41, tzinfo=ZoneInfo("Asia/Seoul"))
 
     @field_validator("anthropic_api_key", mode="before")
     @classmethod
@@ -68,6 +72,13 @@ class Settings(BaseSettings):
         would put the value into its error). A stray character would make the HTTP library refuse the header."""
         if isinstance(value, str):
             return value.strip() or None
+        return value
+
+    @field_validator("eval_audio_since")
+    @classmethod
+    def _aware(cls, value: dt.datetime) -> dt.datetime:
+        if value.tzinfo is None:
+            raise ValueError("needs a UTC offset, e.g. 2026-10-16T08:41:00+09:00")
         return value
 
     @field_validator("asr_rules")
