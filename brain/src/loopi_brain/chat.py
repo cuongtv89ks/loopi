@@ -34,7 +34,7 @@ SOURCE_TEXT_MAX = 400
 ANSWER_MAX_TOKENS = 600
 FILTER_MAX_TOKENS = 60
 MAX_FILTER_DAYS = 366
-MIN_FILTER_DATE = dt.date(2000, 1, 1)  # earlier dates are a model's placeholders ("0001-01-01"), not memories
+MIN_FILTER_DATE = dt.date(2000, 1, 1)  # an earlier date is a model's placeholder ("0001-01-01"): no bound on that side
 CITATION = re.compile(r"\[(\d+(?:\s*[,;]\s*\d+)*)\]")
 # Words (vi, en, ko) or date-like numbers that can name a time; without one, no time filter is asked for.
 TIME_WORDS = re.compile(
@@ -82,29 +82,32 @@ def mentions_time(question: str) -> bool:
 
 
 def _date(text: str) -> dt.date | None:
-    """A model's date, or None when it is not an ISO date or is older than MIN_FILTER_DATE."""
     try:
-        day = dt.date.fromisoformat(text.strip())
+        return dt.date.fromisoformat(text.strip())
     except ValueError:
         return None
-    return day if day >= MIN_FILTER_DATE else None
 
 
 def clean_filter(first: dt.date | None, last: dt.date | None, today: dt.date) -> tuple[dt.date | None, dt.date | None]:
-    """A usable [first, last] range: one missing end copies the other, swapped ends are put in order, the future
+    """A usable [first, last] range. An end that is None (the model left it empty) copies the other. An end before
+    MIN_FILTER_DATE is a placeholder: "no bound on that side", so an open start gives the window ending at ``last``
+    and an open end runs up to today; both open means no filter. Otherwise swapped ends are put in order, the future
     is cut off (all of it in the future: no filter) and at most MAX_FILTER_DAYS are kept (the latest ones)."""
     if first is None and last is None:
         return None, None
     first, last = first or last, last or first
-    if first > last:
+    if first < MIN_FILTER_DATE and last < MIN_FILTER_DATE:
+        return None, None
+    if first < MIN_FILTER_DATE:
+        first = dt.date.min  # trimmed below to the window that ends at ``last``
+    elif last < MIN_FILTER_DATE:
+        last = dt.date.max  # cut below to today
+    elif first > last:
         first, last = last, first
     if first > today:
         return None, None
     last = min(last, today)
-    try:
-        first = max(first, last - dt.timedelta(days=MAX_FILTER_DAYS - 1))
-    except OverflowError:  # an end near year 1: not a usable range
-        return None, None
+    first = max(first, last - dt.timedelta(days=MAX_FILTER_DAYS - 1))
     return first, last
 
 

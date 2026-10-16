@@ -69,7 +69,13 @@ async def _events(ctx_gen) -> list[tuple[str, dict]]:
     ({"from": "0001-01-01", "to": "0001-01-01"}, (None, None)),  # a placeholder year: it used to overflow
     ({"from": "0001-06-01", "to": ""}, (None, None)),
     ({"from": "1999-12-31", "to": "1999-12-31"}, (None, None)),  # before 2000: unusable
-    ({"from": "0001-01-01", "to": "2026-10-13"}, (TODAY - dt.timedelta(days=1), TODAY - dt.timedelta(days=1))),
+    # a placeholder end means "no bound on that side", it does not collapse the range to the other end's day
+    ({"from": "0001-01-01", "to": "2026-10-13"}, (dt.date(2025, 10, 13), dt.date(2026, 10, 13))),  # open start
+    ({"from": "1999-12-31", "to": "2026-10-13"}, (dt.date(2025, 10, 13), dt.date(2026, 10, 13))),
+    ({"from": "2026-10-05", "to": "0001-01-01"}, (dt.date(2026, 10, 5), TODAY)),  # open end: up to today
+    ({"from": "2024-01-01", "to": "0001-01-01"}, (TODAY - dt.timedelta(days=365), TODAY)),  # clamped as usual
+    ({"from": "2027-01-01", "to": "0001-01-01"}, (None, None)),  # open end after a start in the future
+    ({"from": "", "to": "0001-01-01"}, (None, None)),  # a missing end copies the other: a placeholder
     ({"from": "hôm qua", "to": "13/10"}, (None, None)),
     ("not json at all", (None, None)),
 ])
@@ -385,9 +391,22 @@ async def test_a_stream_without_any_text_ends_without_trying_the_fallback(router
 # --- fix round 1 -------------------------------------------------------------------------------------------------
 
 
-def test_a_date_that_cannot_be_clamped_means_no_filter():
-    assert chat.clean_filter(dt.date.min, dt.date.min, TODAY) == (None, None)  # last - 365 days overflows
-    assert chat.clean_filter(dt.date.min, TODAY, TODAY) == (TODAY - dt.timedelta(days=365), TODAY)  # still clamps
+def test_a_placeholder_end_is_no_bound_and_never_overflows():
+    window = (TODAY - dt.timedelta(days=365), TODAY)
+    assert chat.clean_filter(dt.date.min, dt.date.min, TODAY) == (None, None)  # no date arithmetic on year 1
+    assert chat.clean_filter(None, dt.date.min, TODAY) == (None, None)
+    assert chat.clean_filter(dt.date.min, TODAY, TODAY) == window  # open start: the window ending at the end
+    assert chat.clean_filter(dt.date.min, dt.date.max, TODAY) == window  # the future is cut off
+    assert chat.clean_filter(dt.date(2026, 10, 5), dt.date.min, TODAY) == (dt.date(2026, 10, 5), TODAY)  # open end
+    assert chat.clean_filter(dt.date.max, dt.date.min, TODAY) == (None, None)  # open end, but a start in the future
+    assert chat.clean_filter(dt.date(2026, 10, 12), None, TODAY) == (dt.date(2026, 10, 12),) * 2  # missing: copies
+
+
+async def test_an_open_start_is_announced_as_the_window_ending_at_the_end(pool, dev, router, ollama, pki_settings):
+    await _memories(pool, dev["device_id"])
+    ollama.reply = lambda body: {"from": "0001-01-01", "to": "2026-10-13"} if "format" in body else ANSWER
+    events = await _events(chat.chat_events(pool, router, "Cho đến hôm qua có gì?", pki_settings, now=NOW))
+    assert ("filter", {"text": "Tìm từ 13/10/2025 đến 13/10/2026"}) in events
 
 
 async def test_a_year_one_date_from_the_model_does_not_break_the_answer(pool, dev, router, ollama, pki_settings):
