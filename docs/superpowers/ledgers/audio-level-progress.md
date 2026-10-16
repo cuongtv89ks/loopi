@@ -85,3 +85,4 @@ Task 5 Step 7 (owner 2026-10-16 "1, 2, và check tiếp P2"): old smoke7 device 
 Task 5: complete (image smoke8 sha256 611668b9…, level check PASS).
 Plan complete: Tasks 1–5 done; Part A (7021705..75d44f7) and Part B (2a5c2c3..fdf72ce) final reviews clean after one fix wave each.
 - Ruling: keep loopi-dev-smoke8.img in /home/soul/loopi/os/out (moved out of the worktree before it is removed) for re-flashes during the remaining P1 hardware tests — cost if wrong: 400 MB of disk.
+Ruling 19 follow-up: 23 smoke8 segments (1 344 s): 0 isolated near-full-scale glitch samples → the limiter ducking after a glitch does not occur today.
