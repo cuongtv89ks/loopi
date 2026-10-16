@@ -101,7 +101,7 @@ async def test_a_video_whose_mp4_is_not_recorded_yet_loses_it_too(pool, pki_sett
 
 async def test_a_file_that_cannot_be_deleted_is_tried_again_next_night(pool, pki_settings, dev, on, caplog):
     outside = pki_settings.media_root.parent / "outside.h264"
-    outside.parent.mkdir(parents=True, exist_ok=True)
+    pki_settings.media_root.mkdir(parents=True, exist_ok=True)  # the media root of a running brain exists
     outside.write_bytes(b"keep")
     item = await insert_item(pool, dev["device_id"], kind="video", started_at=NINE, raw_path="../outside.h264")
     async with pool.connection() as conn:
@@ -147,11 +147,12 @@ async def test_the_mark_is_committed_before_any_file_is_deleted(pool, pki_settin
 
 
 @pytest.mark.parametrize("where", ["item_files", "remove_files"])
-async def test_a_row_that_raises_unexpectedly_does_not_undo_the_rows_already_finished(
+async def test_a_row_that_raises_unexpectedly_keeps_its_mark_and_the_finished_rows_theirs(
     pool, pki_settings, dev, on, monkeypatch, caplog, where
 ):
-    """The poison row is left (un-marked: its raw file goes last, so it is provably still there and a reprocess may
-    redo it); the row before it keeps its mark and its record that the files are gone, never looking playable."""
+    """Fail closed: nothing is known about the poison row's files after an unexpected error, so its mark stays (the
+    next run's sweep retries it; a row marked expired is never reprocessed) and the row before it, finished, is not
+    undone either. It is not retried again within the run."""
     first = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
     second = await _recording(pool, pki_settings, dev["device_id"], "video", NINE + dt.timedelta(minutes=1))
     real_files, real_remove = media.item_files, media.remove_files
@@ -169,18 +170,63 @@ async def test_a_row_that_raises_unexpectedly_does_not_undo_the_rows_already_fin
     monkeypatch.setattr(media, where, poisoned_files if where == "item_files" else poisoned_remove)
     with caplog.at_level(logging.ERROR, logger="loopi_brain.pipeline.retention"):
         result = await retention.apply_retention(pool, pki_settings, now=NOW)
-    assert result == retention.RetentionResult(video=1, files=2, files_failed=1)
+    assert result == retention.RetentionResult(video=1, files=2, files_failed=1)  # once, not 40 times
     assert f"item {second['id']}" in caplog.text and "RuntimeError: poison" in caplog.text
-    rows = {r["id"]: r for r in await fetch_all(pool, "SELECT id, raw_deleted_at, raw_files_gone_at, view_path FROM item")}
+    cols = "id, raw_deleted_at, raw_files_gone_at, view_path"
+    rows = {r["id"]: r for r in await fetch_all(pool, f"SELECT {cols} FROM item")}
     done = rows[first["id"]]
     assert done["raw_deleted_at"] and done["raw_files_gone_at"] and done["view_path"] is None
     assert not any(_exists(pki_settings, first))
-    left = rows[second["id"]]
-    assert left["raw_deleted_at"] is None and left["raw_files_gone_at"] is None
-    assert _exists(pki_settings, second)[0]  # the raw file is intact
-    monkeypatch.undo()  # fixed: the next night deletes it
+    stuck = rows[second["id"]]
+    assert stuck["raw_deleted_at"] and stuck["raw_files_gone_at"] is None  # still marked, still to finish
+    assert _exists(pki_settings, second)[0]  # (its raw file happens to be intact here)
+    monkeypatch.undo()  # fixed: the next run's sweep finishes it
     assert (await retention.apply_retention(pool, pki_settings, now=NOW)).video == 1
     assert not any(_exists(pki_settings, second))
+    assert (await fetch_one(pool, "SELECT raw_files_gone_at FROM item WHERE id = %s", (second["id"],)))[
+        "raw_files_gone_at"]
+
+
+async def test_a_swept_row_whose_raw_file_is_already_gone_stays_marked_when_it_raises(
+    pool, pki_settings, dev, on, monkeypatch
+):
+    """The dead run unlinked the raw file and died before recording it. If the sweep then hits an unexpected error on
+    this row, un-marking it would make a row whose raw file is gone look kept: a reprocess of its day would delete its
+    transcript for nothing. It stays marked."""
+    audio = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET raw_deleted_at = now() WHERE id = %s", (audio["id"],))
+    for rel in audio["files"]:  # everything the dead run had removed
+        (pki_settings.media_root / rel).unlink()
+    real = media.item_files
+
+    def poisoned(kind, raw_path, view_path):
+        raise RuntimeError("poison")
+
+    monkeypatch.setattr(media, "item_files", poisoned)
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)) == retention.RetentionResult(files_failed=1)
+    row = await fetch_one(pool, "SELECT raw_deleted_at, raw_files_gone_at FROM item")
+    assert row["raw_deleted_at"] is not None and row["raw_files_gone_at"] is None
+    monkeypatch.setattr(media, "item_files", real)
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)) == retention.RetentionResult(audio=1)
+    row = await fetch_one(pool, "SELECT raw_deleted_at, raw_files_gone_at FROM item")
+    assert row["raw_deleted_at"] is not None and row["raw_files_gone_at"] is not None
+
+
+async def test_a_failure_with_the_raw_file_already_gone_keeps_the_mark_too(pool, pki_settings, dev, on):
+    """Only a row whose raw file is verifiably still there loses its mark again."""
+    outside = pki_settings.media_root.parent / "outside.mp4"
+    outside.write_bytes(b"keep")
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    async with pool.connection() as conn:  # marked by a dead run that had removed the raw file and the MP4
+        await conn.execute("UPDATE item SET raw_deleted_at = now(), view_path = '../outside.mp4' WHERE id = %s",
+                           (video["id"],))
+    for rel in video["files"]:
+        (pki_settings.media_root / rel).unlink()
+    result = await retention.apply_retention(pool, pki_settings, now=NOW)
+    assert result == retention.RetentionResult(files_failed=1) and outside.exists()
+    row = await fetch_one(pool, "SELECT raw_deleted_at, raw_files_gone_at FROM item")
+    assert row["raw_deleted_at"] is not None and row["raw_files_gone_at"] is None
 
 
 class _Crash(BaseException):
@@ -247,7 +293,7 @@ async def test_an_unfinished_recording_that_still_cannot_be_deleted_is_tried_onc
     pool, pki_settings, dev, on
 ):
     outside = pki_settings.media_root.parent / "outside.h264"
-    outside.parent.mkdir(parents=True, exist_ok=True)
+    pki_settings.media_root.mkdir(parents=True, exist_ok=True)  # the media root of a running brain exists
     outside.write_bytes(b"keep")
     item = await insert_item(pool, dev["device_id"], kind="video", started_at=NINE, raw_path="../outside.h264")
     async with pool.connection() as conn:  # the dead run had marked it

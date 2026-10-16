@@ -11,20 +11,24 @@ Order of work per batch: the rows are marked ``raw_deleted_at`` under their row 
 a row someone else holds, say a reprocess resetting it, is left for the next night) and that is committed
 **before** any file is deleted, so a reprocess never reads "raw is kept" for a file that is going. Once the files
 are gone the row says so (``raw_files_gone_at``, ``view_path`` cleared). A recording whose files could not all be
-deleted gets its mark removed again and is tried the next night; its raw file is only deleted once every copy of
-it is gone, so it never ends up marked kept while its raw file is already lost. A worker that dies between the
-commit and the deletion leaves rows marked without ``raw_files_gone_at``: each run (retention on) first finishes
-those, a batch at a time, whatever the kept days say now (the pages already show them as expired). An unexpected
-error on one recording (a bug, not a file problem) leaves just that recording: its raw file is still there (it goes
-last), so it loses its mark again and the others in the batch keep theirs; an error that escapes the whole batch
-leaves every mark as it is for that sweep. Logs carry counts and ids only, never content.
+deleted gets its mark removed again and is tried the next night, but only while its raw file is verifiably still
+there; its raw file is only deleted once every copy of it is gone. A worker that dies between the commit and the
+deletion leaves rows marked without ``raw_files_gone_at``, possibly with their raw file already unlinked: each run
+(retention on) first finishes those, a batch at a time, whatever the kept days say now (the pages already show them
+as expired). **Fail closed:** when nothing is known about a recording's files (an unexpected error on it, or a file
+that could not be deleted while its raw file is already gone) its mark stays, so a row is never made to look kept
+after its raw file is gone (a reprocess of its day would delete its transcript for nothing); it is not tried again in
+the same run and the next run's sweep retries it. An error that escapes the whole batch leaves every mark as it is,
+for that sweep too. Logs carry counts and ids only, never content.
 """
 from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import anyio
 from psycopg.types.json import Jsonb
@@ -62,11 +66,17 @@ class RetentionResult:
     files_failed: int = 0  # files that could not be deleted (their recordings are tried again next night)
 
 
-def _remove(media_root: Path, rows: list[dict]) -> tuple[list[str], list[str], int, int]:
-    """Delete the files of each row (blocking): (ids whose files are all gone, ids with a file left, files
-    deleted, files that could not be deleted). The raw file goes last and only when every copy went, so a row
-    that fails for any reason, an unexpected error included (counted as one failed file), still has its raw file."""
-    done, left, deleted, failed = [], [], 0, 0
+class _Removed(NamedTuple):
+    done: list[str]  # every file is gone
+    left: list[str]  # a file could not be deleted and the raw file is verifiably still there: loses its mark again
+    stuck: list[str]  # state unknown (unexpected error, or a failure with the raw file already gone): keeps its mark
+    deleted: int  # files deleted
+    failed: int  # files that could not be deleted (an unexpected error on a recording counts as one)
+
+
+def _remove(media_root: Path, rows: list[dict]) -> _Removed:
+    """Delete the files of each row (blocking). The raw file goes last and only when every copy went."""
+    out = _Removed([], [], [], 0, 0)
     for row in rows:
         try:
             files = media.item_files(row["kind"], row["raw_path"], row["view_path"])
@@ -74,15 +84,19 @@ def _remove(media_root: Path, rows: list[dict]) -> tuple[list[str], list[str], i
             if not bad:
                 more, bad = media.remove_files(media_root, [row["raw_path"]])
                 count += more
-        except Exception:
-            log.exception("could not delete the files of item %s; it is tried again next night", row["id"])
-            left.append(row["id"])
-            failed += 1
+        except Exception:  # a bug, not a file problem: nothing is known about this row's files
+            log.exception("could not delete the files of item %s; its mark stays, the next run tries again", row["id"])
+            out.stuck.append(row["id"])
+            out = out._replace(failed=out.failed + 1)
             continue
-        deleted += count
-        failed += len(bad)
-        (left if bad else done).append(row["id"])
-    return done, left, deleted, failed
+        out = out._replace(deleted=out.deleted + count, failed=out.failed + len(bad))
+        if not bad:
+            out.done.append(row["id"])
+        elif os.path.lexists(media_root / row["raw_path"]):  # still there: it can be reprocessed, tried tomorrow
+            out.left.append(row["id"])
+        else:  # the raw file is already gone (a dead run took it): the row must keep saying so
+            out.stuck.append(row["id"])
+    return out
 
 
 async def _claim(pool: AsyncConnectionPool, kind: str, cutoff: dt.datetime, skip: list[str]) -> list[dict]:
@@ -111,12 +125,13 @@ async def _unfinished(pool: AsyncConnectionPool, kind: str, skip: list[str]) -> 
 
 
 async def _delete(pool: AsyncConnectionPool, settings: Settings, rows: list[dict]) -> tuple[int, list[str], int, int]:
-    """Delete the files of marked ``rows``: (recordings finished, ids with a file left, files deleted, files left).
-    Finished ones are recorded as gone and no longer point at a playable copy; the others lose their mark again.
-    An error that escapes ``_remove`` (the worker dying, say) leaves every mark: the next run finishes those."""
-    done, left, deleted, failed = await anyio.to_thread.run_sync(_remove, settings.media_root, rows)
-    await _record(pool, done, left)
-    return len(done), left, deleted, failed
+    """Delete the files of marked ``rows``: (recordings finished, ids not to take again in this run, files deleted,
+    files left). Finished ones are recorded as gone and no longer point at a playable copy; the ``left`` ones lose
+    their mark again; the ``stuck`` ones keep it. An error that escapes ``_remove`` (the worker dying, say) leaves
+    every mark: the next run finishes those."""
+    removed = await anyio.to_thread.run_sync(_remove, settings.media_root, rows)
+    await _record(pool, removed.done, removed.left)
+    return len(removed.done), [*removed.left, *removed.stuck], removed.deleted, removed.failed
 
 
 async def _record(pool: AsyncConnectionPool, done: list[str], left: list[str]) -> None:
@@ -156,15 +171,15 @@ async def apply_retention(
     files = files_failed = 0
     for kind, days in (("video", kept.video_days), ("audio", kept.audio_days)):
         cutoff = now - dt.timedelta(days=days)
-        skip: list[str] = []  # recordings with a file left: tried again next night, not again in this run
+        skip: list[str] = []  # recordings with a file left or in doubt: tried next night, not again in this run
         # What a dead run left comes first, then what is newly due; each in at most MAX_BATCHES batches of BATCH.
         for take in (lambda: _unfinished(pool, kind, skip), lambda: _claim(pool, kind, cutoff, skip)):
             for _ in range(MAX_BATCHES):
                 rows = await take()
                 if not rows:
                     break
-                finished, left, deleted, failed = await _delete(pool, settings, rows)
-                skip.extend(left)
+                finished, not_again, deleted, failed = await _delete(pool, settings, rows)
+                skip.extend(not_again)
                 counts[kind] += finished
                 files += deleted
                 files_failed += failed
