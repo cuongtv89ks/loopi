@@ -36,7 +36,7 @@
 - faster-whisper keeps its temperature fallback (`best_of=5` once `avg_logprob < −1.0`); noisy clips sit near that line, so two runs of one configuration can differ: the plan runs the baseline twice and treats their difference as the noise floor every tuning change must beat.
 - Vietnamese writes the tone of an open "oa", "oe", "uy" in two styles ("hòa"/"hoà", "khỏe"/"khoẻ", "tùy"/"tuỳ"); without one form, equal words count as substitutions (the review's probe: 2 errors in 5 words).
 - The live device has recorded with its +20 dB gain (D19) since smoke8 was flashed, 2026-10-16 08:41 KST; recordings before that are about −55 dBFS and are kept with retention off.
-- 25 questions give a wide interval (18/25 → Wilson 95 % 52–86 %); about 6 clips per language give roughly ±10 points of WER: the set is a baseline, and every number is printed with n and its interval.
+- 25 questions give a wide interval (18/25 → Wilson 95 % 52–86 %); about 6 clips per language give roughly ±10 points of WER: the set is a baseline: every acceptance criterion (hit@5, WER/CER per language, the invented-text share) is printed with n and its 95 % interval; secondary numbers (capped recall@5, hit@10, MRR, rule-set table cells) are printed with n, and comparisons between runs use the noise floor (two baseline runs).
 - What motivates the rules (P2a's live findings, Task 11): most English segments are Whisper's stock inventions on normalised room noise — the lone "Thank you." / "Yeah." class, dozens a night — with avg_logprob ≈ −0.8…−0.9 and no_speech_prob 0.00 (VAD-cut regions), so the P2a filter keeps them; and the phrase-list gaps recorded in the committed P2a ledger (a newscast sign-off, a channel-subscribe request worded differently).
 
 ## Global Constraints
@@ -2775,6 +2775,9 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-17; they amend the steps above):**
+- **R-M11:** `questions.answered` must not raise if the owner removes a question's last correct moment between its two reads (treat a question with no correct moments as "not labelled yet", skipped in scores, not an error), with a test.
+
 ---
 
 ### Task 6: Evaluation runs and `loopi-brain eval` (run, show, compare, rules-impact)
@@ -3937,6 +3940,9 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-17; they amend the steps above):**
+- **R-I1:** `_finish` scores the six rule sets in plain Python (≈ 28 s for 18 long clips) on the worker's event loop, blocking the other job slots: run that CPU-bound scoring with `anyio.to_thread.run_sync`, with a test that the scoring function is called through the thread helper (or that the event loop stays responsive).
+
 ---
 ### Task 7: The Đánh giá page — overview, golden clips and golden keyframes
 
@@ -4671,6 +4677,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-17; they amend the steps above):**
+- **R-M6:** `_candidate` must reuse golden's dominant-language query and day-part helper (Task 4) instead of repeating them.
+- **R-M7:** drop the unused `log` in `eval_routes.py` (or use it).
 
 ---
 
@@ -5758,6 +5768,9 @@ Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
 
+**Pre-flight rulings for this task (controller, 2026-10-17; they amend the steps above):**
+- **R-I2:** the acceptance report must show WHICH run its numbers come from and that run's gain/VAD/rule overrides in the header; if the newest finished run has any override, `acceptance` says so prominently (the controller runs a final no-override run before Task 14 — Task 13/14 text).
+
 ---
 
 ### Task 10: Deploy files — `LOOPI_EVAL_DIR` and the README
@@ -5894,6 +5907,9 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01ETsyruQruHz9Y9A3r351By
 EOF
 ```
+
+**Pre-flight rulings for this task (controller, 2026-10-17; they amend the steps above):**
+- **R-M2/M3:** the README's CPU sampling loop writes `memory.peak` lines too and uses the dated samples file name the Task 14 script reads.
 
 ---
 ### Task 11: Deploy P2c on the live stack (controller-executed)
