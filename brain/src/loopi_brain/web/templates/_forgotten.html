@@ -1,0 +1,4 @@
+<span>Đã quên khoảng {{ first.strftime("%d/%m/%Y %H:%M") }} – {{ last.strftime("%d/%m/%Y %H:%M") }}:
+{{ c.items }} đoạn ghi, {{ c.keyframes }} khung hình, {{ c.transcript_segments }} đoạn transcript, {{ c.moments }} khoảnh khắc,
+{{ c.commitments }} việc cần làm, {{ c.files }} file{% if c.files_failed %} <span class="err">({{ c.files_failed }} file không xoá được, xem log)</span>{% endif %}.
+Chương và recap của những ngày này sẽ được làm lại.</span>

@@ -51,13 +51,32 @@ async def run_ffmpeg(args: list[str], timeout: float) -> bytes:
 
 
 def inside(media_root: Path, rel: str | PurePosixPath) -> Path:
-    """``media_root / rel`` resolved; ValueError for an absolute path or one that leaves the media root (a path
-    read from the database is still checked before a file is read, written or deleted)."""
+    """``media_root / rel`` resolved; ValueError for an absolute path (even one that points into the root), for the
+    media root itself, or for one that leaves the media root, by ``..`` or through a symlink (a path read from the
+    database is still checked before a file is read, written or deleted)."""
+    if PurePosixPath(rel).is_absolute():
+        raise ValueError(f"absolute path: {rel}")
     root = media_root.resolve()
     path = (root / rel).resolve()
     if path == root or not path.is_relative_to(root):
         raise ValueError(f"path outside the media root: {rel}")
     return path
+
+
+def remove_files(media_root: Path, rels: list[str]) -> tuple[int, list[str]]:
+    """Delete media files (blocking); return (files deleted, paths that could not be deleted). A missing file
+    counts as gone; a path outside the media root is refused and reported, never touched."""
+    deleted, failed = 0, []
+    for rel in rels:
+        try:
+            path = inside(media_root, rel)
+            if path.is_file():
+                path.unlink()
+                deleted += 1
+        except (ValueError, OSError) as exc:
+            log.warning("could not delete media file %s: %s", rel, exc)
+            failed.append(rel)
+    return deleted, failed
 
 
 def _view_rel(raw_rel: PurePosixPath, suffix: str) -> PurePosixPath:
@@ -84,6 +103,18 @@ async def remux_to_mp4(src: Path, dst: Path, fps: int) -> None:
 def audio_view_path(raw_rel: PurePosixPath) -> PurePosixPath:
     """``raw/<device>/YYYY/MM/DD/<id>.opus`` -> ``view/<device>/YYYY/MM/DD/<id>.opus``."""
     return _view_rel(raw_rel, ".opus")
+
+
+def item_files(kind: str, raw_path: str, view_path: str | None) -> list[str]:
+    """Every media file that belongs to one item, relative to the media root: its raw file, the MP4 view of a
+    video (``view_path``, once remuxed) and the playback copy of an audio recording. One rule for "Quên khoảng
+    thời gian" and for retention; keyframes and their thumbnails belong to the item's keyframes, not to it."""
+    files = [raw_path]
+    if kind == "video" and view_path:
+        files.append(view_path)
+    if kind == "audio":
+        files.append(str(audio_view_path(PurePosixPath(raw_path))))
+    return files
 
 
 async def normalise_audio(src: Path, dst: Path) -> float:

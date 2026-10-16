@@ -1,0 +1,12 @@
+<div class="card">
+  <p>Từ {{ first.strftime("%d/%m/%Y %H:%M") }} đến {{ last.strftime("%d/%m/%Y %H:%M") }} sẽ bị xoá vĩnh viễn:
+     {{ c.items }} đoạn ghi, {{ c.keyframes }} khung hình, {{ c.transcript_segments }} đoạn transcript,
+     {{ c.moments }} khoảnh khắc, {{ c.commitments }} việc cần làm; {{ c.chapters }} chương mất tóm tắt và
+     {{ c.recaps }} recap sẽ được viết lại.</p>
+  <p class="muted">Dữ liệu thiết bị chưa gửi lên brain (ví dụ khi mất mạng) không bị xoá.</p>
+  <form hx-post="/settings/forget" hx-target="#forget-result" hx-confirm="Xoá vĩnh viễn? Không thể hoàn tác.">
+    <input type="hidden" name="start" value="{{ start }}"><input type="hidden" name="end" value="{{ end }}">
+    <input type="hidden" name="confirm" value="yes">
+    <button>Quên vĩnh viễn</button>
+  </form>
+</div>

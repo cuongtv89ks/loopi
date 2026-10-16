@@ -1,4 +1,5 @@
-"""The Cài đặt page (spec §10.6): providers (read only), retention, reprocessing a day, failed jobs."""
+"""The Cài đặt page (spec §10.6): providers (read only), retention, "Quên khoảng thời gian", reprocessing a day,
+failed jobs."""
 from __future__ import annotations
 
 import datetime as dt
@@ -7,7 +8,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
-from .. import reprocess, store
+from .. import forget, reprocess, store
 from ..pipeline import status
 from ..providers.config import TASKS, ProvidersConfigError, load_providers
 from ..providers.router import model_version
@@ -83,3 +84,36 @@ async def reprocess_day(request: Request, day: dt.date = Form(...), what: list[s
         request, "_reprocessed.html", {"day": day, "r": result, "what": [CHOICE_LABELS[c] for c in reprocess.CHOICES
                                                                        if c in what]}
     )
+
+
+def _local_range(start: str, end: str, zone) -> tuple[dt.datetime, dt.datetime]:
+    """Two ``datetime-local`` form values (local time, no zone) as an aware range; 422 when unusable."""
+    try:
+        values = [dt.datetime.fromisoformat(value) for value in (start, end)]
+        if any(value.tzinfo is not None for value in values):  # never read an offset as local time
+            raise ValueError("the range is in local time, without an offset")
+        first, last = (value.replace(tzinfo=zone) for value in values)
+        forget.check_range(first, last)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return first, last
+
+
+@router.post("/settings/forget/preview", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
+async def forget_preview(request: Request, start: str = Form(...), end: str = Form(...)):
+    zone = request.app.state.settings.zone
+    first, last = _local_range(start, end, zone)
+    counts = await forget.preview(request.app.state.pool, first, last, zone)
+    return TEMPLATES.TemplateResponse(
+        request, "_forget_preview.html", {"start": start, "end": end, "first": first, "last": last, "c": counts}
+    )
+
+
+@router.post("/settings/forget", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
+async def forget_now(request: Request, start: str = Form(...), end: str = Form(...), confirm: str = Form("")):
+    if confirm != "yes":
+        raise HTTPException(status_code=422, detail="not confirmed")
+    state = request.app.state
+    first, last = _local_range(start, end, state.settings.zone)
+    counts = await forget.forget_range(state.pool, state.settings, first, last)
+    return TEMPLATES.TemplateResponse(request, "_forgotten.html", {"first": first, "last": last, "c": counts})

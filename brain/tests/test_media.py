@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -292,3 +292,106 @@ async def test_concurrent_remux_uses_distinct_temp_files(tmp_path, monkeypatch):
     src.write_bytes(NO_VUI_FIXTURE.read_bytes())
     await asyncio.gather(*(media.remux_to_mp4(src, tmp_path / "o.mp4", 2) for _ in range(2)))
     assert len(set(seen)) == 2 and (tmp_path / "o.mp4").is_file()
+
+
+# --- paths: every media file is read, written or deleted only through media.inside -------------------------------
+
+
+def test_inside_resolves_a_relative_path_and_a_dotdot_that_stays_inside(tmp_path):
+    root = tmp_path / "media"
+    (root / "raw" / "dev").mkdir(parents=True)
+    expected = root.resolve() / "raw" / "a.opus"
+    assert media.inside(root, "raw/a.opus") == expected
+    assert media.inside(root, PurePosixPath("raw/a.opus")) == expected
+    assert media.inside(root, "raw/dev/../a.opus") == expected  # a '..' that stays inside the root is fine
+    assert media.inside(root, "raw/./a.opus") == expected
+
+
+@pytest.mark.parametrize("rel", ["", ".", "raw/..", "raw/dev/../.."])
+def test_inside_refuses_the_media_root_itself(tmp_path, rel):
+    (tmp_path / "media" / "raw" / "dev").mkdir(parents=True)
+    with pytest.raises(ValueError):
+        media.inside(tmp_path / "media", rel)
+
+
+def test_inside_refuses_absolute_paths_even_when_they_point_into_the_root(tmp_path):
+    root = tmp_path / "media"
+    (root / "raw").mkdir(parents=True)
+    for rel in ("/etc/passwd", str(root / "raw" / "a.opus"), str(root.resolve() / "raw" / "a.opus")):
+        with pytest.raises(ValueError, match="absolute"):
+            media.inside(root, rel)
+
+
+@pytest.mark.parametrize("rel", ["../outside.opus", "raw/../../outside.opus", "raw/dev/../../../outside.opus"])
+def test_inside_refuses_a_path_that_leaves_the_root(tmp_path, rel):
+    (tmp_path / "media" / "raw" / "dev").mkdir(parents=True)
+    with pytest.raises(ValueError, match="outside the media root"):
+        media.inside(tmp_path / "media", rel)
+
+
+def test_inside_refuses_a_symlink_that_points_out_of_the_root(tmp_path):
+    root = tmp_path / "media"
+    (root / "raw").mkdir(parents=True)
+    secret = tmp_path / "secret.opus"
+    secret.write_bytes(b"keep me")
+    (root / "raw" / "leak.opus").symlink_to(secret)  # a file link
+    (root / "raw" / "door").symlink_to(tmp_path)  # a directory link
+    for rel in ("raw/leak.opus", "raw/door/secret.opus", "raw/door"):
+        with pytest.raises(ValueError, match="outside the media root"):
+            media.inside(root, rel)
+    assert secret.read_bytes() == b"keep me"
+
+
+def test_a_media_root_that_is_itself_a_symlink_still_works(tmp_path):
+    real = tmp_path / "real"
+    (real / "raw").mkdir(parents=True)
+    (tmp_path / "media").symlink_to(real)
+    assert media.inside(tmp_path / "media", "raw/a.opus") == real.resolve() / "raw" / "a.opus"
+
+
+def test_item_files_lists_the_raw_file_and_the_copies_made_from_it():
+    raw_video, raw_audio = "raw/dev/2026/10/14/V1.h264", "raw/dev/2026/10/14/A1.opus"
+    assert media.item_files("video", raw_video, "view/dev/2026/10/14/V1.mp4") == [raw_video, "view/dev/2026/10/14/V1.mp4"]
+    assert media.item_files("video", raw_video, None) == [raw_video]  # not remuxed (yet): no view copy recorded
+    assert media.item_files("audio", raw_audio, None) == [raw_audio, "view/dev/2026/10/14/A1.opus"]
+    assert media.item_files("marker", "raw/dev/2026/10/14/M1.json", None) == ["raw/dev/2026/10/14/M1.json"]
+
+
+def test_remove_files_deletes_files_and_counts_a_missing_one_as_gone(tmp_path):
+    root = tmp_path / "media"
+    for rel in ("raw/a.opus", "view/a.opus"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(b"x")
+    assert media.remove_files(root, ["raw/a.opus", "view/a.opus", "view/never-made.opus"]) == (2, [])
+    assert not (root / "raw" / "a.opus").exists() and not (root / "view" / "a.opus").exists()
+    assert media.remove_files(root, ["raw/a.opus"]) == (0, [])  # a second run finds nothing to do
+
+
+def test_remove_files_refuses_paths_outside_the_root_and_reports_them(tmp_path, caplog):
+    root = tmp_path / "media"
+    (root / "raw").mkdir(parents=True)
+    kept = tmp_path / "kept.opus"
+    kept.write_bytes(b"keep me")
+    (root / "raw" / "leak.opus").symlink_to(kept)
+    (root / "raw" / "own.opus").write_bytes(b"x")
+    rels = ["../kept.opus", str(kept), "raw/leak.opus", "raw/own.opus"]
+    assert media.remove_files(root, rels) == (1, ["../kept.opus", str(kept), "raw/leak.opus"])
+    assert kept.read_bytes() == b"keep me" and (root / "raw" / "leak.opus").is_symlink()
+    assert not (root / "raw" / "own.opus").exists()
+    assert caplog.text.count("could not delete media file") == 3
+
+
+def test_remove_files_reports_what_the_disk_refuses(tmp_path):
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root can delete from a read-only folder")
+    root = tmp_path / "media"
+    (root / "raw").mkdir(parents=True)
+    (root / "raw" / "a.opus").write_bytes(b"x")
+    (root / "raw").chmod(0o555)
+    try:
+        assert media.remove_files(root, ["raw/a.opus"]) == (0, ["raw/a.opus"])
+    finally:
+        (root / "raw").chmod(0o755)
+    assert (root / "raw" / "a.opus").exists()

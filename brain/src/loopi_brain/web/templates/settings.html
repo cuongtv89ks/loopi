@@ -31,6 +31,16 @@
   <p class="muted">Khi bật, lúc 03:00 mỗi đêm file thô cũ hơn số ngày này bị xoá vĩnh viễn (chỉ những đoạn đã phân tích xong). Keyframe, transcript, chương và recap được giữ mãi.</p>
   <div id="retention-result"></div>
 </section>
+<section class="card" id="forget">
+  <h2>Quên khoảng thời gian</h2>
+  <form hx-post="/settings/forget/preview" hx-target="#forget-result">
+    <label>Từ <input type="datetime-local" name="start" required></label>
+    <label>đến <input type="datetime-local" name="end" required></label>
+    <button>Xem trước</button>
+  </form>
+  <p class="muted">Xoá vĩnh viễn mọi đoạn ghi, khung hình, transcript và khoảnh khắc trong khoảng này (tối đa 7 ngày một lần).</p>
+  <div id="forget-result"></div>
+</section>
 <section class="card" id="reprocess">
   <h2>Xử lý lại một ngày</h2>
   <form hx-post="/settings/reprocess" hx-target="#reprocess-result" hx-confirm="Xử lý lại ngày này bằng các model hiện tại?">
