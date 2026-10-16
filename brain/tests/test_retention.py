@@ -1,0 +1,273 @@
+import asyncio
+import datetime as dt
+import logging
+from pathlib import PurePosixPath
+
+import httpx
+import psycopg
+import pytest
+from psycopg.types.json import Jsonb
+
+from helpers import (
+    FakeOllama,
+    fetch_all,
+    fetch_one,
+    insert_item,
+    insert_keyframe,
+    make_ctx,
+    paired_device,
+    write_media,
+)
+from loopi_brain import media, store
+from loopi_brain.app import create_app
+from loopi_brain.pipeline import context, jobs, retention, status
+
+NINE = dt.datetime(2026, 10, 14, 0, 0, tzinfo=dt.UTC)
+NOW = NINE + dt.timedelta(days=8)  # NINE's recordings are 8 days old
+THREE_IN_SEOUL = int(dt.datetime(2026, 10, 14, 18, 0, tzinfo=dt.UTC).timestamp())
+
+
+@pytest.fixture
+async def dev(pool, pki_settings):
+    return await paired_device(pool, pki_settings)
+
+
+@pytest.fixture
+async def on(pool):
+    """The owner turned retention on in Cài đặt (it ships off)."""
+    await store.set_retention(pool, store.Retention(enabled=True))
+
+
+async def _recording(pool, settings, device_id, kind, start, state="done") -> dict:
+    """An item with its raw file (and the copy the web plays) on disk, analysis in ``state``."""
+    item = await insert_item(pool, device_id, kind=kind, started_at=start)
+    raw = (await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item,)))["raw_path"]
+    files = [write_media(settings, raw)]
+    if kind == "video":
+        view = raw.replace("raw/", "view/", 1).replace(".h264", ".mp4")
+        files.append(write_media(settings, view))
+    else:
+        view = None
+        if kind == "audio":
+            files.append(write_media(settings, str(media.audio_view_path(PurePosixPath(raw)))))
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET analysis_state = %s, view_path = %s WHERE id = %s", (state, view, item))
+    return {"id": item, "files": files}
+
+
+def _exists(settings, rec) -> list[bool]:
+    return [(settings.media_root / rel).exists() for rel in rec["files"]]
+
+
+async def test_old_finished_recordings_lose_their_raw_files_and_keep_their_rows(pool, pki_settings, dev, on):
+    device_id = dev["device_id"]
+    video = await _recording(pool, pki_settings, device_id, "video", NINE)
+    keyframe = await insert_keyframe(pool, pki_settings, video["id"], device_id, NINE)
+    audio = await _recording(pool, pki_settings, device_id, "audio", NINE)
+    pending = await _recording(pool, pki_settings, device_id, "audio", NINE, state="pending")
+    skipped = await _recording(pool, pki_settings, device_id, "video", NINE, state="skipped")
+    recent = await _recording(pool, pki_settings, device_id, "video", NOW - dt.timedelta(days=6))
+    marker = await _recording(pool, pki_settings, device_id, "marker", NINE)
+    result = await retention.apply_retention(pool, pki_settings, now=NOW)
+    assert result == retention.RetentionResult(video=2, audio=1, files=6, files_failed=0)
+    assert _exists(pki_settings, video) == [False, False] and _exists(pki_settings, audio) == [False, False]
+    assert _exists(pki_settings, skipped) == [False, False]
+    for kept in (pending, recent, marker):  # analysis not finished, too recent, markers never
+        assert all(_exists(pki_settings, kept))
+    rows = {r["id"]: r for r in await fetch_all(pool, "SELECT id, raw_deleted_at, view_path FROM item")}
+    assert rows[video["id"]]["raw_deleted_at"] is not None and rows[video["id"]]["view_path"] is None
+    assert rows[pending["id"]]["raw_deleted_at"] is None and rows[marker["id"]]["raw_deleted_at"] is None
+    kf_path = (await fetch_one(pool, "SELECT path FROM keyframe WHERE id = %s", (keyframe,)))["path"]
+    assert (pki_settings.media_root / kf_path).exists()  # keyframes are kept for ever
+    assert await retention.apply_retention(pool, pki_settings, now=NOW) == retention.RetentionResult()  # idempotent
+
+
+async def test_the_kept_days_come_from_the_settings(pool, pki_settings, dev):
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    audio = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
+    await store.set_retention(pool, store.Retention(video_days=7, audio_days=30, enabled=True))
+    result = await retention.apply_retention(pool, pki_settings, now=NOW)
+    assert (result.video, result.audio) == (1, 0)
+    assert _exists(pki_settings, video) == [False, False] and all(_exists(pki_settings, audio))
+
+
+async def test_a_video_whose_mp4_is_not_recorded_yet_loses_it_too(pool, pki_settings, dev, on):
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    async with pool.connection() as conn:  # a remux wrote the MP4 and had not said so yet
+        await conn.execute("UPDATE item SET view_path = NULL WHERE id = %s", (video["id"],))
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).files == 2
+    assert not any(_exists(pki_settings, video))
+
+
+async def test_a_file_that_cannot_be_deleted_is_tried_again_next_night(pool, pki_settings, dev, on, caplog):
+    outside = pki_settings.media_root.parent / "outside.h264"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(b"keep")
+    item = await insert_item(pool, dev["device_id"], kind="video", started_at=NINE, raw_path="../outside.h264")
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET analysis_state = 'done' WHERE id = %s", (item,))
+    with caplog.at_level(logging.WARNING):
+        result = await retention.apply_retention(pool, pki_settings, now=NOW)
+    assert result == retention.RetentionResult(files_failed=1) and outside.exists()
+    assert (await fetch_one(pool, "SELECT raw_deleted_at FROM item"))["raw_deleted_at"] is None
+    assert "could not delete media file ../outside.h264" in caplog.text
+
+
+async def test_the_raw_file_stays_when_a_copy_cannot_be_deleted(pool, pki_settings, dev, on):
+    """A recording is never left without its raw file yet counted as kept (a reprocess would then lose its
+    transcript for nothing)."""
+    outside = pki_settings.media_root.parent / "outside.mp4"
+    outside.write_bytes(b"keep")
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET view_path = '../outside.mp4' WHERE id = %s", (video["id"],))
+    result = await retention.apply_retention(pool, pki_settings, now=NOW)
+    assert result == retention.RetentionResult(files=1, files_failed=1)  # the MP4 went, the odd copy was refused
+    assert _exists(pki_settings, video) == [True, False] and outside.exists()
+    row = await fetch_one(pool, "SELECT raw_deleted_at, view_path FROM item")
+    assert row == {"raw_deleted_at": None, "view_path": "../outside.mp4"}
+
+
+async def test_the_mark_is_committed_before_any_file_is_deleted(pool, pki_settings, dev, on, monkeypatch):
+    """A reprocess (FOR UPDATE on the row) must see raw_deleted_at, never NULL for a file being deleted, and must
+    not wait for the unlinking: the row is already marked and unlocked when the first file goes."""
+    audio = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
+    real, seen = media.remove_files, []
+
+    def spy(root, rels):  # runs in a worker thread, like the real deletion
+        with psycopg.connect(pki_settings.database_url, autocommit=True) as other:
+            row = other.execute("SELECT raw_deleted_at FROM item WHERE id = %s FOR UPDATE NOWAIT", (audio["id"],))
+            seen.append((row.fetchone()[0] is not None, [(root / rel).exists() for rel in rels]))
+        return real(root, rels)
+
+    monkeypatch.setattr(media, "remove_files", spy)
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).audio == 1
+    assert seen and all(marked for marked, _ in seen)
+    assert seen[0][1] == [True]  # the playback copy was still there when the mark was already visible
+
+
+async def test_an_unexpected_failure_leaves_nothing_marked(pool, pki_settings, dev, on, monkeypatch):
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+
+    def boom(root, rels):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(media, "remove_files", boom)
+    with pytest.raises(RuntimeError, match="disk on fire"):
+        await retention.apply_retention(pool, pki_settings, now=NOW)
+    assert (await fetch_one(pool, "SELECT raw_deleted_at FROM item"))["raw_deleted_at"] is None  # tried tomorrow
+    assert all(_exists(pki_settings, video))
+
+
+async def test_a_large_backlog_is_taken_in_bounded_batches(pool, pki_settings, dev, on, monkeypatch):
+    monkeypatch.setattr(retention, "BATCH", 2)
+    monkeypatch.setattr(retention, "MAX_BATCHES", 2)
+    for n in range(5):
+        await _recording(pool, pki_settings, dev["device_id"], "video", NINE + dt.timedelta(minutes=n))
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).video == 4
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).video == 1
+
+
+def test_the_hourly_tick_works_only_at_three_local_time(pki_settings):
+    assert retention.due(THREE_IN_SEOUL, pki_settings.zone)
+    assert not retention.due(THREE_IN_SEOUL - 3600, pki_settings.zone)
+    assert not retention.due(THREE_IN_SEOUL + 3600, pki_settings.zone)
+    periodic = {(p.task.name, p.cron) for p in jobs.job_app.periodic_registry.periodic_tasks.values()}
+    assert (jobs.APPLY_RETENTION, "0 * * * *") in periodic
+
+
+async def test_the_job_applies_retention_only_on_the_three_oclock_tick(pool, pki_settings, dev, on):
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE - dt.timedelta(days=30))
+    context.set_context(make_ctx(pool, pki_settings))
+    try:
+        await retention.apply_retention_job(timestamp=int(dt.datetime(2026, 10, 14, 17, 0, tzinfo=dt.UTC).timestamp()))
+        assert all(_exists(pki_settings, video))
+        await retention.apply_retention_job(timestamp=THREE_IN_SEOUL)
+        assert not any(_exists(pki_settings, video))
+    finally:
+        context.set_context(None)
+
+
+async def test_nothing_is_deleted_until_the_owner_turns_retention_on(pool, pki_settings, dev, caplog):
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    audio = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
+    await _recording(pool, pki_settings, dev["device_id"], "audio", NOW - dt.timedelta(days=1))  # too recent
+    assert await retention.preview_retention(pool, now=NOW) == {
+        "video": {"recordings": 1, "bytes": 1}, "audio": {"recordings": 1, "bytes": 1}}  # what it would delete
+    with caplog.at_level(logging.INFO, logger="loopi_brain.pipeline.retention"):
+        assert await retention.apply_retention(pool, pki_settings, now=NOW) == retention.RetentionResult()
+    assert all(_exists(pki_settings, video)) and all(_exists(pki_settings, audio))
+    assert "retention is off" in caplog.text
+    context.set_context(make_ctx(pool, pki_settings))  # ... nor does the 03:00 tick, however old the recordings
+    try:
+        await retention.apply_retention_job(timestamp=THREE_IN_SEOUL)
+    finally:
+        context.set_context(None)
+    assert all(_exists(pki_settings, video)) and all(_exists(pki_settings, audio))
+
+
+async def test_a_recording_someone_else_holds_is_left_for_the_next_night(pool, pki_settings, dev, on):
+    held = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
+    free = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE + dt.timedelta(minutes=1))
+    async with pool.connection() as conn, conn.transaction():  # e.g. "Xử lý lại" is resetting it right now
+        await conn.execute("SELECT 1 FROM item WHERE id = %s FOR UPDATE", (held["id"],))
+        result = await asyncio.wait_for(retention.apply_retention(pool, pki_settings, now=NOW), 10)
+    assert result.audio == 1 and all(_exists(pki_settings, held)) and not any(_exists(pki_settings, free))
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).audio == 1  # the next night
+
+
+async def test_files_a_forget_left_behind_are_deleted_at_three_even_with_retention_off(pool, pki_settings, dev):
+    left = write_media(pki_settings, "raw/x/2026/10/14/left.opus")
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO forget_log (id, range_start, range_end, counts, pending_files)"
+                           " VALUES ('F1', %s, %s, '{}', %s)", (NINE, NINE + dt.timedelta(hours=1), Jsonb([left])))
+    context.set_context(make_ctx(pool, pki_settings))
+    try:
+        await retention.apply_retention_job(timestamp=THREE_IN_SEOUL)
+    finally:
+        context.set_context(None)
+    assert not (pki_settings.media_root / left).exists()
+    assert (await fetch_one(pool, "SELECT pending_files FROM forget_log"))["pending_files"] == []
+
+
+async def test_forgotten_paths_outside_the_media_root_are_dropped_not_deleted(pool, pki_settings, dev, caplog):
+    outside = pki_settings.media_root.parent / "precious.txt"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(b"keep")
+    gone = "raw/x/2026/10/14/already-gone.opus"  # a file that is not there counts as deleted
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO forget_log (id, range_start, range_end, counts, pending_files)"
+                           " VALUES ('F1', %s, %s, '{}', %s)",
+                           (NINE, NINE + dt.timedelta(hours=1), Jsonb(["../precious.txt", "/etc/hostname", gone])))
+    with caplog.at_level(logging.WARNING):
+        assert await retention.retry_forgotten_files(pool, pki_settings) == 0
+    assert outside.exists() and (await fetch_one(pool, "SELECT pending_files FROM forget_log"))["pending_files"] == []
+    assert "it is not deleted and not retried" in caplog.text
+
+
+async def test_forget_rows_with_nothing_left_are_not_visited(pool, pki_settings, dev, monkeypatch):
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO forget_log (id, range_start, range_end, counts) VALUES ('F1', %s, %s, '{}')",
+                           (NINE, NINE + dt.timedelta(hours=1)))
+
+    def boom(*args):
+        raise AssertionError("no file to delete")
+
+    monkeypatch.setattr(media, "remove_files", boom)
+    assert await retention.retry_forgotten_files(pool, pki_settings) == 0
+
+
+async def test_the_settings_page_shows_what_retention_would_delete(pool, pki_settings, dev, jobs_open):
+    await _recording(pool, pki_settings, dev["device_id"], "video", dt.datetime.now(dt.UTC) - dt.timedelta(days=30))
+    app = create_app(pki_settings, pool=pool, http_client=FakeOllama().client(), llm_client=FakeOllama().client())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://brain.test") as c:
+        text = (await c.get("/settings")).text
+    assert "Nếu chạy bây giờ sẽ xoá: video thô 1 đoạn (0.0 GB)" in text and "audio thô 0 đoạn" in text
+
+
+async def test_a_failed_retention_run_waits_for_its_schedule(pool, jobs_open):
+    async with pool.connection() as conn:
+        job_id = await jobs.enqueue(conn, jobs.APPLY_RETENTION, queue="light", queueing_lock="test-retention")
+        await conn.execute("UPDATE procrastinate_jobs SET status = 'failed', attempts = 1 WHERE id = %s", (job_id,))
+    [row] = (await status.pipeline_status(pool))["failed"]
+    assert (row["label"], row["retryable"], row["rerun"]) == ("Dọn dữ liệu cũ", False, "tự chạy lại theo lịch")

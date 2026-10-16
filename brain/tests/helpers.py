@@ -432,3 +432,11 @@ async def insert_chapter(
              chapter_id if title else None, "test" if title else None),
         )
     return chapter_id
+
+
+def write_media(settings, rel: str, data: bytes = b"x") -> str:
+    """Write a small media file at ``rel`` under the media root; return ``rel``."""
+    path = settings.media_root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return rel

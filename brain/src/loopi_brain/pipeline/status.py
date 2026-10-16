@@ -30,6 +30,7 @@ TASK_LABELS = {
     jobs.BUILD_CHAPTERS: "Chia chương",
     jobs.PLAN_RECAPS: "Lên lịch recap",
     jobs.WRITE_RECAP: "Viết recap",
+    jobs.APPLY_RETENTION: "Dọn dữ liệu cũ",
 }
 _LATENCY = (
     "SELECT count(*) AS n, avg(s) AS avg, percentile_cont(0.95) WITHIN GROUP (ORDER BY s) AS p95 FROM ({}) t"

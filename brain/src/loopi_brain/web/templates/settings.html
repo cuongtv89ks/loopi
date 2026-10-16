@@ -28,6 +28,9 @@
     <button>Lưu</button>
   </form>
   <p>Dọn dữ liệu cũ: {% if retention.enabled %}<strong>đang bật</strong>{% else %}<strong>đang tắt</strong> (chưa xoá gì){% endif %}.</p>
+  {% set w = would_delete %}
+  <p>Nếu chạy bây giờ sẽ xoá: video thô {{ w.video.recordings }} đoạn ({{ "%.1f"|format(w.video.bytes / 1e9) }} GB),
+     audio thô {{ w.audio.recordings }} đoạn ({{ "%.1f"|format(w.audio.bytes / 1e9) }} GB).</p>
   <p class="muted">Khi bật, lúc 03:00 mỗi đêm file thô cũ hơn số ngày này bị xoá vĩnh viễn (chỉ những đoạn đã phân tích xong). Keyframe, transcript, chương và recap được giữ mãi.</p>
   <div id="retention-result"></div>
 </section>

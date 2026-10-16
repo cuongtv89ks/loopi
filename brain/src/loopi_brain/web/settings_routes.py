@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
 from .. import forget, reprocess, store
-from ..pipeline import status
+from ..pipeline import retention, status
 from ..providers.config import TASKS, ProvidersConfigError, load_providers
 from ..providers.router import model_version
 from .routes import TEMPLATES, require_htmx
@@ -48,6 +48,7 @@ async def settings_context(request: Request) -> dict:
         "health": await status.model_health(state.settings, state.http),
         "tz": state.settings.tz,
         "retention": await store.get_retention(state.pool),
+        "would_delete": await retention.preview_retention(state.pool),
         "max_days": store.MAX_DAYS,
         "choices": CHOICE_LABELS,
     }
