@@ -6,10 +6,12 @@ import asyncio
 import datetime as dt
 import os
 import sys
+import time
 from pathlib import Path
 
 # Subcommands import what they need: `worker-health` runs every 30 s and must stay light.
 DEFAULT_PKI_DIR = "/srv/loopi/pki"
+EVAL_POLL_S = 10.0  # how often `eval run` looks whether the worker finished the run
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +29,20 @@ def build_parser() -> argparse.ArgumentParser:
     models = sub.add_parser("models", help="AI models")
     models_sub = models.add_subparsers(dest="models_cmd", required=True)
     models_sub.add_parser("pull", help="download the Ollama models in providers.yaml and the Whisper model")
+    evaluation = sub.add_parser("eval", help="evaluate the pipeline on the owner's golden set (spec §13)")
+    eval_sub = evaluation.add_subparsers(dest="eval_cmd", required=True)
+    run = eval_sub.add_parser("run", help="ask the worker for a run, wait for it and print its numbers")
+    run.add_argument("--max-gain-db", type=float, help="the ASR gain ceiling for this run only")
+    run.add_argument("--vad-threshold", type=float, help="the VAD threshold for this run only")
+    run.add_argument("--no-wait", action="store_true", help="print the run id and return")
+    run.add_argument("--timeout", type=float, default=3 * 3600, help="seconds to wait (default 3 h)")
+    show = eval_sub.add_parser("show", help="print the numbers of a run (default: the newest)")
+    show.add_argument("run_id", nargs="?")
+    compare = eval_sub.add_parser("compare", help="two finished runs side by side (the noise floor, a tuning change)")
+    compare.add_argument("first")
+    compare.add_argument("second")
+    impact = eval_sub.add_parser("rules-impact", help="what each rule would drop from the live transcripts (counts)")
+    impact.add_argument("--days", type=int, default=7, help="transcripts written in the last DAYS days (default 7)")
     return parser
 
 
@@ -110,6 +126,57 @@ def _models_pull() -> int:
     return 0
 
 
+async def _eval(args: argparse.Namespace) -> int:
+    from .config import Settings
+    from .db import make_pool
+    from .evaluation import runner
+    from .pipeline.jobs import open_jobs
+
+    settings = Settings()
+    pool = make_pool(settings.database_url)
+    await pool.open()
+    try:
+        if args.eval_cmd == "show":
+            run = await runner.latest_run(pool, args.run_id)
+            if run is None:
+                print("no evaluation run yet" if args.run_id is None else f"no run {args.run_id}")
+                return 1
+            print(runner.format_run(run, settings.zone))
+            return 0
+        if args.eval_cmd == "compare":
+            runs = [await runner.latest_run(pool, run_id) for run_id in (args.first, args.second)]
+            if None in runs:
+                print("no such run")
+                return 1
+            print(runner.format_compare(*runs))
+            return 0
+        if args.eval_cmd == "rules-impact":
+            since = dt.datetime.now(dt.UTC) - dt.timedelta(days=max(args.days, 1))
+            print(runner.format_rules_impact(await runner.rules_impact(pool, since)))
+            return 0
+        try:
+            async with open_jobs(pool):
+                run_id, created = await runner.start_run(
+                    pool, settings, max_gain_db=args.max_gain_db, vad_threshold=args.vad_threshold
+                )
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"{'started' if created else 'already waiting or running'}: {run_id}")
+        if args.no_wait:
+            return 0
+        deadline = time.monotonic() + args.timeout
+        while (run := await runner.latest_run(pool, run_id))["status"] not in ("done", "failed"):
+            if time.monotonic() > deadline:
+                print(f"still {run['status']} ({run['heard']}/{run['clips']} clips); see `loopi-brain eval show {run_id}`")
+                return 1
+            await asyncio.sleep(EVAL_POLL_S)
+        print(runner.format_run(run, settings.zone))
+        return 0 if run["status"] == "done" else 1
+    finally:
+        await pool.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "init-pki":
@@ -126,4 +193,6 @@ def main(argv: list[str] | None = None) -> int:
         return _worker_health()
     if args.cmd == "models":
         return _models_pull()
+    if args.cmd == "eval":
+        return asyncio.run(_eval(args))
     return 2

@@ -19,6 +19,7 @@ TASK_MODULES = [
     "loopi_brain.pipeline.chapters",
     "loopi_brain.pipeline.recap",
     "loopi_brain.pipeline.retention",
+    "loopi_brain.evaluation.runner",
 ]
 
 ANALYZE_VIDEO = "analyze_video"
@@ -34,6 +35,7 @@ BUILD_CHAPTERS = "build_chapters"
 PLAN_RECAPS = "plan_recaps"
 WRITE_RECAP = "write_recap"
 APPLY_RETENTION = "apply_retention"
+RUN_EVAL = "run_eval"
 PIPELINE_TASKS = (ANALYZE_VIDEO, CAPTION_KEYFRAME, TRANSCRIBE_AUDIO, INDEX_MARKER, EMBED_MOMENTS)
 # Runs that start again by themselves (the dispatcher asks for embedding runs; the scheduler starts
 # each periodic tick; the hourly planner asks for each day's chapters again), so a failed one is never
