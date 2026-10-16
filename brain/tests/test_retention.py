@@ -159,6 +159,80 @@ async def test_an_unexpected_failure_leaves_nothing_marked(pool, pki_settings, d
     assert all(_exists(pki_settings, video))
 
 
+class _Crash(BaseException):
+    """The worker dies (not an Exception: nothing in the code under test may catch it)."""
+
+
+async def _marked_then_crashed(pool, settings, monkeypatch, *recordings) -> None:
+    """Run retention with the file deletion dying after the mark was committed."""
+    real = media.remove_files
+
+    def crash(root, rels):
+        raise _Crash
+
+    monkeypatch.setattr(media, "remove_files", crash)
+    with pytest.raises(_Crash):
+        await retention.apply_retention(pool, settings, now=NOW)
+    monkeypatch.setattr(media, "remove_files", real)
+    marked = await fetch_all(pool, "SELECT raw_deleted_at, raw_files_gone_at FROM item")
+    assert marked and all(r["raw_deleted_at"] and r["raw_files_gone_at"] is None for r in marked)
+    assert all(all(_exists(settings, rec)) for rec in recordings)  # what the dead run left on disk
+
+
+async def test_files_left_by_a_crashed_run_are_removed_at_the_next_tick(pool, pki_settings, dev, on, monkeypatch):
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    audio = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
+    async with pool.connection() as conn:  # the run died in the video batch; its audio batch left the same state
+        await conn.execute("UPDATE item SET raw_deleted_at = now() WHERE id = %s", (audio["id"],))
+    await _marked_then_crashed(pool, pki_settings, monkeypatch, video, audio)
+    # the next tick finishes them, whatever the kept days say now: the owner already saw them as expired
+    await store.set_retention(pool, store.Retention(video_days=3000, audio_days=3000, enabled=True))
+    result = await retention.apply_retention(pool, pki_settings, now=NOW)
+    assert result == retention.RetentionResult(video=1, audio=1, files=4)
+    assert not any(_exists(pki_settings, video)) and not any(_exists(pki_settings, audio))
+    rows = await fetch_all(pool, "SELECT raw_deleted_at, raw_files_gone_at, view_path FROM item")
+    assert len(rows) == 2 and all(r["raw_deleted_at"] and r["raw_files_gone_at"] and r["view_path"] is None for r in rows)
+    assert await retention.apply_retention(pool, pki_settings, now=NOW) == retention.RetentionResult()  # finished
+
+
+async def test_the_tick_finishes_a_recording_the_dead_run_left_half_deleted(pool, pki_settings, dev, on, monkeypatch):
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    await _marked_then_crashed(pool, pki_settings, monkeypatch, video)
+    (pki_settings.media_root / video["files"][1]).unlink()  # the MP4 had gone before the worker died
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).files == 1  # the raw file, the MP4 is gone
+    assert not any(_exists(pki_settings, video))
+
+
+async def test_the_unfinished_are_taken_in_bounded_batches_and_never_while_retention_is_off(
+    pool, pki_settings, dev, on, monkeypatch
+):
+    recs = [await _recording(pool, pki_settings, dev["device_id"], "audio", NINE + dt.timedelta(minutes=n))
+            for n in range(3)]
+    await _marked_then_crashed(pool, pki_settings, monkeypatch, *recs)
+    await store.set_retention(pool, store.Retention(enabled=False))
+    assert await retention.apply_retention(pool, pki_settings, now=NOW) == retention.RetentionResult()
+    assert all(all(_exists(pki_settings, rec)) for rec in recs)
+    await store.set_retention(pool, store.Retention(enabled=True))
+    monkeypatch.setattr(retention, "BATCH", 2)
+    monkeypatch.setattr(retention, "MAX_BATCHES", 1)
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).audio == 2
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).audio == 1
+
+
+async def test_an_unfinished_recording_that_still_cannot_be_deleted_is_tried_once_and_again_next_night(
+    pool, pki_settings, dev, on
+):
+    outside = pki_settings.media_root.parent / "outside.h264"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(b"keep")
+    item = await insert_item(pool, dev["device_id"], kind="video", started_at=NINE, raw_path="../outside.h264")
+    async with pool.connection() as conn:  # the dead run had marked it
+        await conn.execute("UPDATE item SET analysis_state = 'done', raw_deleted_at = now() WHERE id = %s", (item,))
+    result = await retention.apply_retention(pool, pki_settings, now=NOW)
+    assert result == retention.RetentionResult(files_failed=1) and outside.exists()  # not retried within the run
+    assert (await fetch_one(pool, "SELECT raw_deleted_at FROM item"))["raw_deleted_at"] is None
+
+
 async def test_a_large_backlog_is_taken_in_bounded_batches(pool, pki_settings, dev, on, monkeypatch):
     monkeypatch.setattr(retention, "BATCH", 2)
     monkeypatch.setattr(retention, "MAX_BATCHES", 2)
@@ -271,3 +345,27 @@ async def test_a_failed_retention_run_waits_for_its_schedule(pool, jobs_open):
         await conn.execute("UPDATE procrastinate_jobs SET status = 'failed', attempts = 1 WHERE id = %s", (job_id,))
     [row] = (await status.pipeline_status(pool))["failed"]
     assert (row["label"], row["retryable"], row["rerun"]) == ("Dọn dữ liệu cũ", False, "tự chạy lại theo lịch")
+
+
+async def test_turning_retention_on_asks_first_and_says_what_the_next_run_deletes(pool, pki_settings, dev, jobs_open):
+    await _recording(pool, pki_settings, dev["device_id"], "video", dt.datetime.now(dt.UTC) - dt.timedelta(days=30))
+    await store.set_retention(pool, store.Retention(video_days=9, audio_days=5))
+    app = create_app(pki_settings, pool=pool, http_client=FakeOllama().client(), llm_client=FakeOllama().client())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://brain.test") as c:
+        text = (await c.get("/settings")).text
+    [form] = [part for part in text.split("<form") if 'hx-post="/settings/retention"' in part]
+    form = form.split(">", 1)[0]
+    assert ('hx-confirm="Bật dọn dữ liệu cũ? Lúc 03:00 lần chạy tới sẽ xoá vĩnh viễn (theo số ngày đã lưu: video 9, '
+            'audio 5): video thô 1 đoạn (0.0 GB), audio thô 0 đoạn (0.0 GB). Không thể hoàn tác."') in form
+    # switched off (or only the days changed with it off), the save needs no question
+    assert "hx-on::confirm=" in form and "this.elements.enabled.checked" in form and "issueRequest(true)" in form
+
+
+async def test_keyframes_and_their_thumbnails_are_still_served_after_retention(pool, pki_settings, dev, on, jobs_open):
+    video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
+    keyframe = await insert_keyframe(pool, pki_settings, video["id"], dev["device_id"], NINE)
+    assert (await retention.apply_retention(pool, pki_settings, now=NOW)).video == 1
+    app = create_app(pki_settings, pool=pool, http_client=FakeOllama().client(), llm_client=FakeOllama().client())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://brain.test") as c:
+        r = await c.get(f"/thumb/{keyframe}.jpg")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"

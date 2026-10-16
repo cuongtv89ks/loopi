@@ -25,7 +25,8 @@ def test_migrate_is_idempotent_and_creates_schema(database_url):
         ).fetchall()
         names = {r[0] for r in conn.execute("SELECT name FROM schema_migration")}
     assert EXPECTED_TABLES <= {r[0] for r in rows}
-    assert {"001_init.sql", "002_pipeline.sql", "003_understanding.sql", PROCRASTINATE_SCHEMA} <= names
+    applied = {"001_init.sql", "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql"}
+    assert applied | {PROCRASTINATE_SCHEMA} <= names
 
 
 def test_recorded_procrastinate_schema_matches_installed_version():
@@ -60,7 +61,9 @@ def test_p1_rows_become_pending_after_upgrade(database_url):
                 "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes, raw_path, status)"
                 " VALUES ('I1', 'D1', 'audio', now(), now(), 'x', 1, 'raw/x.opus', 'ready')"
             )
-        assert migrate(url) == ["002_pipeline.sql", "003_understanding.sql", PROCRASTINATE_SCHEMA]
+        assert migrate(url) == [
+            "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql", PROCRASTINATE_SCHEMA
+        ]
         with psycopg.connect(url) as conn:
             state = conn.execute("SELECT analysis_state, analysis_job_id FROM item WHERE id = 'I1'").fetchone()
         assert state == ("pending", None)
@@ -84,7 +87,8 @@ def test_concurrent_migrations_apply_each_step_once(database_url):
             t.join()
     assert errors == []
     assert sorted(results, key=len) == [
-        [], ["001_init.sql", "002_pipeline.sql", "003_understanding.sql", PROCRASTINATE_SCHEMA]
+        [],
+        ["001_init.sql", "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql", PROCRASTINATE_SCHEMA],
     ]
 
 

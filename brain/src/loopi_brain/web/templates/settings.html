@@ -21,16 +21,20 @@
 </section>
 <section class="card" id="retention">
   <h2>Lưu trữ</h2>
-  <form hx-post="/settings/retention" hx-target="#retention-result">
+  {% set w = would_delete %}
+  {% set deletes = "video thô " ~ w.video.recordings ~ " đoạn (" ~ ("%.1f"|format(w.video.bytes / 1e9)) ~ " GB), audio thô "
+                   ~ w.audio.recordings ~ " đoạn (" ~ ("%.1f"|format(w.audio.bytes / 1e9)) ~ " GB)" %}
+  {# Saving with the switch on asks first, naming what the next run would delete; with it off no question is asked. #}
+  <form hx-post="/settings/retention" hx-target="#retention-result"
+        hx-confirm="Bật dọn dữ liệu cũ? Lúc 03:00 lần chạy tới sẽ xoá vĩnh viễn (theo số ngày đã lưu: video {{ retention.video_days }}, audio {{ retention.audio_days }}): {{ deletes }}. Không thể hoàn tác."
+        hx-on::confirm="if (!this.elements.enabled.checked) { event.preventDefault(); event.detail.issueRequest(true); }">
     <label>Giữ video thô <input type="number" name="video_days" min="1" max="{{ max_days }}" required value="{{ retention.video_days }}"> ngày</label>
     <label>Giữ audio thô <input type="number" name="audio_days" min="1" max="{{ max_days }}" required value="{{ retention.audio_days }}"> ngày</label>
     <label><input type="checkbox" name="enabled"{% if retention.enabled %} checked{% endif %}> Bật dọn dữ liệu cũ</label>
     <button>Lưu</button>
   </form>
   <p>Dọn dữ liệu cũ: {% if retention.enabled %}<strong>đang bật</strong>{% else %}<strong>đang tắt</strong> (chưa xoá gì){% endif %}.</p>
-  {% set w = would_delete %}
-  <p>Nếu chạy bây giờ sẽ xoá: video thô {{ w.video.recordings }} đoạn ({{ "%.1f"|format(w.video.bytes / 1e9) }} GB),
-     audio thô {{ w.audio.recordings }} đoạn ({{ "%.1f"|format(w.audio.bytes / 1e9) }} GB).</p>
+  <p>Nếu chạy bây giờ sẽ xoá: {{ deletes }}.</p>
   <p class="muted">Khi bật, lúc 03:00 mỗi đêm file thô cũ hơn số ngày này bị xoá vĩnh viễn (chỉ những đoạn đã phân tích xong). Keyframe, transcript, chương và recap được giữ mãi.</p>
   <div id="retention-result"></div>
 </section>

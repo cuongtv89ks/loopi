@@ -232,3 +232,53 @@ async def test_a_playback_copy_written_after_its_item_was_forgotten_is_removed_a
     assert r.status_code == 404 and b"copy" not in r.content
     assert not view.exists()
     assert _leftovers(pki_settings) == []
+
+
+async def test_a_recording_retention_has_marked_is_gone_and_no_copy_is_made(web, pool, pki_settings, dev, monkeypatch):
+    item_id, raw = await _audio(pool, pki_settings, dev["device_id"])
+    async with pool.connection() as conn:  # retention committed its mark; the files are about to go
+        await conn.execute("UPDATE item SET raw_deleted_at = now() WHERE id = %s", (item_id,))
+
+    async def never(*_a):
+        raise AssertionError("no copy of an expired recording may be made")
+
+    monkeypatch.setattr(media, "normalise_audio", never)
+    assert (await web.get(f"/audio/{item_id}.opus")).status_code == 404
+    view = _view(pki_settings, raw)
+    view.parent.mkdir(parents=True, exist_ok=True)
+    view.write_bytes(b"copy")  # a copy that is still there is not served either
+    assert (await web.get(f"/audio/{item_id}.opus")).status_code == 404
+
+
+async def test_a_playback_copy_written_after_retention_marked_its_item_is_removed_and_not_served(
+    web, pool, pki_settings, dev, monkeypatch
+):
+    item_id, raw = await _audio(pool, pki_settings, dev["device_id"], body=b"raw bytes")
+    view = _view(pki_settings, raw)
+
+    async def written_then_expired(src, dst):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"copy")
+        async with pool.connection() as conn:  # the 03:00 retention commits while the copy is being made
+            await conn.execute("UPDATE item SET raw_deleted_at = now() WHERE id = %s", (item_id,))
+        return 1.0
+
+    monkeypatch.setattr(media, "normalise_audio", written_then_expired)
+    r = await web.get(f"/audio/{item_id}.opus")
+    assert r.status_code == 404 and b"copy" not in r.content
+    assert not view.exists() and _leftovers(pki_settings) == []
+
+
+async def test_the_raw_fallback_is_not_served_for_a_recording_retention_took_meanwhile(
+    web, pool, pki_settings, dev, monkeypatch
+):
+    item_id, raw = await _audio(pool, pki_settings, dev["device_id"], body=b"raw bytes")
+
+    async def fails_after_retention(src, dst):
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE item SET raw_deleted_at = now() WHERE id = %s", (item_id,))
+        raw.unlink()  # ... and its raw file went
+        raise media.MediaError("source vanished")
+
+    monkeypatch.setattr(media, "normalise_audio", fails_after_retention)
+    assert (await web.get(f"/audio/{item_id}.opus")).status_code == 404  # not a 500 for a file that is gone

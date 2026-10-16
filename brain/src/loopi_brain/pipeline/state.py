@@ -70,6 +70,13 @@ async def item_exists(pool: AsyncConnectionPool, item_id: str) -> bool:
         return await cur.fetchone() is not None
 
 
+async def raw_kept(pool: AsyncConnectionPool, item_id: str) -> bool:
+    """Does the item exist with its raw file not marked as removed by retention?"""
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT 1 FROM item WHERE id = %s AND raw_deleted_at IS NULL", (item_id,))
+        return await cur.fetchone() is not None
+
+
 async def keyframe_exists(pool: AsyncConnectionPool, keyframe_id: str) -> bool:
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT 1 FROM keyframe WHERE id = %s", (keyframe_id,))

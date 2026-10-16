@@ -9,11 +9,13 @@ retries the media files a "Quên khoảng thời gian" could not delete at once.
 
 Order of work per batch: the rows are marked ``raw_deleted_at`` under their row locks (``FOR UPDATE SKIP LOCKED``:
 a row someone else holds, say a reprocess resetting it, is left for the next night) and that is committed
-**before** any file is deleted, so a reprocess never reads "raw is kept" for a file that is going. A recording whose
-files could not all be deleted gets its mark removed again and is tried the next night; its raw file is only
-deleted once every copy of it is gone, so it never ends up marked kept while its raw file is already lost. (A
-crash between the commit and the deletion leaves marked rows whose files remain: the unsafe direction for
-privacy, never for data.) Logs carry counts only, never content.
+**before** any file is deleted, so a reprocess never reads "raw is kept" for a file that is going. Once the files
+are gone the row says so (``raw_files_gone_at``, ``view_path`` cleared). A recording whose files could not all be
+deleted gets its mark removed again and is tried the next night; its raw file is only deleted once every copy of
+it is gone, so it never ends up marked kept while its raw file is already lost. A worker that dies between the
+commit and the deletion leaves rows marked without ``raw_files_gone_at``: each run (retention on) first finishes
+those, a batch at a time, whatever the kept days say now (the pages already show them as expired).
+Logs carry counts only, never content.
 """
 from __future__ import annotations
 
@@ -40,6 +42,8 @@ MAX_BATCHES = 40  # at most 20 000 recordings of each kind per night; a bigger b
 
 # Finished recordings of one kind whose raw file is still kept and that ended before a cutoff.
 _DUE = "kind = %s AND raw_deleted_at IS NULL AND analysis_state IN ('done', 'skipped') AND ended_at < %s"
+# Recordings of one kind marked as expired whose files are not yet known to be gone (a run died in between).
+_UNFINISHED = "kind = %s AND raw_deleted_at IS NOT NULL AND raw_files_gone_at IS NULL"
 
 
 @dataclass(frozen=True)
@@ -80,10 +84,36 @@ async def _claim(pool: AsyncConnectionPool, kind: str, cutoff: dt.datetime, skip
     return rows
 
 
-async def _finish(pool: AsyncConnectionPool, done: list[str], left: list[str]) -> None:
-    """Recordings whose files are gone no longer point at a playable copy; the others lose their mark again."""
+async def _unfinished(pool: AsyncConnectionPool, kind: str, skip: list[str]) -> list[dict]:
+    """Up to BATCH recordings of ``kind`` marked by a run that did not finish (none of ``skip``), oldest first."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            f"SELECT id, kind, raw_path, view_path FROM item WHERE {_UNFINISHED} AND NOT (id = ANY(%s))"
+            " ORDER BY raw_deleted_at, id LIMIT %s",
+            (kind, skip, BATCH),
+        )
+        return await cur.fetchall()
+
+
+async def _delete(pool: AsyncConnectionPool, settings: Settings, rows: list[dict]) -> tuple[int, list[str], int, int]:
+    """Delete the files of marked ``rows``: (recordings finished, ids with a file left, files deleted, files left).
+    Finished ones are recorded as gone and no longer point at a playable copy; the others lose their mark again."""
+    ids = [r["id"] for r in rows]
+    try:
+        done, left, deleted, failed = await anyio.to_thread.run_sync(_remove, settings.media_root, rows)
+    except Exception:  # unexpected: leave nothing marked whose files may still be there, then fail the run
+        log.exception("deleting the raw files of %d recordings failed; they are tried again", len(rows))
+        await _record(pool, [], ids)
+        raise
+    await _record(pool, done, left)
+    return len(done), left, deleted, failed
+
+
+async def _record(pool: AsyncConnectionPool, done: list[str], left: list[str]) -> None:
     async with pool.connection() as conn, conn.transaction():
-        await conn.execute("UPDATE item SET view_path = NULL WHERE id = ANY(%s)", (done,))
+        await conn.execute(
+            "UPDATE item SET view_path = NULL, raw_files_gone_at = now() WHERE id = ANY(%s)", (done,)
+        )
         await conn.execute("UPDATE item SET raw_deleted_at = NULL WHERE id = ANY(%s)", (left,))
 
 
@@ -117,21 +147,17 @@ async def apply_retention(
     for kind, days in (("video", kept.video_days), ("audio", kept.audio_days)):
         cutoff = now - dt.timedelta(days=days)
         skip: list[str] = []  # recordings with a file left: tried again next night, not again in this run
-        for _ in range(MAX_BATCHES):
-            rows = await _claim(pool, kind, cutoff, skip)
-            if not rows:
-                break
-            try:
-                done, left, deleted, failed = await anyio.to_thread.run_sync(_remove, settings.media_root, rows)
-            except Exception:  # unexpected: leave nothing marked whose files may still be there, then fail the run
-                log.exception("deleting the raw files of %d recordings failed; they are tried again", len(rows))
-                await _finish(pool, [], [r["id"] for r in rows])
-                raise
-            await _finish(pool, done, left)
-            skip.extend(left)
-            counts[kind] += len(done)
-            files += deleted
-            files_failed += failed
+        # What a dead run left comes first, then what is newly due; each in at most MAX_BATCHES batches of BATCH.
+        for take in (lambda: _unfinished(pool, kind, skip), lambda: _claim(pool, kind, cutoff, skip)):
+            for _ in range(MAX_BATCHES):
+                rows = await take()
+                if not rows:
+                    break
+                finished, left, deleted, failed = await _delete(pool, settings, rows)
+                skip.extend(left)
+                counts[kind] += finished
+                files += deleted
+                files_failed += failed
     result = RetentionResult(counts["video"], counts["audio"], files, files_failed)
     log.info("retention (video %d days, audio %d days): %s", kept.video_days, kept.audio_days, result)
     return result
