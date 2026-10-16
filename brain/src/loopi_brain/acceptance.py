@@ -10,7 +10,9 @@
   written.
 - From the newest finished evaluation run (D22): WER and CER for every language with clip counts and 95 % intervals
   (the 30 % rule reads WER for vi and en, CER for ko), the no-speech check, and hit@5 (target 70 %) with its interval,
-  capped recall@5, hit@10 and MRR; a language without a clip is "not measurable", never a pass.
+  capped recall@5, hit@10 and MRR; a language without a clip is "not measurable", never a pass, and golden clips that
+  could not be transcribed are counted in total and per language (all of a language's failed: "not measurable", with
+  the reason).
 - CPU time per day from two cgroup samples per service, taken on the host as the P2a measurement window did
   (``<service> <UTC time> usage_usec <n> started=<container start>`` and ``<service> memory.peak <bytes>`` lines).
   A window shorter than 24 h gives a per-day figure that is extrapolated, and the report says so.
