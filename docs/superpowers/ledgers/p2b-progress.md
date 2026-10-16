@@ -148,3 +148,7 @@ Final fix wave re-review (opus): all findings ADDRESSED, no new Critical/Importa
 - Ruling: park (P2a code) — parse_caption quotes the caption model's answer into keyframe.caption_error and tracebacks — cost if wrong: image-derived text in logs.
 - Ruling: park (cosmetic) — forget deletes a forgotten day's build_chapters day_job_error row, so its failed job shows an empty error cell on Xử lý.
 Tasks 1–13 complete; final review clean after one fix wave. Task 14 (deploy) waits for 2026-10-17 04:28 (P2a window) + P2a Task 11 report + the owner's yes.
+Follow-up (owner approved a+b 2026-10-16): fix the two parked private-text log leaks (ruling 46 recap.sourced, 47 P2a parse_caption) before the deploy — brief followup-brief.md; dispatched (BASE e02269b).
+Follow-up: complete (commit 46339cb, 696 passed + 1 skipped, 99 %; review clean): recap drop log carries day + length + ref-shape only; parse_caption reuses llm.parse_answer (invalid=CaptionInvalid) — no answer text in errors, caption_error, logs or chains; retries unchanged.
+- Ruling: at deploy (Task 14) scrub old keyframe.caption_error rows written by P2a that quote caption text (`… got '…'`): count them, then replace the message with a neutral one (derived error text, not user data) — cost if wrong: an old error loses its detail.
+Follow-up minors (deferred): the cut-off caption test pins a fixture-derived character position; `invalid: type[Exception]` could be a Callable.
