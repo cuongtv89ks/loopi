@@ -1,4 +1,5 @@
 import datetime as dt
+import logging
 
 import pytest
 
@@ -158,6 +159,53 @@ async def test_a_long_day_fits_the_prompt_budget(pool, dev, ctx, ollama):
     assert 0 < len(speech) <= recap.MAX_SPEECH_LINES
     assert sum(len(line) + 1 for line in user.split("\n") if line.startswith(("[S", "[M", "09:"))) <= recap.PROMPT_BUDGET
     assert all(line.count("lời") >= 30 for line in speech)  # the longest lines, not the first ones
+
+
+async def test_a_busy_day_keeps_every_chapter_and_the_evening_within_the_budget(pool, dev, ctx, ollama, pki_settings):
+    device_id, zone = dev["device_id"], pki_settings.zone
+    seven = dt.datetime.combine(DAY, dt.time(7, 0), tzinfo=zone).astimezone(dt.UTC)  # 07:00 local
+    for k in range(14):  # 14 chapters of 300-600 characters of summary, the last one in the evening
+        title = "Chương cuối" if k == 13 else f"Chương {k}"
+        await insert_chapter(pool, DAY, seven + dt.timedelta(minutes=70 * k), seven + dt.timedelta(minutes=70 * k + 60),
+                             title=title, summary=("Một đoạn mô tả dài. " * 30)[: 300 + 23 * k])
+    for n in range(700):  # a speech line every 82 s from 07:00 to 22:55, 1 to 40 words long
+        await insert_moment(pool, device_id, kind="speech", ts=seven + dt.timedelta(seconds=82 * n), lang="vi",
+                            text=" ".join(["lời"] * (n % 40 + 1)))
+    evening = await insert_moment(pool, device_id, kind="speech", ts=seven + dt.timedelta(hours=15, minutes=30),
+                                  lang="vi", text="đặt vé tàu ngày mai " + " ".join(["lời"] * 40))  # 22:30, the longest
+    for n in range(30):  # a marked moment every 32 minutes
+        await insert_moment(pool, device_id, kind="marker", ts=seven + dt.timedelta(minutes=32 * n))
+    material = await recap.recap_material(pool, DAY, zone)
+    assert len(material.chapters) == 14 and "Chương cuối" in material.chapters[-1]  # every chapter, clipped to fit
+    assert sum(len(line) + 1 for line in material.chapters + material.markers + material.speech) <= recap.PROMPT_BUDGET
+    assert 0 < len(material.speech) <= recap.MAX_SPEECH_LINES
+    times = [line.split()[1] for line in material.speech]
+    assert times == sorted(times)  # numbered in time order, whichever lines were chosen
+    [late] = [line for line in material.speech if "đặt vé tàu" in line]  # chosen for its length, not its time
+    assert late.startswith(("[S")) and " 22:30 " in late
+    assert material.refs[late[1: late.index("]")]][0] == evening
+    marked = [material.refs[line[1: line.index("]")]][1] for line in material.markers]
+    assert len(marked) >= 5 and marked[0] == seven and marked[-1] >= seven + dt.timedelta(hours=13)  # spread over the day
+    await recap.write_recap(ctx, DAY)
+    user = _chats(ollama)[0]["messages"][1]["content"]
+    assert "Chương cuối" in user and "đặt vé tàu" in user
+
+
+async def test_a_chapter_without_a_summary_yet_is_still_listed(pool, dev, pki_settings):
+    await insert_chapter(pool, DAY, NINE, NINE + dt.timedelta(hours=1))  # its summary has not been written
+    await insert_chapter(pool, DAY, NINE + dt.timedelta(hours=2), NINE + dt.timedelta(hours=3), title="Nấu ăn",
+                         summary="Hai người nấu ăn trong bếp.")
+    await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, text="Xin chào", lang="vi")
+    material = await recap.recap_material(pool, DAY, pki_settings.zone)
+    assert material.chapters == ["09:00–10:00 (no summary yet)", "11:00–12:00 Nấu ăn: Hai người nấu ăn trong bếp."]
+
+
+async def test_a_dropped_commitment_logs_its_source_and_day_but_never_its_text(pool, dev, ctx, caplog):
+    await _day(pool, dev["device_id"])
+    caplog.set_level(logging.INFO)
+    await recap.write_recap(ctx, DAY)  # ANSWER cites "S99" for "Một việc bịa ra"
+    assert "S99" in caplog.text and "2026-10-14" in caplog.text
+    assert "Một việc bịa ra" not in caplog.text and "khám răng" not in caplog.text
 
 
 async def test_the_planner_writes_today_at_23_30_and_earlier_days_once_settled(pool, dev, ctx, pki_settings, jobs_open):

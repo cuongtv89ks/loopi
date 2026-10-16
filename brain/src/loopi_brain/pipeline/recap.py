@@ -21,7 +21,7 @@ from pydantic import BaseModel, field_validator
 
 from .. import devices
 from ..days import day_bounds_utc, hm, local_now
-from ..llm import ASR_CAVEAT, clip, clipped, marker_line, parse_answer, within
+from ..llm import ASR_CAVEAT, clip, clipped, marker_line, parse_answer, spread
 from ..providers.base import ProviderUnavailable
 from ..providers.router import Router
 from . import jobs
@@ -43,6 +43,8 @@ MAX_SPEECH_LINES = 60  # the longest speech lines of the day ("Thank you." and o
 CHAPTER_BUDGET = 3500
 MARKER_BUDGET = 1000
 PROMPT_BUDGET = 9000
+MIN_SUMMARY = 40
+REF_ROOM = "[S99] "  # the longest reference a line can carry (at most MAX_SPEECH_LINES lines)
 STATUSES = ("open", "done", "dismissed")
 HEADINGS = ("Diễn biến chính", "Khoảnh khắc đáng nhớ", "Việc cần làm hoặc đã hứa")
 NOTHING = "Không có."
@@ -119,9 +121,25 @@ class Material:
     refs: dict[str, tuple[str, dt.datetime]] = field(default_factory=dict)
 
 
+def _chapter_lines(rows: list[dict], zone) -> list[str]:
+    """Every chapter of the day, one line each; summaries are clipped to share CHAPTER_BUDGET evenly, so a day
+    with many chapters still shows its last one (at least MIN_SUMMARY characters of each summary stay)."""
+    each = CHAPTER_BUDGET // max(len(rows), 1) - 1  # characters per line, its newline apart
+    lines = []
+    for c in rows:
+        head = f"{hm(c['ts_start'], zone)}–{hm(c['ts_end'], zone)}"
+        if not c["title"]:
+            lines.append(f"{head} (no summary yet)")
+            continue
+        head = f"{head} {clip(c['title'], 80)}: "
+        lines.append(head + clip(c["summary"], min(600, max(each - len(head), MIN_SUMMARY))))
+    return lines
+
+
 async def recap_material(pool: AsyncConnectionPool, day: dt.date, zone) -> Material | None:
-    """The day's chapters, marked moments and longest speech lines, within PROMPT_BUDGET characters;
-    None when the day has no moment at all."""
+    """What the model reads, within PROMPT_BUDGET characters, whatever the hour: every chapter (summaries clipped to
+    share CHAPTER_BUDGET), marked moments spread over the day, and the longest speech lines of the whole day
+    (picked longest first, shown in time order); None when the day has no moment at all."""
     start, end = day_bounds_utc(day, zone)
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT EXISTS (SELECT 1 FROM moment WHERE ts_start >= %s AND ts_start < %s) AS any",
@@ -145,25 +163,25 @@ async def recap_material(pool: AsyncConnectionPool, day: dt.date, zone) -> Mater
         )
         speech_rows = await cur.fetchall()
     material = Material()
-    material.chapters = within([
-        f"{hm(c['ts_start'], zone)}–{hm(c['ts_end'], zone)} {clip(c['title'], 80)}: {clip(c['summary'], 600)}"
-        if c["title"] else f"{hm(c['ts_start'], zone)}–{hm(c['ts_end'], zone)} (no summary yet)"
-        for c in chapter_rows
-    ], CHAPTER_BUDGET)
-    for n, row in enumerate(marker_rows, start=1):
-        note = marker_note(row["item_meta"] or {})
-        material.markers.append(f"[M{n}] " + marker_line(hm(row["ts_start"], zone), note))
+    material.chapters = _chapter_lines(chapter_rows, zone)
+    bodies = [marker_line(hm(r["ts_start"], zone), marker_note(r["item_meta"] or {})) for r in marker_rows]
+    # As many marked moments as fit MARKER_BUDGET, spread over the whole day (not the first ones of the morning).
+    fit = max(1, MARKER_BUDGET // (max(map(len, bodies), default=0) + len(REF_ROOM) + 1))
+    for n, (row, body) in enumerate(spread(list(zip(marker_rows, bodies, strict=True)), fit), start=1):
+        material.markers.append(f"[M{n}] {body}")
         material.refs[f"M{n}"] = (row["id"], row["ts_start"])
-    material.markers = within(material.markers, MARKER_BUDGET)
-    longest = sorted(speech_rows, key=lambda r: (-len(r["text"].split()), r["ts_start"], r["id"]))[:MAX_SPEECH_LINES]
+    # The longest speech lines of the whole day, whatever the hour, while the budget lasts; shown in time order.
     budget = PROMPT_BUDGET - sum(len(line) + 1 for line in material.chapters + material.markers)
-    lines = []
-    for n, row in enumerate(sorted(longest, key=lambda r: (r["ts_start"], r["id"])), start=1):
-        lines.append(f"[S{n}] {hm(row['ts_start'], zone)} ({row['lang'] or '?'}) {clip(row['text'], 250)}")
+    chosen = []
+    for row in sorted(speech_rows, key=lambda r: (-len(r["text"].split()), r["ts_start"], r["id"])):
+        body = f"{hm(row['ts_start'], zone)} ({row['lang'] or '?'}) {clip(row['text'], 250)}"
+        budget -= len(REF_ROOM) + len(body) + 1
+        if len(chosen) == MAX_SPEECH_LINES or budget < 0:
+            break
+        chosen.append((row, body))
+    for n, (row, body) in enumerate(sorted(chosen, key=lambda pair: (pair[0]["ts_start"], pair[0]["id"])), start=1):
+        material.speech.append(f"[S{n}] {body}")
         material.refs[f"S{n}"] = (row["id"], row["ts_start"])
-    material.speech = within(lines, budget)
-    shown = {line[1:].split("]", 1)[0] for line in material.markers + material.speech}
-    material.refs = {ref: value for ref, value in material.refs.items() if ref in shown}
     return material
 
 
@@ -188,13 +206,16 @@ def compose_markdown(answer: RecapAnswer, commitments: list[tuple[str, dt.dateti
     return "\n\n".join(f"## {heading}\n{body}" for heading, body in zip(HEADINGS, bodies, strict=True))
 
 
-def sourced(answer: RecapAnswer, refs: dict[str, tuple[str, dt.datetime]]) -> list[tuple[str, str, dt.datetime]]:
-    """(text, moment id, time) of each commitment whose source is a line of the material; others are dropped."""
+def sourced(
+    answer: RecapAnswer, refs: dict[str, tuple[str, dt.datetime]], day: dt.date | None = None
+) -> list[tuple[str, str, dt.datetime]]:
+    """(text, moment id, time) of each commitment whose source is a line of the material; others are dropped
+    (logged by day and source only: what the model wrote is private speech and never goes to the logs)."""
     out, seen = [], set()
     for c in answer.commitments:
         ref = c.source.strip().strip("[]").upper()
         if ref not in refs:
-            log.info("recap commitment %r dropped: unknown source %r", c.text, c.source)
+            log.info("recap of %s: a commitment was dropped, unknown source %r", day, clip(c.source, 20))
             continue
         moment_id, ts = refs[ref]
         key = (moment_id, c.text.strip().lower())
@@ -228,7 +249,7 @@ async def write_recap(ctx: PipelineContext, day: dt.date, attempt: int = 0) -> b
             log.warning("recap of %s waits: model server unavailable: %s", day, exc)
             return False
         answer = parse_answer(result.text, RecapAnswer)
-        commitments = sourced(answer, material.refs)
+        commitments = sourced(answer, material.refs, day)
         markdown = compose_markdown(answer, [(text, ts) for text, _, ts in commitments], zone)
         async with pool.connection() as conn, conn.transaction():
             await lock_day(conn, day)
