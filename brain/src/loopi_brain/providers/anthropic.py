@@ -31,6 +31,9 @@ THINKING_OFF = {"claude-haiku-5-5": {"type": "disabled"}, "claude-sonnet-5-5": {
 MIN_MAX_TOKENS = 1024  # thinking off: room for any answer the brain asks for (it clips longer ones)
 THINKING_MAX_TOKENS = 8192  # a model that always thinks: thinking and answer share this budget
 ERROR_TAIL = 500
+# Stop reasons of an answer that ran to its end; any other one before the first text (max_tokens used up by thinking,
+# a pause, a tool call) is an error, so the router can fall back before a piece reaches the reader.
+_COMPLETE = frozenset({"end_turn", "stop_sequence"})
 # Rate limits, overload (529) and server errors pass: the router falls back, a job does not spend a retry.
 TEMPORARY = frozenset({429, 500, 502, 503, 504, 529})
 _UNSUPPORTED = frozenset({"maxLength", "minLength", "minimum", "maximum", "maxItems", "minItems"})
@@ -138,6 +141,7 @@ class AnthropicProvider:
         self, model: str, messages: list[dict], *, temperature: float = 0.0, max_tokens: int | None = None
     ) -> AsyncIterator[str]:
         body = {**self._body(model, messages, None, max_tokens), "stream": True}
+        sent = False
         try:
             async with self._client.stream(
                 "POST", f"{self._base}/v1/messages", headers=self._headers(), json=body
@@ -160,9 +164,15 @@ class AnthropicProvider:
                     if kind == "content_block_delta" and (data.get("delta") or {}).get("type") == "text_delta":
                         text = data["delta"].get("text") or ""
                         if text:
+                            sent = True
                             yield text
-                    elif kind == "message_delta" and (data.get("delta") or {}).get("stop_reason") == "refusal":
-                        raise ProviderError("anthropic /v1/messages: the model declined the request")
+                    elif kind == "message_delta":
+                        stop = (data.get("delta") or {}).get("stop_reason")
+                        if stop == "refusal":
+                            raise ProviderError("anthropic /v1/messages: the model declined the request")
+                        if stop and stop not in _COMPLETE and not sent:
+                            detail = "max_tokens was used up" if stop == "max_tokens" else f"stop_reason {stop}"
+                            raise ProviderError(f"anthropic /v1/messages: {detail} before any answer text")
                     elif kind == "message_stop":
                         return
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:

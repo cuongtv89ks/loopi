@@ -267,3 +267,33 @@ async def test_malformed_answers_and_transport_failures_are_errors_that_never_ca
         _ = [p async for p in provider(lambda r: httpx.Response(200, content=b"data: {broken\n\n")).stream_chat("m", messages)]
     with pytest.raises(ProviderError, match="ReadError"):
         _ = [p async for p in provider(reset).stream_chat("m", messages)]
+
+
+async def test_a_stream_stopped_before_any_text_is_an_error_but_a_clipped_answer_is_kept():
+    messages = [{"role": "user", "content": "x"}]
+    with pytest.raises(ProviderError, match="max_tokens was used up before any answer text") as info:
+        _ = [p async for p in _provider(FakeAnthropic(text="", stop_reason="max_tokens")).stream_chat("m", messages)]
+    assert not isinstance(info.value, ProviderUnavailable)
+    with pytest.raises(ProviderError, match="stop_reason pause_turn before any answer text"):
+        _ = [p async for p in _provider(FakeAnthropic(text="", stop_reason="pause_turn")).stream_chat("m", messages)]
+    # Text was already shown: a cut-off answer is not an error (the reader has part of it), as for a local model.
+    clipped = [p async for p in _provider(FakeAnthropic(text="Sáng mai", stop_reason="max_tokens")).stream_chat("m", messages)]
+    assert "".join(clipped) == "Sáng mai"
+
+
+async def test_a_stream_stopped_before_any_text_falls_back_to_the_next_route(pki_settings):
+    tasks = {name: route.model_dump() for name, route in DEFAULT_CONFIG.tasks.items()}
+    tasks["chat"] = {"provider": "anthropic", "model": "claude-sonnet-5-5",
+                     "fallback": {"provider": "ollama", "model": "qwen3:8b"}}
+    config = ProvidersConfig.model_validate({"tasks": tasks})
+    ollama = FakeOllama(caption="từ Ollama")
+    fake = FakeAnthropic(text="", stop_reason="max_tokens")
+
+    def both(request):
+        return fake(request) if request.url.host == "api.anthropic.test" else ollama(request)
+
+    keyed = pki_settings.model_copy(update={"anthropic_api_key": SecretStr(KEY), "anthropic_url": "https://api.anthropic.test"})
+    router = build_router(config, keyed, httpx.AsyncClient(transport=httpx.MockTransport(both)))
+    pieces = [p async for p in router.stream_chat("chat", [{"role": "user", "content": "x"}])]
+    assert "".join(t for t, _ in pieces) == "từ Ollama" and {v for _, v in pieces} == {"ollama:qwen3:8b"}
+    assert fake.requests[0][1]["stream"] is True  # Anthropic was asked first
