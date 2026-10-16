@@ -8,6 +8,7 @@ settled (or at once, when the recap itself is chosen).
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from dataclasses import dataclass
 
 from psycopg_pool import AsyncConnectionPool
@@ -15,6 +16,9 @@ from psycopg_pool import AsyncConnectionPool
 from .days import day_bounds_utc
 from .pipeline import chapters as chapter_rules
 from .pipeline import recap as recap_rules
+from .pipeline.state import lock_day
+
+log = logging.getLogger(__name__)
 
 CHOICES = ("captions", "transcripts", "chapters", "recap")
 
@@ -32,9 +36,15 @@ async def reprocess_day(pool: AsyncConnectionPool, day: dt.date, zone, what: set
     unknown = what - set(CHOICES)
     if not what or unknown:
         raise ValueError(f"choose among {', '.join(CHOICES)} (got {sorted(what)})")
-    start, end = day_bounds_utc(day, zone)
+    try:
+        start, end = day_bounds_utc(day, zone)
+    except OverflowError as exc:  # the first and last days of the calendar have no UTC bounds
+        raise ValueError(f"day {day} is out of range") from exc
     keyframes = audio_items = expired = 0
     async with pool.connection() as conn, conn.transaction():
+        # One writer of a day's derived text at a time: a chapter rebuild or a recap write that read the day before
+        # the reset must not write over it, and "Quên khoảng thời gian" relies on the same lock.
+        await lock_day(conn, day)
         if "captions" in what:
             await conn.execute(
                 "DELETE FROM moment WHERE kind = 'visual' AND keyframe_id IN"
@@ -77,5 +87,8 @@ async def reprocess_day(pool: AsyncConnectionPool, day: dt.date, zone, what: set
     if "chapters" in what:
         await chapter_rules.defer_build(pool, day, zone)
     if "recap" in what:
-        await recap_rules.defer_recap(pool, day)
+        try:
+            await recap_rules.defer_recap(pool, day)
+        except Exception:  # the reset is committed; the planner writes a stale recap once the day has settled
+            log.exception("could not ask for the recap of %s", day)
     return ReprocessResult(keyframes, audio_items, expired, reopened, stale)

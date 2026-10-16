@@ -1,4 +1,6 @@
+import asyncio
 import datetime as dt
+import logging
 
 import httpx
 import pydantic
@@ -20,6 +22,8 @@ from helpers import (
 )
 from loopi_brain import reprocess, store
 from loopi_brain.app import create_app
+from loopi_brain.pipeline import recap as recap_rules
+from loopi_brain.pipeline.state import lock_day
 
 HX = {"HX-Request": "true"}
 DAY = dt.date(2026, 10, 14)
@@ -176,3 +180,76 @@ async def test_reprocessing_needs_a_day_and_a_choice(web, pool, pki_settings):
     assert (await web.post("/settings/reprocess", data={"day": "2026-10-14", "what": ["recap"]})).status_code == 403
     with pytest.raises(ValueError):
         await reprocess.reprocess_day(pool, DAY, pki_settings.zone, set())
+
+
+async def test_reprocessing_waits_for_the_days_lock_like_every_other_writer(pool, pki_settings, dev):
+    kf, _ = await _captioned_keyframe(pool, pki_settings, dev["device_id"], NINE)
+    zone = pki_settings.zone
+    async with pool.connection() as other, other.transaction():
+        await lock_day(other, DAY + dt.timedelta(days=1))  # another day's lock does not matter
+        assert (await asyncio.wait_for(reprocess.reprocess_day(pool, DAY, zone, {"chapters"}), 10)).chapters == 0
+    async with pool.connection() as holder, holder.transaction():
+        await lock_day(holder, DAY)  # a chapter build, a recap write or a forget is working on the day
+        task = asyncio.create_task(reprocess.reprocess_day(pool, DAY, zone, {"captions"}))
+        await asyncio.sleep(0.5)
+        assert not task.done()
+        assert (await fetch_one(pool, "SELECT caption_model FROM keyframe WHERE id = %s", (kf,)))["caption_model"]
+    assert (await asyncio.wait_for(task, 10)).keyframes == 1
+    assert (await fetch_one(pool, "SELECT caption_model FROM keyframe WHERE id = %s", (kf,)))["caption_model"] is None
+
+
+@pytest.mark.parametrize("day", ["0001-01-01", "9999-12-31"])
+async def test_a_day_the_calendar_cannot_hold_is_a_422(web, pool, pki_settings, day):
+    r = await web.post("/settings/reprocess", data={"day": day, "what": ["recap"]}, headers=HX)
+    assert r.status_code == 422
+    with pytest.raises(ValueError):
+        await reprocess.reprocess_day(pool, dt.date.fromisoformat(day), pki_settings.zone, {"recap"})
+
+
+async def test_a_failing_recap_request_is_logged_and_the_reset_stands(web, pool, monkeypatch, caplog):
+    await insert_chapter(pool, DAY, NINE, NINE)
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO day_recap (day, markdown, model_version) VALUES (%s, 'x', 'x')", (DAY,))
+
+    async def queue_down(pool, day):
+        raise RuntimeError("queue down")
+
+    monkeypatch.setattr(recap_rules, "defer_recap", queue_down)
+    with caplog.at_level(logging.ERROR, logger="loopi_brain.reprocess"):
+        r = await web.post("/settings/reprocess", data={"day": "2026-10-14", "what": ["recap"]}, headers=HX)
+    assert r.status_code == 200 and "recap sẽ được viết lại" in r.text
+    assert (await fetch_one(pool, "SELECT stale FROM day_recap"))["stale"] is True  # the planner writes it anyway
+    assert "could not ask for the recap of 2026-10-14" in caplog.text and "queue down" in caplog.text
+
+
+TASK_LINES = (
+    "  caption: {provider: ollama, model: m1%s}\n  asr: {provider: local, model: faster-whisper/large-v3-turbo-int8}\n"
+    "  embed: {provider: ollama, model: m3}\n  chapter_summary: {provider: ollama, model: m4}\n"
+    "  recap: {provider: ollama, model: m5}\n  chat: {provider: ollama, model: m6}\n"
+)
+
+
+async def _providers_page(pool, settings, tmp_path, yaml_text: str) -> str:
+    path = tmp_path / "providers.yaml"
+    path.write_text(yaml_text)
+    app = create_app(settings.model_copy(update={"providers_file": path}), pool=pool,
+                     http_client=FakeOllama().client(), llm_client=FakeOllama().client())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://brain.test") as c:
+        return (await c.get("/settings")).text
+
+
+async def test_a_broken_providers_file_shows_where_and_why_but_never_its_values(
+    pool, pki_settings, jobs_open, tmp_path
+):
+    secret = "sk-ant-SECRET"
+    unknown_key = "tasks:\n" + TASK_LINES % f", api_key: {secret}"
+    text = await _providers_page(pool, pki_settings, tmp_path, unknown_key)
+    assert "Cấu hình provider lỗi" in text and "tasks.caption.api_key" in text
+    assert "Extra inputs are not permitted" in text
+    assert secret not in text and "input_value" not in text
+    wrong_type = f"privacy: {secret}\ntasks:\n" + TASK_LINES % ""
+    text = await _providers_page(pool, pki_settings, tmp_path, wrong_type)
+    assert "Cấu hình provider lỗi" in text and "privacy" in text and secret not in text
+    syntax = f"api_key: {secret}\ntasks: [unclosed\n"
+    text = await _providers_page(pool, pki_settings, tmp_path, syntax)
+    assert "Cấu hình provider lỗi" in text and "line" in text and secret not in text

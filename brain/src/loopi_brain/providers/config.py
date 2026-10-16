@@ -92,15 +92,31 @@ DEFAULT_CONFIG = ProvidersConfig(
 )
 
 
+def _yaml_problem(exc: yaml.YAMLError) -> str:
+    """Where a YAML file is broken and why, without quoting the file (it may hold a key pasted by mistake)."""
+    mark = getattr(exc, "problem_mark", None)
+    problem = getattr(exc, "problem", None) or "invalid YAML"
+    return f"line {mark.line + 1}, column {mark.column + 1}: {problem}" if mark else problem
+
+
+def _validation_problems(exc: ValidationError) -> str:
+    """Each error's location and message; never the offending value (pydantic's default text prints it)."""
+    errors = exc.errors(include_input=False, include_context=False, include_url=False)
+    return "; ".join(f"{'.'.join(str(part) for part in e['loc']) or 'file'}: {e['msg']}" for e in errors)
+
+
 def load_providers(path: Path | None) -> ProvidersConfig:
-    """Read and validate ``path``; no path means the built-in defaults (all local)."""
+    """Read and validate ``path``; no path means the built-in defaults (all local). Errors name the problem and its
+    place, never a value from the file: they reach the Cài đặt and Xử lý pages."""
     if path is None:
         return DEFAULT_CONFIG
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
+    except OSError as exc:
         raise ProvidersConfigError(f"cannot read {path}: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise ProvidersConfigError(f"cannot parse {path}: {_yaml_problem(exc)}") from exc
     try:
         return ProvidersConfig.model_validate(data)
     except ValidationError as exc:
-        raise ProvidersConfigError(f"invalid {path}: {exc}") from exc
+        raise ProvidersConfigError(f"invalid {path}: {_validation_problems(exc)}") from exc

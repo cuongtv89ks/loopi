@@ -76,6 +76,25 @@ def test_missing_task_typo_or_unreadable_file_is_a_config_error(tmp_path):
         load_providers(tmp_path / "absent.yaml")
 
 
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        ("tasks:\n  caption: {provider: ollama, model: m, api_key: sk-ant-SECRET}\n",
+         "tasks.caption.api_key: Extra inputs"),
+        ("privacy: sk-ant-SECRET\ntasks: {}\n", "privacy: Input should be a valid dictionary"),
+        ("sk-ant-SECRET\n", "file: Input should be a valid dictionary"),
+        ("api_key: sk-ant-SECRET\ntasks: [unclosed\n", "line 3, column 1"),
+        ("api_key: sk-ant-SECRET\x00\n", "cannot parse"),
+    ],
+)
+def test_a_config_error_says_where_and_why_but_never_quotes_the_file(tmp_path, text, shown):
+    path = tmp_path / "providers.yaml"
+    path.write_text(text)
+    with pytest.raises(ProvidersConfigError) as caught:
+        load_providers(path)
+    assert shown in str(caught.value) and "SECRET" not in str(caught.value)
+
+
 async def test_ollama_chat_sends_schema_images_and_no_thinking():
     fake = FakeOllama()
     provider = OllamaProvider("http://models.test:11434/", keep_alive="30m", client=fake.client())
