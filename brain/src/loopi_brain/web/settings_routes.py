@@ -29,16 +29,20 @@ router = APIRouter()
 
 def providers_view(settings) -> dict:
     """Each task's route chain ("ollama:qwen3:8b → …"), the privacy flags, or the configuration error."""
+    key_set = settings.anthropic_api_key is not None
     try:
         config = load_providers(settings.providers_file)
     except ProvidersConfigError as exc:
-        return {"error": str(exc)[:500], "tasks": [], "privacy": None}
+        return {"error": str(exc)[:500], "tasks": [], "privacy": None, "key_set": key_set, "key_missing": False}
     tasks = [
         {"task": task, "label": TASK_LABELS[task],
          "chain": " → ".join(model_version(step) for step in config.tasks[task].chain())}
         for task in TASKS
     ]
-    return {"error": None, "tasks": tasks, "privacy": config.privacy}
+    cloud_text = [TASK_LABELS[task] for task in TASKS
+                  if key_set and any(step.provider == "anthropic" for step in config.tasks[task].chain())]
+    return {"error": None, "tasks": tasks, "privacy": config.privacy, "key_set": key_set,
+            "key_missing": "anthropic" in config.providers_used() and not key_set, "cloud_text": cloud_text}
 
 
 async def settings_context(request: Request) -> dict:

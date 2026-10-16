@@ -12,6 +12,10 @@
   <p>Ảnh gửi lên cloud: {{ "có" if providers.privacy.allow_cloud_images else "không" }} ·
      âm thanh gửi lên cloud: {{ "có" if providers.privacy.allow_cloud_audio else "không" }}</p>
   {% endif %}
+  <p>ANTHROPIC_API_KEY: {{ "đã đặt" if providers.key_set else "chưa đặt" }}{% if providers.key_missing %}
+     <span class="err">— providers.yaml dùng anthropic nhưng chưa có key, nên các tuyến đó bị bỏ qua.</span>{% endif %}</p>
+  {% if providers.cloud_text %}<p>Gửi text lên cloud (Anthropic) khi dùng tuyến đó: {{ providers.cloud_text|join(", ") }}
+     — transcript, mô tả khung hình và tóm tắt của ngày, không bao giờ ảnh hay âm thanh.</p>{% endif %}
   {% if not health.error %}
     {% if not health.reachable %}<p class="err">Không kết nối được Ollama ({{ health.url }}).</p>
     {% elif health.missing %}<p class="err">Thiếu model: {{ health.missing|join(", ") }}.</p>

@@ -2,7 +2,7 @@
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from pydantic import Field
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     # distance), or when its text matches the question's words this well (pg_trgm word similarity). P2c tunes both.
     search_max_distance: float = Field(default=0.6, gt=0.0, le=2.0)
     search_min_similarity: float = Field(default=0.3, gt=0.0, le=1.0)
+    # Optional cloud provider for text tasks (spec §9.3): only used when this key is set AND providers.yaml routes a
+    # text task to "anthropic". Read from ANTHROPIC_API_KEY (no LOOPI_ prefix); never logged or shown.
+    anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
+    anthropic_url: str = "https://api.anthropic.com"
+
+    @field_validator("anthropic_api_key", mode="before")
+    @classmethod
+    def _blank_key_is_no_key(cls, value):
+        return None if value is None or (isinstance(value, str) and not value.strip()) else value
 
     @property
     def zone(self) -> ZoneInfo:

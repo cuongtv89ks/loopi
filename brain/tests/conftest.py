@@ -14,6 +14,12 @@ APP_TABLES = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_anthropic_key(monkeypatch):
+    """Tests never read the developer's ANTHROPIC_API_KEY: a key in the environment would turn on the cloud provider."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
 @pytest.fixture(scope="session")
 def database_url():
     with PostgresContainer(PG_IMAGE, driver=None) as pg:

@@ -8,8 +8,9 @@ from dataclasses import dataclass
 import httpx
 
 from ..config import Settings
-from .base import CLOUD_PROVIDERS, EMBED_DIM, PrivacyBlocked, Provider, ProviderError
-from .config import ProvidersConfig, TaskRoute
+from .anthropic import AnthropicProvider
+from .base import EMBED_DIM, PrivacyBlocked, Provider, ProviderError, ProviderUnavailable, is_cloud
+from .config import IMAGE_TASKS, ProvidersConfig, TaskRoute
 from .ollama import OllamaHealth, OllamaProvider
 
 log = logging.getLogger(__name__)
@@ -42,13 +43,20 @@ class Router:
     def model_version(self, task: str) -> str:
         return model_version(self.route(task))
 
-    def _usable(self, task: str, *, images: bool) -> list[TaskRoute]:
-        steps = self.route(task).chain()
+    def _allowed(self, task: str, *, images: bool) -> list[TaskRoute]:
+        """The routes of ``task`` that may receive this request: with images, local providers only (unless
+        allow_cloud_images); routes whose provider is not set up (no ANTHROPIC_API_KEY) are left out."""
+        steps = [s for s in self.route(task).chain() if s.provider in self.providers]
         if images and not self.config.privacy.allow_cloud_images:
-            allowed = [s for s in steps if s.provider not in CLOUD_PROVIDERS]
-            if not allowed:
+            steps = [s for s in steps if not is_cloud(s.provider)]
+        return steps
+
+    def _usable(self, task: str, *, images: bool) -> list[TaskRoute]:
+        steps = self._allowed(task, images=images)
+        if not steps:
+            if images and any(is_cloud(s.provider) for s in self.route(task).chain()):
                 raise PrivacyBlocked(f"task {task}: images may not be sent to a cloud provider")
-            return allowed
+            raise ProviderUnavailable(f"task {task}: no configured provider (is ANTHROPIC_API_KEY set?)")
         return steps
 
     async def chat(
@@ -125,11 +133,11 @@ class Router:
         return await self.providers["ollama"].health(self.config.ollama_models())
 
     def task_ready(self, task: str, health: OllamaHealth) -> bool:
-        """Can ``task`` run now: does one of its routes have its model on the reachable Ollama server?
-
-        Routes to other providers cannot be checked here and count as ready.
-        """
-        return any(s.provider != "ollama" or s.model in health.present for s in self.route(task).chain())
+        """Can ``task`` run now: does one of the routes its requests may take have its model on the reachable
+        Ollama server? A cloud route counts only for text, and only when its provider is set up; it cannot be
+        checked from here and counts as ready."""
+        steps = self._allowed(task, images=task in IMAGE_TASKS)
+        return any(s.provider != "ollama" or s.model in health.present for s in steps)
 
 
 def build_router(config: ProvidersConfig, settings: Settings, client: httpx.AsyncClient | None = None) -> Router:
@@ -142,4 +150,11 @@ def build_router(config: ProvidersConfig, settings: Settings, client: httpx.Asyn
         num_ctx=settings.llm_num_ctx,
         text_timeout=settings.llm_timeout_s,
     )
-    return Router(config, {"ollama": ollama})
+    providers: dict[str, Provider] = {"ollama": ollama}
+    if settings.anthropic_api_key is not None:
+        providers["anthropic"] = AnthropicProvider(
+            settings.anthropic_api_key.get_secret_value(), base_url=settings.anthropic_url, client=client
+        )
+    elif "anthropic" in config.providers_used():
+        log.warning("providers.yaml routes text tasks to anthropic but ANTHROPIC_API_KEY is not set: those routes are skipped")
+    return Router(config, providers)

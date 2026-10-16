@@ -47,7 +47,8 @@ def test_committed_providers_yaml_equals_built_in_defaults():
         {"asr": {"provider": "ollama", "model": "whisper"}},
         {"asr": {"provider": "local", "model": "faster-whisper/tiny"}},
         {"embed": {"provider": "local", "model": "x"}},
-        {"recap": {"provider": "ollama", "model": "qwen3:8b", "fallback": {"provider": "anthropic", "model": "c"}}},
+        {"caption": {"provider": "ollama", "model": "m", "fallback": {"provider": "anthropic", "model": "c"}}},
+        {"embed": {"provider": "anthropic", "model": "c"}},
         {"vlog": {"provider": "ollama", "model": "qwen3:8b"}},
     ],
 )
@@ -216,9 +217,10 @@ async def test_health_reports_missing_models_and_unreachable_server():
 def test_routes_the_health_check_cannot_see_count_as_ready():
     config = _config()
     config.tasks["recap"] = TaskRoute.model_construct(provider="anthropic", model="claude", fallback=None)
-    router = Router(config, {})
+    router = Router(config, {"anthropic": StubProvider()})  # ANTHROPIC_API_KEY is set
     nothing = OllamaHealth(reachable=False, present=[], missing=config.ollama_models())
     assert router.task_ready("recap", nothing) and not router.task_ready("caption", nothing)
+    assert not Router(config, {}).task_ready("recap", nothing)  # no key: that route cannot run
 
 
 async def test_pull_downloads_a_model():

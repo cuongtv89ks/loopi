@@ -6,11 +6,13 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
-# P2a ships the Ollama provider and the in-process ASR ("local"); cloud providers arrive in P2b.
-KNOWN_PROVIDERS = frozenset({"ollama", "local"})
+# The Ollama provider, the in-process ASR ("local"), and Anthropic for text tasks only (P2b, spec §9.3).
+KNOWN_PROVIDERS = frozenset({"ollama", "local", "anthropic"})
 TASKS = ("caption", "asr", "embed", "chapter_summary", "recap", "chat")
 # Tasks that send only text (chapter summaries, the day recap, chat answers).
 TEXT_TASKS = ("chapter_summary", "recap", "chat")
+# Tasks whose requests carry images.
+IMAGE_TASKS = ("caption",)
 LOCAL_ASR_MODELS = frozenset({"faster-whisper/large-v3-turbo-int8"})
 
 
@@ -62,6 +64,8 @@ class ProvidersConfig(BaseModel):
                     raise ValueError(f"task {task}: provider 'local' serves asr only, and asr must be local")
                 if task == "asr" and step.model not in LOCAL_ASR_MODELS:
                     raise ValueError(f"task asr: unsupported model {step.model!r}")
+                if step.provider == "anthropic" and task not in TEXT_TASKS:
+                    raise ValueError(f"task {task}: provider 'anthropic' serves text tasks only ({', '.join(TEXT_TASKS)})")
         return self
 
     def ollama_models(self) -> list[str]:
@@ -78,6 +82,9 @@ class ProvidersConfig(BaseModel):
         return frozenset(
             step.model for task in TEXT_TASKS for step in self.tasks[task].chain() if step.provider == "ollama"
         )
+
+    def providers_used(self) -> set[str]:
+        return {step.provider for route in self.tasks.values() for step in route.chain()}
 
 
 DEFAULT_CONFIG = ProvidersConfig(

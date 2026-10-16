@@ -5,7 +5,13 @@ from collections.abc import AsyncIterator
 from typing import Protocol
 
 EMBED_DIM = 1024
-CLOUD_PROVIDERS = frozenset({"anthropic"})
+# Providers that run on this machine. Every other provider is a cloud provider, including any added later:
+# the privacy gate is an allow-list, so a new provider cannot receive images by accident (P2a deferred item).
+LOCAL_PROVIDERS = frozenset({"ollama", "local"})
+
+
+def is_cloud(provider: str) -> bool:
+    return provider not in LOCAL_PROVIDERS
 
 
 class ProviderError(Exception):
@@ -19,7 +25,8 @@ class ProviderUnavailable(ProviderError):
 
 
 class PrivacyBlocked(Exception):
-    """The request carries images or audio and every route for the task is a cloud provider."""
+    """The request carries images and every route for the task is a cloud provider (audio never reaches the
+    router: ASR runs in the worker)."""
 
 
 class Provider(Protocol):
