@@ -1,3 +1,5 @@
+import traceback
+
 import pytest
 from pydantic import BaseModel
 
@@ -18,6 +20,48 @@ def test_answers_are_parsed_and_long_text_is_clipped_not_rejected():
 def test_unusable_answers_are_invalid(text):
     with pytest.raises(AnswerInvalid):
         parse_answer(text, Answer)
+
+
+# A recap cut off by num_predict in the middle of its first sentence (private speech, as a model would write it).
+CUT_OFF = '{"main_events": ["Mẹ hẹn bác sĩ Lan lúc 9 giờ sáng mai'
+PRIVATE_WORDS = ("Mẹ", "hẹn", "bác sĩ", "Lan", "giờ", "sáng", "chín")
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (CUT_OFF, "the answer is not JSON (Unterminated string starting at, character 17)"),
+        ("Mẹ hẹn bác sĩ Lan", "the answer is not JSON (Expecting value, character 0)"),
+        ('{"title": "Mẹ hẹn bác sĩ Lan", "n": "chín giờ"}', "the answer does not fit (n: int_parsing)"),
+        ('["Mẹ hẹn bác sĩ Lan"]', "the answer does not fit (answer: model_type)"),
+        ('{"n": 9}', "the answer does not fit (title: missing)"),
+    ],
+)
+def test_an_unusable_answer_says_where_and_why_but_never_quotes_the_answer(text, message):
+    """The error is stored on the Day and Xử lý pages and logged with its traceback by the worker; what the model
+    wrote is private (and may be about a range that is forgotten later)."""
+    with pytest.raises(AnswerInvalid) as caught:
+        parse_answer(text, Answer)
+    assert str(caught.value) == f"{message}; answer of {len(text)} characters"
+    assert caught.value.__cause__ is None and caught.value.__context__ is None  # nothing chained that quotes it
+    printed = "".join(traceback.format_exception(caught.value))
+    assert not any(word in printed for word in PRIVATE_WORDS)
+
+
+def test_an_answer_with_many_problems_names_the_first_three():
+    with pytest.raises(AnswerInvalid) as caught:
+        parse_answer('{"title": [1], "n": [2]}', Answer)
+    assert str(caught.value) == "the answer does not fit (title: string_type, n: int_type); answer of 24 characters"
+
+    class Many(BaseModel):
+        items: list[int]
+
+    with pytest.raises(AnswerInvalid) as caught:
+        parse_answer('{"items": ["a", "b", "c", "d", "e"]}', Many)
+    assert str(caught.value) == (
+        "the answer does not fit (items.0: int_parsing, items.1: int_parsing, items.2: int_parsing, 2 more);"
+        " answer of 36 characters"
+    )
 
 
 def test_clip_flattens_whitespace():

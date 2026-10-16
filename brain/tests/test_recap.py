@@ -137,6 +137,22 @@ async def test_an_unusable_answer_fails_the_job_and_leaves_its_error(pool, dev, 
     assert _chats(ollama)[-1]["options"]["temperature"] == recap.RETRY_TEMPERATURE
 
 
+async def test_an_answer_cut_off_mid_json_leaves_none_of_its_text_in_the_error_or_the_worker_log(
+    pool, dev, ctx, ollama, jobs_open, caplog
+):
+    await _day(pool, dev["device_id"])
+    cut_off = '{"main_events": ["Mẹ hẹn bác sĩ Lan lúc 9 giờ sáng mai'  # num_predict ran out mid-sentence
+    ollama.reply = lambda body: cut_off
+    await recap.defer_recap(pool, DAY)
+    with caplog.at_level(logging.DEBUG):
+        await run_jobs(ctx)
+    error = (await fetch_one(pool, "SELECT error FROM day_job_error"))["error"]
+    assert error == (f"AnswerInvalid: the answer is not JSON (Unterminated string starting at, character 17);"
+                     f" answer of {len(cut_off)} characters")
+    assert "AnswerInvalid" in caplog.text  # the worker logged the failure with its traceback
+    assert not any(word in caplog.text for word in ("Mẹ", "hẹn", "bác sĩ", "Lan lúc", "sáng mai"))
+
+
 async def test_an_answer_with_too_much_is_cut_and_blank_lines_dropped(pool, dev, ctx, ollama):
     await _day(pool, dev["device_id"])
     ollama.reply = lambda body: {"main_events": ["  ", *[f"Việc {n}" for n in range(30)]], "memorable": [],

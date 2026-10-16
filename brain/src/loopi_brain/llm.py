@@ -24,12 +24,43 @@ class AnswerInvalid(Exception):
     """The model answered, but not with the JSON that was asked for (retried like any job error)."""
 
 
+SHOWN_PROBLEMS = 3
+
+
+def _not_json(exc: ValueError) -> str:
+    """Why the answer is not JSON: the JSON parser's fixed message and position (never the text around it)."""
+    if isinstance(exc, json.JSONDecodeError):
+        return f"the answer is not JSON ({exc.msg}, character {exc.pos})"
+    return f"the answer is not JSON ({type(exc).__name__})"  # e.g. a number too long to convert
+
+
+def _misfit(exc: ValidationError) -> str:
+    """Where and why the answer does not fit the model: the field path and the error type of the first few problems,
+    never the offending value (pydantic's own text quotes it). The answer models ignore unknown keys, so every
+    path is made of the model's field names and list positions."""
+    errors = exc.errors(include_input=False, include_context=False, include_url=False)
+    shown = [f"{'.'.join(str(part) for part in e['loc']) or 'answer'}: {e['type']}" for e in errors[:SHOWN_PROBLEMS]]
+    if len(errors) > SHOWN_PROBLEMS:
+        shown.append(f"{len(errors) - SHOWN_PROBLEMS} more")
+    return f"the answer does not fit ({', '.join(shown)})"
+
+
 def parse_answer(text: str, model: type[M]) -> M:
-    """The model's JSON answer as ``model``; AnswerInvalid if it is not JSON or misses a field."""
+    """The model's JSON answer as ``model``; AnswerInvalid if it is not JSON or does not fit.
+
+    The error says where and why, and how long the answer was, but never quotes any of it: it is stored on job
+    rows shown on the Day and Xử lý pages, logged with its traceback, and may concern a range that is forgotten
+    later. It is raised outside the ``except`` blocks, so no exception that quotes the answer is chained to it."""
     try:
-        return model.model_validate(json.loads(text))
-    except (ValueError, ValidationError) as exc:  # JSONDecodeError is a ValueError
-        raise AnswerInvalid(f"{exc}; got {text[:200]!r}") from exc
+        data = json.loads(text)
+    except ValueError as exc:  # JSONDecodeError is a ValueError
+        problem = _not_json(exc)
+    else:
+        try:
+            return model.model_validate(data)
+        except ValidationError as exc:
+            problem = _misfit(exc)
+    raise AnswerInvalid(f"{problem}; answer of {len(text)} characters")
 
 
 def clip(text: str, limit: int) -> str:
