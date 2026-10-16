@@ -1,3 +1,4 @@
+import inspect
 import unicodedata
 
 import pytest
@@ -23,6 +24,28 @@ def test_both_vietnamese_tone_mark_placements_are_the_same_word():
     assert metrics.wer(old_style, new_style).edits == 0 and metrics.cer(old_style, new_style).edits == 0
     # Closed syllables, "qu" words and other diphthongs are written one way only and stay as they are.
     assert metrics.normalise("Hoàng toán khuya quý của mía") == "hoàng toán khuya quý của mía"
+
+
+def test_the_source_survives_nfc_normalisation_and_holds_no_raw_combining_mark():
+    # NFC composes "\\w" + U+0300 into one letter, which broke the character range at import (and with it the api and the
+    # worker): the combining marks of the tone patterns are written as \u escapes, never as raw characters.
+    source = inspect.getsource(metrics)
+    assert unicodedata.normalize("NFC", source) == source
+    assert [c for c in source if unicodedata.combining(c)] == []
+    assert metrics.normalise("khoẻ") == "khoẻ"  # the pattern compiled and still places the tone
+
+
+def test_format_characters_never_count_as_words_or_characters():
+    # ZWSP, ZWNJ, ZWJ, BOM, soft hyphen and the direction marks are category Cf: neither letters nor spaces.
+    noise = "\u200b\u200c\u200d\ufeff\u00ad\u200e"
+    assert metrics.normalise(f"{noise}a{noise}b{noise}") == "ab"
+    assert metrics.normalise(f"a{noise} b") == "a b"
+    assert metrics.words(f"\ufeffcon\u00adtinue the\u200b day") == ["continue", "the", "day"]
+    assert metrics.words(noise) == [] and metrics.chars(noise) == []
+    assert metrics.chars(f"가{noise}나 다") == ["가", "나", "다"]
+    assert metrics.wer("ab cd", f"a\u200bb c\ufeffd").edits == 0 and metrics.cer("ab", "a\u00adb").edits == 0
+    # A format character between a vowel and its tone mark does not break the tone placement either.
+    assert metrics.normalise("ho\u200b\u0300a") == metrics.normalise("hoà") == "hoà"
 
 
 def test_word_errors_count_substitutions_deletions_and_insertions():

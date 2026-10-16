@@ -383,6 +383,19 @@ def test_the_outro_rule_drops_a_segment_only_when_the_sign_off_is_most_of_it():
     assert not asr.is_outro("")
 
 
+@pytest.mark.parametrize("tail", ["nhanh lên", "nhau đi", "nháy mắt"])
+def test_the_outro_particles_are_whole_words(tail):
+    # "nha" is a sign-off particle, "nhanh" and "nhau" are not: the match ends at a word boundary, so what follows the
+    # sign-off stays uncovered (the sign-off is 20 of 26-28 letters here, under the 80 % that drops a segment; with the old tail it was 23).
+    assert not asr.is_outro(f"Hãy đăng ký kênh để ủng hộ {tail}")
+
+
+@pytest.mark.parametrize("particles", ["nha", "nhá", "ạ", "mình nha", "mình nhé ạ", "nhé nhá nha ạ"])
+def test_the_outro_particles_are_still_part_of_the_sign_off(particles):
+    sign_off = f"Hãy đăng ký kênh để ủng hộ {particles}"
+    assert asr.is_outro(sign_off) and asr.is_outro(sign_off + "!")
+
+
 def test_an_unknown_rule_name_is_an_error():
     region = RegionResult("vi", 0.9, [seg("Mai mình đi chợ")])
     with pytest.raises(ValueError, match="unknown ASR rules: typo"):

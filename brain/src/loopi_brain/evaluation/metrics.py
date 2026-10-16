@@ -1,8 +1,9 @@
 """The numbers of an evaluation (spec §13, D22): word and character error rates, hit@k, recall@k, the reciprocal
 rank, and their 95 % intervals.
 
-Text is compared after NFC normalisation, in lower case, with every punctuation mark and symbol read as a space and
-the Vietnamese tone mark of an open "oa", "oe", "uy" always on its second vowel (both "hòa" and "hoà" are in use).
+Text is compared after NFC normalisation, in lower case, without format characters (zero-width spaces, the byte
+order mark), with every punctuation mark and symbol read as a space and the Vietnamese tone mark of an open "oa",
+"oe", "uy" always on its second vowel (both "hòa" and "hoà" are in use).
 Vietnamese and English are scored by words (a Vietnamese word is a syllable: WER is the syllable error rate);
 Korean by characters without spaces (CER: Whisper's spacing of Korean is no error). Rates over several clips add
 their errors first (corpus WER), so a long clip weighs more than a short one.
@@ -16,11 +17,13 @@ import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-# The five Vietnamese tone marks as combining characters: huyền, sắc, hỏi, ngã, nặng.
-_TONES = "̣̀́̉̃"
+# The five Vietnamese tone marks as combining characters, written as escapes (a raw combining mark in the source is
+# composed into its letter by any NFC-normalising tool, which breaks the patterns below): nặng, huyền, sắc, hỏi, ngã.
+_TONES = "\u0323\u0300\u0301\u0309\u0303"
 # Old style puts the tone of an open "oa", "oe", "uy" on its first vowel (hòa, khỏe, tùy), new style on the second
 # (hoà, khoẻ, tuỳ); closed syllables (hoàng, toán) and "qu" words (quý) are written one way only.
-_OLD_STYLE = re.compile(f"(o(?=[{_TONES}][ae])|u(?=[{_TONES}]y))([{_TONES}])([aey])(?![\\ẁ-ͯ])")
+_COMBINING = "\u0300-\u036f"  # the combining diacritical marks, as an escaped range
+_OLD_STYLE = re.compile(f"(o(?=[{_TONES}][ae])|u(?=[{_TONES}]y))([{_TONES}])([aey])(?![\\w{_COMBINING}])")
 
 
 def _tone_on_second_vowel(text: str) -> str:
@@ -29,8 +32,9 @@ def _tone_on_second_vowel(text: str) -> str:
 
 
 def normalise(text: str) -> str:
-    """NFC, lower case, punctuation and symbols as spaces, the new tone-mark placement, whitespace collapsed."""
-    text = unicodedata.normalize("NFC", text).lower()
+    """NFC, lower case, punctuation and symbols as spaces, the new tone-mark placement, whitespace collapsed; format
+    characters (zero-width spaces, the byte order mark, soft hyphens, direction marks: category Cf) are dropped."""
+    text = unicodedata.normalize("NFC", "".join(c for c in text if unicodedata.category(c) != "Cf")).lower()
     text = "".join(" " if unicodedata.category(c)[0] in "PS" else c for c in text)
     return " ".join(_tone_on_second_vowel(text).split())
 

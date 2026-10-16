@@ -65,11 +65,12 @@ RULES = ASR_RULES
 # ("Hãy subscribe cho kênh … video …", "Hãy đăng ký kênh để ủng hộ mình nhé", "MBC 뉴스 …입니다"). The patterns read
 # the text in lower case with punctuation as spaces; like P2a's phrases, a segment is dropped only when the matched
 # spans make up HALLUCINATION_COVERAGE of it, never because real speech merely contains a sign-off ("Mai mình đi
-# chợ nhé, hãy đăng ký kênh để ủng hộ mình"). The optional closing particles belong to the sign-off.
+# chợ nhé, hãy đăng ký kênh để ủng hộ mình"). The optional closing particles belong to the sign-off, as whole words
+# ("nha" is not the start of "nhanh").
 OUTRO_PATTERNS = (
     re.compile(
         r"\bhãy (?:like (?:và )?)?(?:subscribe|đăng k[ýí]) (?:cho )?kênh\b.*\b(?:video|ủng hộ)\b"
-        r"(?: (?:mình|nhé|nha|nhá|ạ))*"
+        r"(?: (?:mình|nhé|nha|nhá|ạ)\b)*"
     ),
     re.compile(r"^mbc 뉴스 \w+입니다$"),
 )
