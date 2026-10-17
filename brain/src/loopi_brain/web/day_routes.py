@@ -156,6 +156,7 @@ async def day_page(request: Request, day: dt.date | None = Query(default=None)):
             "prev_day": prev_day,
             "next_day": next_day,
             "vlog": await vlog_view(request.app.state.pool, day, zone),
+            "is_future": day > today,
         },
     )
 

@@ -5,12 +5,14 @@
     <video controls preload="metadata" src="/vlog/{{ day }}.mp4" style="max-width: 100%">
       <track kind="subtitles" src="/vlog/{{ day }}.vtt" srclang="vi" label="Phụ đề" default>
     </video>
-    <p>{{ v.title }} · {{ v.duration }} · dựng lúc {{ v.at }}{% if v.source == "keyframes" %} · từ khung hình (video thô đã hết hạn){% endif %} ·
-       <a href="/vlog/{{ day }}.mp4?download=1">Tải về</a></p>
+    {% set facts = [v.title, v.duration, ("dựng lúc " ~ v.at) if v.at else "",
+                    "từ khung hình (video thô đã hết hạn)" if v.source == "keyframes" else ""] | select | list %}
+    <p>{% if facts %}{{ facts | join(" · ") }} · {% endif %}<a href="/vlog/{{ day }}.mp4?download=1">Tải về</a></p>
+  {% elif v and v.working %}{# the first build runs: only "Đang dựng vlog…" below #}
   {% elif v and v.state == "empty" %}<p>Không có hoạt động trong ngày này.</p>
   {% else %}<p>Chưa có vlog. Vlog được dựng sau recap mỗi tối.</p>{% endif %}
   {% if v and v.working %}<p class="muted">Đang dựng{% if v.has_file %} lại{% endif %} vlog…</p>{% endif %}
   {% if v and v.error %}<p class="err">Dựng vlog lỗi: {{ v.error }}. Bấm "Dựng lại vlog", hoặc "Xử lý lại" ở trang <a href="/pipeline">Xử lý</a>.</p>{% endif %}
-  <form method="post" hx-post="/vlog/{{ day }}/rebuild" hx-target="#vlog-request"><button>Dựng lại vlog</button></form>
-  <span id="vlog-request"></span>
+  {% if not is_future %}<form method="post" hx-post="/vlog/{{ day }}/rebuild" hx-target="#vlog-request"><button>Dựng lại vlog</button></form>
+  <span id="vlog-request"></span>{% endif %}
 </section>
