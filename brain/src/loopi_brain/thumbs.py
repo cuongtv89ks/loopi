@@ -5,10 +5,18 @@ first request and kept (keyframes never change). "Quên khoảng thời gian" de
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path, PurePosixPath
 
+import anyio
 from PIL import Image
+from psycopg_pool import AsyncConnectionPool
+
+from . import media
+from .pipeline.state import keyframe_exists
+
+log = logging.getLogger(__name__)
 
 THUMB_WIDTH = 320
 THUMB_QUALITY = 80
@@ -34,3 +42,37 @@ def make_thumb(src: Path, dst: Path) -> None:
             tmp.replace(dst)
         finally:
             tmp.unlink(missing_ok=True)
+
+
+class ThumbUnavailable(Exception):
+    """No thumbnail for a keyframe; ``str(exc)`` is a fixed reason: unknown keyframe, keyframe file missing,
+    keyframe unreadable."""
+
+
+async def keyframe_thumb(pool: AsyncConnectionPool, media_root: Path, keyframe_id: str) -> Path:
+    """The path of ``keyframe_id``'s thumbnail, made now if it is not there yet (the Day page's ``/thumb`` route and
+    the MCP ``get_moment`` share this); ThumbUnavailable when there is nothing to show."""
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT path FROM keyframe WHERE id = %s", (keyframe_id,))
+        row = await cur.fetchone()
+    if row is None:
+        raise ThumbUnavailable("unknown keyframe")
+    try:
+        rel = PurePosixPath(row["path"])
+        src = media.inside(media_root, rel)
+        dst = media.inside(media_root, thumb_rel(rel))
+    except ValueError as exc:
+        log.warning("keyframe %s has an unusable path: %s", keyframe_id, exc)
+        raise ThumbUnavailable("keyframe file missing") from exc
+    if not src.is_file():
+        raise ThumbUnavailable("keyframe file missing")
+    if not dst.is_file():
+        try:
+            await anyio.to_thread.run_sync(make_thumb, src, dst)
+        except OSError as exc:  # not a readable picture (PIL.UnidentifiedImageError is one), or the disk refused it
+            log.warning("keyframe %s: no thumbnail: %s", keyframe_id, exc)
+            raise ThumbUnavailable("keyframe unreadable") from exc
+        if not await keyframe_exists(pool, keyframe_id):  # forgotten while the thumbnail was made
+            media.remove_files(media_root, [str(thumb_rel(rel))])
+            raise ThumbUnavailable("unknown keyframe")
+    return dst

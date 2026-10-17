@@ -21,17 +21,47 @@ class Retention(BaseModel):
     enabled: bool = False
 
 
-async def get_retention(pool: AsyncConnectionPool) -> Retention:
+MCP_KEY = "mcp"
+
+
+class McpSettings(BaseModel):
+    """D24: whether ``get_moment`` may attach a keyframe picture (320 px) for the MCP client, which forwards tool
+    results to a model in the cloud. Off by default; a golden-set keyframe (D21) is never sent either way."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    images: bool = False
+
+
+async def _get(pool: AsyncConnectionPool, key: str) -> dict | None:
     async with pool.connection() as conn:
-        cur = await conn.execute("SELECT value FROM setting WHERE key = %s", (RETENTION_KEY,))
+        cur = await conn.execute("SELECT value FROM setting WHERE key = %s", (key,))
         row = await cur.fetchone()
-    return Retention.model_validate(row["value"]) if row else Retention()
+    return row["value"] if row else None
 
 
-async def set_retention(pool: AsyncConnectionPool, retention: Retention) -> None:
+async def _put(pool: AsyncConnectionPool, key: str, value: dict) -> None:
     async with pool.connection() as conn:
         await conn.execute(
             "INSERT INTO setting (key, value) VALUES (%s, %s)"
             " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
-            (RETENTION_KEY, Jsonb(retention.model_dump())),
+            (key, Jsonb(value)),
         )
+
+
+async def get_retention(pool: AsyncConnectionPool) -> Retention:
+    value = await _get(pool, RETENTION_KEY)
+    return Retention.model_validate(value) if value is not None else Retention()
+
+
+async def set_retention(pool: AsyncConnectionPool, retention: Retention) -> None:
+    await _put(pool, RETENTION_KEY, retention.model_dump())
+
+
+async def get_mcp(pool: AsyncConnectionPool) -> McpSettings:
+    value = await _get(pool, MCP_KEY)
+    return McpSettings.model_validate(value) if value is not None else McpSettings()
+
+
+async def set_mcp(pool: AsyncConnectionPool, value: McpSettings) -> None:
+    await _put(pool, MCP_KEY, value.model_dump())

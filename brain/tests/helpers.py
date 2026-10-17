@@ -239,6 +239,7 @@ async def insert_moment(
     axis: int | None = None,
     item_id: str | None = None,
     seconds: float = 0,
+    keyframe_id: str | None = None,
 ) -> str:
     """Insert a moment row (it starts at ``ts``, default now, and lasts ``seconds``); return its id.
 
@@ -255,10 +256,10 @@ async def insert_moment(
         vector = Vector(values)
     async with pool.connection() as conn:
         await conn.execute(
-            "INSERT INTO moment (id, device_id, ts_start, ts_end, kind, text, lang, item_id, embedding, embed_model,"
-            " model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'test')",
-            (moment_id, device_id, ts, ts + dt.timedelta(seconds=seconds), kind, text, lang, item_id, vector,
-             None if vector is None else "test"),
+            "INSERT INTO moment (id, device_id, ts_start, ts_end, kind, text, lang, item_id, keyframe_id, embedding,"
+            " embed_model, model_version) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'test')",
+            (moment_id, device_id, ts, ts + dt.timedelta(seconds=seconds), kind, text, lang, item_id, keyframe_id,
+             vector, None if vector is None else "test"),
         )
     return moment_id
 

@@ -4,17 +4,14 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from pathlib import PurePosixPath
 
-import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
-from .. import media, thumbs
+from .. import thumbs
 from ..days import day_bounds_utc, local_now
 from ..pipeline import moments as moment_rules
 from ..pipeline import recap as recap_rules
-from ..pipeline.state import keyframe_exists
 from .markdown import render_markdown
 from .routes import MARKER_LABEL, TEMPLATES, require_htmx
 
@@ -166,30 +163,11 @@ async def day_page(request: Request, day: dt.date | None = Query(default=None)):
 @router.get("/thumb/{keyframe_id}.jpg")
 async def thumbnail(request: Request, keyframe_id: str):
     """A keyframe 320 px wide, made on the first request and kept under ``thumbs/``."""
-    settings = request.app.state.settings
-    async with request.app.state.pool.connection() as conn:
-        cur = await conn.execute("SELECT path FROM keyframe WHERE id = %s", (keyframe_id,))
-        row = await cur.fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="unknown keyframe")
+    state = request.app.state
     try:
-        rel = PurePosixPath(row["path"])
-        src = media.inside(settings.media_root, rel)
-        dst = media.inside(settings.media_root, thumbs.thumb_rel(rel))
-    except ValueError as exc:
-        log.warning("keyframe %s has an unusable path: %s", keyframe_id, exc)
-        raise HTTPException(status_code=404, detail="keyframe file missing") from exc
-    if not src.is_file():
-        raise HTTPException(status_code=404, detail="keyframe file missing")
-    if not dst.is_file():
-        try:
-            await anyio.to_thread.run_sync(thumbs.make_thumb, src, dst)
-        except OSError as exc:  # not a readable picture (PIL.UnidentifiedImageError is one), or the disk refused it
-            log.warning("keyframe %s: no thumbnail: %s", keyframe_id, exc)
-            raise HTTPException(status_code=404, detail="keyframe unreadable") from exc
-        if not await keyframe_exists(request.app.state.pool, keyframe_id):  # forgotten while the thumbnail was made
-            media.remove_files(settings.media_root, [str(thumbs.thumb_rel(rel))])
-            raise HTTPException(status_code=404, detail="unknown keyframe")
+        dst = await thumbs.keyframe_thumb(state.pool, state.settings.media_root, keyframe_id)
+    except thumbs.ThumbUnavailable as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return FileResponse(dst, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
