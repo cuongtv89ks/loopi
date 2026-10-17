@@ -1,145 +1,130 @@
-# Loopi — handoff (2026-10-14)
+# Loopi — handoff (2026-10-17)
 
-Context memory for whoever continues this project — the owner or a Claude Code session on the new
-Linux arm64 machine. Read this, then `CLAUDE.md`, then the plan you are about to execute.
+Context memory for whoever continues this project, whether that is the owner or a Claude Code session on the brain PC
+(Linux). Read this file first, then `CLAUDE.md`, then the plan you are about to execute.
 
 ## 1. Where things stand
 
-| Plan | File | State | Commits on `feat/phase1` |
+| Plan | File | State | Branch / commits |
 |---|---|---|---|
-| Spec v1 | `docs/superpowers/specs/2026-10-14-loopi-design.md` | approved; amended D16 (kit CSI camera + USB OTG mic) and D17 (USB gadget bring-up) | on `main` and `feat/phase1` |
-| P1a — protocol + brain | `docs/superpowers/plans/2026-10-14-p1a-protocol-brain-ingest.md` | **complete**: 9/9 tasks + final whole-branch review + fix wave; 133 tests, 98 % coverage; smoke test passes on the real compose stack | `25c89c4..18da73c` |
-| P1b — agent v0 (Rust) | `docs/superpowers/plans/2026-10-14-p1b-agent-v0.md` | **complete**: 12/12 tasks, each reviewed, final review + fix wave; 190 lib + 1 e2e + 4 safety tests (≈ 96 % coverage before the wave), release binary 4.1 MB, no aws-lc-rs. One carried fix (§3), final review: §6 | `18da73c..4765370` |
-| P1c — Buildroot image + hardware acceptance | `docs/superpowers/plans/2026-10-14-p1c-buildroot-dev-image.md` | **not started** — moved to Linux arm64 | — |
+| Spec v1 | `docs/superpowers/specs/2026-10-14-loopi-design.md` | approved; amended by D16–D23 (see §4) | every branch carries it |
+| P1a: protocol + brain ingest | `plans/2026-10-14-p1a-protocol-brain-ingest.md` | **complete** | `feat/phase1`, merged into `main` |
+| P1b: agent v0 (Rust) | `plans/2026-10-14-p1b-agent-v0.md` | **complete** | `feat/phase1`, merged into `main` |
+| P1c: Buildroot image + hardware acceptance | `plans/2026-10-14-p1c-buildroot-dev-image.md` | **complete, with waivers** (§2) | `feat/phase1` (`main` = 7021705) |
+| Audio level (D19) | `plans/2026-10-15-audio-level.md` | **complete**: device +20 dB on `feat/phase1` (image smoke8), brain normalisation in P2a | `feat/phase1` 06059a0 |
+| P2a: perception pipeline | `plans/2026-10-15-p2a-perception-pipeline.md` | **complete**; live since 2026-10-15 23:51 KST; measurements in `docs/measurements/2026-10-p2a-pipeline.md` | `feat/phase2` |
+| P2b: understanding + UI | `plans/2026-10-16-p2b-understanding-ui.md` | **complete**; live since 2026-10-17 09:00 KST (§3) | `feat/p2b` → `feat/phase2` |
+| P2c: evaluation + P2 acceptance | `plans/2026-10-16-p2c-evaluation-acceptance.md` | Tasks 1–10 complete and reviewed; Tasks 11–14 (deploy, the owner labels, runs, report) in progress | `feat/p2c` |
 
-`main` holds only the spec and plans. Nothing has been merged into `main` yet: merge `feat/phase1` once P1c
-acceptance passes (or earlier if you prefer — it is your call).
+All plan paths are under `docs/superpowers/`. Execution ledgers are under `docs/superpowers/ledgers/`. They record every
+ruling with its cost if wrong, every deferred finding, and the pre-flight scans. The P1c ledger is still only in the
+git-ignored `/home/soul/loopi/.superpowers/sdd/2026-10-14-p1c-buildroot-dev-image/`. A sanitized committed copy waits
+for the owner's yes.
 
-Execution ledgers (every ruling, every deferred finding, pre-flight scans) are committed under
-`docs/superpowers/ledgers/`. When resuming a plan with subagent-driven development, copy its ledger to
-`.superpowers/sdd/<plan-basename>/progress.md` (that directory is git-ignored scratch).
+## 2. Phase 1 (device + ingest): done
 
-## 2. Setting up the Linux arm64 machine
+- Pi Zero W, Rust agent (rustls with ring only; `aws-lc-rs` must never enter the tree), Buildroot dev image. The
+  device runs image **smoke8**, which is smoke7 plus audio gain +20 dB with a −1 dBFS limiter (D19). The image is at
+  `/home/soul/loopi/os/out/loopi-dev-smoke8.img`.
+- P1c acceptance: 24 h soak on smoke7 PASS (0 restarts, 0 agent warnings). The brain outage test passed. The privacy
+  LED is the onboard ACT LED (D18).
+- The owner waived the rest of the hardware tests (2026-10-16): SIGKILL/LED watch, 10 power pulls, reboot
+  AlreadyImported, `loopi-usbmode` round trip, brcmfmac reload, the stable-DHCP re-check, selftest with the agent
+  stopped, and camera unplugged at boot (RF5).
+- Parked for a later agent pass (P1c final review, C42–C45):
+  - an LED re-assert failure is not retried on the next frame;
+  - selftest can darken the LED for ≤ 1 s;
+  - the `[led]` path accepts any directory;
+  - an unfilled `ca_fingerprint` gives no README pointer.
+
+## 3. Phase 2 on the live stack
+
+**Where it runs.** The live compose project `deploy` (data in `/home/soul/loopi-data`) runs **from the worktree
+`/home/soul/loopi-p2/deploy`** on branch `feat/phase2`. It builds there and bind-mounts `Caddyfile` and `providers.yaml`
+from there; `deploy/.env` is copied in, mode 600. **Never remove that worktree** (for example with
+`finishing-a-development-branch`) before redeploying from another checkout on a branch that contains P2: `docker
+compose -p deploy up -d --build`, then `COMPOSE_PROJECT_NAME=deploy ./smoke.sh`. Every compose command passes
+`-p deploy`. Never run `down -v`, never prune. Database backups are kept in `~/loopi-backups/`.
+
+**P2a (since 2026-10-15 23:51 KST).** Keyframes, captions (`minicpm-v4.6:1b`), ASR (faster-whisper large-v3-turbo
+int8, Silero VAD, brain normalisation ≤ 30 dB with a −40 dBFS noise-floor cap), moments and embeddings
+(`qwen3-embedding:0.6b`).
+- The backlog of 31 h of recording drained in 4 h 37 min with 0 failed jobs.
+- Over a 24 h window it produced 131 keyframes a day, inside the 100–300 budget.
+- Live latency from 08:00 to 22:00: video→caption p95 1.0 min, audio→transcript p95 1.7 min.
+- CPU was 9.4 CPU-h/day. Peaks: worker 4.5 GB, models 7.95 GB.
+- Open finding for P2c: English Whisper hallucinations on room noise.
+
+**P2b (since 2026-10-17 09:00 KST).** This adds:
+- chapters (hourly at minute 5), the day recap (23:30) and commitments;
+- hybrid search and chat with sources (streams through Caddy, checked in the browser);
+- "Quên khoảng thời gian" and reprocess by day;
+- retention, which **ships off** (D20: 7/7 days when enabled);
+- the "Hiểu ngày" card on Xử lý.
+
+Deploy notes:
+- **Rollback.** First deploy 04:33, then a rollback at 05:33. The first recap loaded `qwen3:8b` (6.7 GB) while
+  `qwen3:4b` (3.9 GB) was still in memory from the chapter summaries: 661 MB free, swap 100 %. The worker was
+  stopped and both models were unloaded (no OOM kill), then the stack rolled back to P2a.
+- **Fix: D23.** Chapter summaries, recaps and chat all use `qwen3:8b`. The owner chose this on 2026-10-17, commit
+  6a46d1d. Redeployed at 09:00.
+- **Memory.** With `qwen3:8b` and minicpm-v loaded, the models container holds ≈ 9.6 GiB and ≈ 1.5 GB is free while a
+  text model runs. To save RAM, the owner's other project (erp-nemo-platform: 4 containers, 5 PM2 apps) was
+  **stopped, not removed**. Restore it with
+  `docker start nemo-base nemo-whisper nemo-minio nemo-control-db && pm2 start nemo-web nemo-provisioner
+  nemo-telegram-bridge nemo-scheduler cf-tunnel-2`. Watch this margin. Further knobs, if needed:
+  `OLLAMA_MAX_LOADED_MODELS=1` (text runs unload the vision model) or `LOOPI_LLM_NUM_CTX=4096` (smaller KV cache, and
+  the recap prompt budget must shrink, test-first).
+- **First results.** 52 chapters (10-14 … 10-17), recaps for 10-14/15/16 (each ≈ 5 min on `qwen3:8b`), 0 failed
+  jobs. Latency while the recaps caught up: video→caption p95 2.7 min, audio→transcript p95 2.0 min.
+- **Retention.** Nothing is older than 7 days yet. The disk has 228 GB free at ≈ 6.4 GB of video a day, ≈ 35 days of
+  room. The owner said "not yet". Ask again once the golden set is labelled, about two weeks after 2026-10-17.
+
+**Rollback P2b → P2a.**
 
 ```bash
-git clone https://github.com/cuongtv89ks/loopi.git && cd loopi && git checkout feat/phase1
-sudo apt install -y build-essential pkg-config libopus-dev libasound2-dev ffmpeg git curl
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh     # Rust stable
-rustup component add llvm-tools-preview && cargo install --locked cargo-llvm-cov
-curl -LsSf https://astral.sh/uv/install.sh | sh                      # uv (Python 3.13 is fetched on demand)
-# Docker Engine + compose plugin (docs.docker.com/engine/install/debian or ubuntu), user in the docker group
+cd /home/soul/loopi-p2/deploy && docker compose -p deploy stop worker
+docker compose -p deploy exec -T db psql -U loopi -d loopi -c "DELETE FROM procrastinate_jobs WHERE task_name IN
+  ('plan_chapters', 'build_chapters', 'plan_recaps', 'write_recap', 'apply_retention');"
+cd /home/soul/loopi-p2 && git checkout --detach 54e22f3 && cd deploy && docker compose -p deploy up -d --build
 ```
 
-Then verify both sides before touching P1c:
+P2a ignores the P2b tables. To go back to P2b afterwards: `git -C /home/soul/loopi-p2 checkout feat/phase2` and
+`up -d --build`.
 
-```bash
-cd brain && uv sync && uv run pytest --cov=loopi_brain     # expect 133 passed, ≥ 98 %
-cd ../agent && cargo test                                  # FIRST build of the Linux-only code — see §3
-cargo llvm-cov --ignore-filename-regex 'main.rs'           # expect ≈ 96 %
-cargo build --release && cargo tree -i aws-lc-rs           # the tree must find nothing
-```
+## 4. Decisions taken after the first spec (D16–D23)
 
-On Linux, testcontainers talks to `/var/run/docker.sock` directly; the macOS-only env file used during
-development (`.superpowers/sdd/env/env.sh`: colima socket, Ryuk disabled) is not needed.
+D16: kit CSI camera + USB OTG mic. D17: USB gadget bring-up. D18: the ACT LED is the privacy LED. D19: device gain
++20 dB and brain normalisation. D20: raw audio kept 7 days like video, retention off until the owner enables it.
+D21: the golden set stays out of git (`/home/soul/loopi-data/eval` + DB) and the owner labels it on the "Đánh giá"
+page. D22: §14's recall@5 is hit@5, and the 30 % rule uses CER for Korean and WER for vi/en. D23: one local text
+model (`qwen3:8b`). D21/D22 are on `feat/p2c`; D23 is on `feat/p2b`/`feat/phase2`.
 
-## 3. First thing to do on Linux: one carried fix, then compile the Linux-only agent code
+## 5. Branches
 
-**Carried durability fix (ruling B31, do this before any hardware test).** `agent/src/queue.rs` `Queue::recover`
-now continues after a directory-entry error, but Rust's `ReadDir` stops listing at the first error, so payloads or
-sidecars that were never listed can be deleted as "orphans" (`queue.rs` ~239-245 with ~279-290). Fix: remember
-that the listing was incomplete and, in that case, skip every orphan/sidecar deletion and report those files as
-left in place; add a test (e.g. a fake directory iterator that errors midway). Found by the final re-review;
-the process allowed no second fix wave, so it is carried here.
+- `main`: P1, at 7021705.
+- `feat/phase1`: P1 + audio level D19 (agent and OS).
+- `feat/phase2`: P2a + P2b, the live branch.
+- `feat/p2b` / `feat/p2c`: the P2b and P2c work branches (worktrees `/home/soul/loopi-p2b`, `/home/soul/loopi-p2c`).
 
-Everything in the agent was developed and tested on macOS. Code behind `cfg(target_os = "linux")` has
-**never been compiled**:
+All are pushed to GitHub. Pushing is outward-facing, so ask the owner first.
 
-- `agent/src/led.rs` `GpioLed` and `agent/src/button.rs` button thread — gpiocdev 0.7
-- `agent/src/recorder/audio.rs` `alsa_source` — alsa 0.9 (incl. `get_rate`/`get_channels` read-back)
-- `agent/src/main.rs` sd-notify 0.4 (`Ready`, `Watchdog`, `Status`) and `agent/src/recorder/video.rs` `prctl(PR_SET_PDEATHSIG)`
+## 6. Next
 
-Expect a few API-level compile errors there; fix them with tests green. `cargo test` on Linux also runs the
-selftest unit test against the real default ALSA device (it records one second) — harmless.
-
-## 4. Next: P1c (Buildroot image) on arm64
-
-- The plan builds inside a Debian container with Buildroot's **internal** toolchain, so it works natively on
-  arm64 (no x86_64 prebuilt toolchain needed). First build: 1–3 h, ~20–30 GB in the `loopi-buildroot` Docker volume.
-- P1c was revised for **USB gadget bring-up** (spec D17): the dev image boots with the OTG port as a USB gadget
-  (ACM console + CDC-ECM network, Pi at `10.55.0.1`); `loopi-usbmode host` switches the port to host mode for
-  the microphone. No serial cable needed. Task order: 1 base image + USB console · 2 read-only root · 3 agent +
-  WiFi + provisioning · 4 SSH · 5 camera + mic · 6 acceptance.
-- Carried into P1c from P1a/P1b reviews:
-  - **R22**: the brain remuxes raw H.264 with `-framerate <fps>` assuming no VUI timing in the stream. In the P1c
-    end-to-end step, check that a remuxed 60 s segment plays ≈ 60 s in the browser. If not, switch the remux to
-    the `setts` bitstream filter.
-  - The agent's Buildroot package must build with `--locked` (Cargo.lock is committed) and the ring-only TLS stack.
-  - systemd unit: `Type=notify`, `WatchdogSec=30` (the agent pings only while its loops make progress, ≤ 20 s),
-    `KillMode=control-group`; READY is sent at start on purpose (pairing may wait indefinitely for a token).
-  - `loopi-agent provision` must run before `loopi-agent run` (`loopi-provision.service`); `run` fails with
-    "not provisioned" otherwise.
-- Hardware steps only you can do (the plan pauses for them): flash the SD card, connect the Pi's `USB` port to
-  the computer with a data cable, plug/unplug camera and mic, power pulls, the 24 h soak.
-- From the P1b final review — check these while building the image:
-  - Cross-compile **only** with Buildroot's ARMv6 toolchain. Debian's `gcc-arm-linux-gnueabihf` targets ARMv7,
-    and ring's / libopus' C and assembly would die with SIGILL on the Pi Zero.
-  - Consider `KillMode=mixed` instead of `control-group`: with control-group systemd SIGTERMs rpicam-vid directly
-    and its last segment is not flushed; mixed still kills the whole group at the end. (Deviates from the spec
-    text — your call.)
-  - Make `loopi-provision.service` a `Wants=` (not `Requires=`) of the agent so a bad boot file cannot block it.
-  - Grant the agent access to the gpiochip, `/dev/snd`, `/dev/video*`, `/dev/media*`, `/dev/dma_heap`; pass
-    `--verbose 0` to rpicam-vid and set `LIBCAMERA_LOG_LEVELS=*:WARN`.
-  - On hardware: `kill -9` the agent must turn the LED off — if the kernel keeps GPIO outputs on release, add an
-    `ExecStopPost` that drives the LED low. Measure RSS (< 20 MB), CPU, reactor stalls during sha256/fsync of
-    6 MB segments, and upload throughput vs the upload timeout. `brain.url` should match one of the brain's SANs.
-
-## 5. Decisions taken during execution (summary)
-
-56 rulings were made while executing P1a (R1–R26 + setup) and P1b (B1–B28); each line in the ledgers says what
-was decided, why, and what it costs if wrong. The ones that change behaviour you might not expect:
-
-**Protocol / brain**
-- Media path is `raw/<device_id>/YYYY/MM/DD/` (UTC date); device pause/audio state is read from the last
-  heartbeat, not stored in columns (spec §9.4 updated).
-- Contract declares every limit the server enforces: item ≤ 64 MiB (`x-loopi-max-item-bytes`), marker ≤ 64 KiB,
-  End ≥ Start and End − Start ≤ 3600 s, ≤ 100 commands per heartbeat response and ≤ 100 acks per request,
-  `last_error` ≤ 500 chars, extra heartbeat fields rejected. Commands are a `oneOf`: pause/resume (`{}`) and
-  `set_config {audio_enabled}`.
-- `/v1/pair` also enforces the agent major version (426). PKI certs carry SKI/AKI/KeyUsage (strict TLS clients).
-- Uploads are fsynced (file + directory) before the 201; on a commit failure the file is kept, never unlinked
-  outside the advisory lock. Video remux runs in the background with timeout/kill, re-queued at startup.
-- The API container runs as `LOOPI_UID:LOOPI_GID`; images are pinned to exact versions; Caddy mounts only the
-  server cert/key and CA cert; JSON endpoints have a 64 KB body limit; `X-Frame-Options: DENY`.
-
-**Agent**
-- Config rejects `video_bitrate_bps × segment_seconds ÷ 8 > 64 MiB`. An open WiFi network is imported on first boot.
-- Payloads are fsynced before the sidecar (commit point); corrupt sidecars move the payload to `quarantine/`
-  instead of deleting it; only payloads with no sidecar at all are dropped (and counted).
-- A corrupt `state.json` fails **closed** (paused). Commands are acked only after reaching the control loop.
-- HTTP client: no redirects, https only, full error chains in `last_error`; 408/425/429/3xx/5xx are retried.
-- Pairing verifies the CA fingerprint **during the TLS handshake** when `ca_fingerprint` is configured, before
-  the one-time token is sent; device certs (clientAuth) cannot impersonate the brain. Secrets are redacted in Debug.
-- Every loop treats a dropped watch sender as shutdown (no hot loops). Video and audio segments are clamped to
-  ≤ 3600 s. Audio finalisation/fsync runs on a finisher thread so capture never pauses; the ALSA rate is verified.
-- The LED write is retried until it succeeds; the disk is checked before recording first starts; the systemd
-  watchdog is fed by real loop progress; `selftest` exits non-zero on any failed check.
-
-## 6. Open items
-
-- P1b final whole-branch review ("with fixes": 1 critical, 4 important) was answered by one fix wave (ruling
-  B29): LED unavailable → recording disabled; per-entry startup recovery; visible quarantine with retry for
-  400/404/405 and a circuit breaker; per-request timeouts (heartbeat 10 s, uploads sized to the file); mTLS
-  verifies the brain against the stored CA without a hostname check. Details and the re-review verdict are at
-  the end of `docs/superpowers/ledgers/p1b-progress.md`.
-- ~40 deferred minor findings across both plans are listed in the ledgers (`minor (deferred)` lines) with the
-  final reviewers' triage; none blocks Phase 1 acceptance.
-- Incident during P1a: a pre-flight subagent ran `docker container prune -f` on the dev Mac (removed any
-  stopped containers there). Every later subagent was forbidden from touching resources it did not create.
+1. **P2c Tasks 11–14:**
+   - deploy P2c (migration 005, the Đánh giá page);
+   - the owner labels about 22 clips, 30 keyframes and 25 questions;
+   - a baseline run, twice, for the noise floor;
+   - tuning backed by numbers and the owner's yes;
+   - a final run with no overrides;
+   - a fresh 24 h CPU window;
+   - the acceptance report, numbers only.
+2. **P3:** MCP server (§10.5) and vlog (§10.3).
+3. **P4.**
 
 ## 7. How to resume with Claude Code
 
 ```
-Read CLAUDE.md and docs/HANDOFF.md. Do the carried durability fix in §3 (TDD), then compile and test the agent
-on this Linux machine and fix any Linux-only compile errors. Then execute docs/superpowers/plans/2026-10-14-p1c-buildroot-dev-image.md with
-superpowers:subagent-driven-development, stopping only for hardware steps and approvals.
+Read CLAUDE.md and docs/HANDOFF.md, then docs/superpowers/ledgers/p2c-progress.md. Continue P2c at the first task
+without a "complete" line (Tasks 11–14 are controller-executed; each needs the owner's yes where the plan says so).
 ```

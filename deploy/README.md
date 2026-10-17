@@ -10,8 +10,8 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
    `cd deploy && docker compose run --rm --no-deps api loopi-brain init-pki --host localhost --host brain.lan --ip "$(hostname -I | cut -d' ' -f1)"`
    (The `hostname -I` detection is Linux-only; on macOS use `--ip "$(ipconfig getifaddr en0)"`.)
    Write down the printed CA fingerprint.
-4. Download the AI models before the pipeline starts (≈ 11.5 GB, once): `minicpm-v4.6:1b` 1.6 GB, `qwen3:8b` 5.2 GB,
-   `qwen3:4b` 2.5 GB and `qwen3-embedding:0.6b` 0.6 GB go into the `ollama` volume, Whisper large-v3-turbo
+4. Download the AI models before the pipeline starts (≈ 9 GB, once): `minicpm-v4.6:1b` 1.6 GB, `qwen3:8b` 5.2 GB
+   and `qwen3-embedding:0.6b` 0.6 GB go into the `ollama` volume, Whisper large-v3-turbo
    (≈ 1.6 GB) into `$LOOPI_DATA_DIR/models/whisper`. `deploy/providers.yaml` (committed, no secrets) names them.
    `docker compose up -d models && docker compose run --rm --no-deps worker loopi-brain models pull`
    (Without them the worker still extracts keyframes and the first transcription downloads Whisper itself;
@@ -57,7 +57,7 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   Bỏ qua / Mở lại), then the chapters in order with their pictures (320 px thumbnails, made on first view under
   `thumbs/`), marked moments and speech (with playback while the raw audio is kept). "Chi tiết theo giờ" (`/hours`)
   is the P2a hourly view.
-- Chapters are built every hour (minute 5) by `qwen3:4b`; a day's chapters settle ("closed") once everything recorded
+- Chapters are built every hour (minute 5) by `qwen3:8b`; a day's chapters settle ("closed") once everything recorded
   up to them is analysed and 30 minutes old. The recap (`qwen3:8b`) is written at 23:30 (again at 23:30 if
   "Tạo lại recap" wrote one earlier), and for an earlier day as soon as all its chapters are settled, and once more
   if its chapters change afterwards. Days analysed before this upgrade get chapters one day per hour, newest first,
@@ -77,8 +77,10 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   kept days are deleted and the pages say "đã hết hạn". Keyframes, transcripts, chapters and recaps stay. The same
   03:00 run (on or off) retries files a "Quên khoảng thời gian" could not delete at once.
 - Memory: Ollama keeps at most 2 models (`OLLAMA_MAX_LOADED_MODELS`). Measured: minicpm-v ≈ 2.9 GB, qwen3-embedding
-  ≈ 1.3 GB; `qwen3:8b` with its 8192-token context ≈ 6–6.5 GB and `qwen3:4b` ≈ 3.5 GB, so a recap or a chat raises
-  Ollama from ≈ 4.2 GB to ≈ 9.4–10 GB; text models unload 1 minute after their last request. A text request may
+  ≈ 1.3 GB; `qwen3:8b` with its 8192-token context ≈ 6.7 GB. Chapter summaries, recaps and chat share that one text
+  model (spec D23: with `qwen3:4b` for summaries, a recap loaded `qwen3:8b` while `qwen3:4b` was still in memory and
+  the host ran out of memory), so a text run raises Ollama from ≈ 4.2 GB to ≈ 9.6 GB; the text model unloads 1 minute
+  after its last request. A text request may
   take up to 15 minutes on the CPU (`LOOPI_LLM_TIMEOUT_S`, 900 s).
 - CPU: by default Ollama runs a text model on all physical cores. If the recording → caption/transcript latency on
   "Xử lý" goes above 15 minutes while chapters and recaps run, add `LOOPI_LLM_NUM_THREAD: "2"` (threads per

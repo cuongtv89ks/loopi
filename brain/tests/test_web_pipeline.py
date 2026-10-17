@@ -108,7 +108,7 @@ async def test_a_keyframe_whose_caption_job_failed_is_not_waiting(web, pool, pki
 
 
 async def test_pipeline_page_shows_backlog_latency_models_and_dead_letters(web, pool, pki_settings, dev, ollama):
-    ollama.models.remove("qwen3:4b")
+    ollama.models.remove("qwen3:8b")
     device_id = dev["device_id"]
     now = dt.datetime.now(dt.UTC)
     for kind in ("video", "video", "audio"):
@@ -131,7 +131,7 @@ async def test_pipeline_page_shows_backlog_latency_models_and_dead_letters(web, 
     assert "Đánh dấu chờ ghi nhận: 0" in text and "Khung hình chờ mô tả: 0" in text  # the failed one is not waiting
     assert "Ghi hình → mô tả: trung bình 10 phút" in text and "(1 mẫu)" in text
     assert "Ghi âm → transcript: chưa có dữ liệu" in text
-    assert "Thiếu model: qwen3:4b" in text and "loopi-brain models pull" in text
+    assert "Thiếu model: qwen3:8b" in text and "loopi-brain models pull" in text
     assert "Worker: <span class=\"err\">không thấy tín hiệu</span>" in text
     assert f'id="job-{job_id}"' in text and "Ghi nhận đánh dấu" in text and "RuntimeError: bad marker" in text
     assert f'hx-post="/pipeline/jobs/{job_id}/retry"' in text and "Xử lý lại" in text

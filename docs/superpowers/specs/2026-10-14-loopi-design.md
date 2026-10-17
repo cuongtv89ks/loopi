@@ -80,6 +80,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D20 | Lưu audio thô | Brain giữ audio thô 7 ngày như video, không xoá ngay sau khi có transcript: transcript chưa đủ tin cậy (Whisper có thể bịa câu trên tiếng ồn hoặc bỏ sót tiếng nói nhỏ) và người dùng cần nghe lại bản đã chuẩn hoá mức âm thanh (D19). Số ngày giữ video thô và audio thô chỉnh được trong trang Cài đặt (mặc định 7 và 7). Job lưu trữ lúc 03:00 chỉ chạy sau khi người dùng bật trong Cài đặt (mặc định tắt) và chỉ xoá file thô (kèm bản xem/nghe đã chuyển đổi) của những đoạn đã phân tích xong; keyframe, transcript, caption, chương và recap vẫn giữ vĩnh viễn |
 | D21 | Bộ đánh giá chất lượng AI | Dữ liệu của bộ đánh giá (golden set) không vào git: các đoạn audio thật, bản sao keyframe, transcript chuẩn và câu hỏi nằm trong thư mục dữ liệu của brain (`/srv/loopi/eval` trong container, đặt bằng `LOOPI_EVAL_DIR`) và trong database của brain. Repo chỉ chứa code đánh giá (`brain/src/loopi_brain/evaluation/`) và các con số kết quả (WER, CER, điểm caption, recall), không chứa transcript hay câu hỏi nào. Người dùng tự gán nhãn trên trang "Đánh giá" của brain: nghe từng đoạn audio đã chuẩn hoá mức âm thanh rồi sửa transcript thành bản chuẩn (hoặc đánh dấu "không có lời nói"), chấm điểm caption của keyframe, viết câu hỏi và chọn moment đúng. Job lưu trữ không xoá bản sao trong bộ đánh giá; "Quên khoảng thời gian" xoá cả các mẫu đánh giá lấy từ khoảng đó |
 | D22 | Cách đo nghiệm thu P2 | "Recall@5 ≥ 70%" ở mục 14 là **hit@5**: một câu hỏi được tính là tìm thấy khi ít nhất một khoảnh khắc đúng của nó nằm trong 5 kết quả đầu. Báo cáo ghi thêm recall@5 có giới hạn (số khoảnh khắc đúng tìm được trong 5 kết quả đầu chia cho min(n, 5), n là số khoảnh khắc đúng của câu hỏi), hit@10 và MRR. Quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh; báo cáo ghi cả WER lẫn CER cho mọi ngôn ngữ. Mọi con số kèm số mẫu và khoảng tin cậy 95% |
+| D23 | Một model chữ | Tóm tắt chương, recap và chat dùng chung một model chữ cục bộ (`qwen3:8b`) thay vì `qwen3:4b` cho tóm tắt chương: đo ngày 2026-10-17, recap nạp `qwen3:8b` (6,7 GB) khi `qwen3:4b` (3,9 GB) vẫn còn trong RAM sau lượt tóm tắt cuối, máy chỉ còn 661 MB trống và swap đầy. Với một model chữ, lúc cao nhất Ollama giữ `qwen3:8b` cùng một model ảnh hoặc embedding (≈ 9,6 GB). Tóm tắt chương chậm hơn khoảng gấp đôi |
 
 ---
 
@@ -303,7 +304,7 @@ tasks:
   caption:         { provider: ollama, model: minicpm-v4.6 }
   asr:             { provider: local,  model: faster-whisper/large-v3-turbo-int8 }
   embed:           { provider: ollama, model: qwen3-embedding:0.6b }
-  chapter_summary: { provider: ollama, model: qwen3:4b }
+  chapter_summary: { provider: ollama, model: qwen3:8b }
   recap:           { provider: ollama, model: qwen3:8b }
   chat:            { provider: ollama, model: qwen3:8b }
   # Tuỳ chọn, chỉ khi đã đặt ANTHROPIC_API_KEY:

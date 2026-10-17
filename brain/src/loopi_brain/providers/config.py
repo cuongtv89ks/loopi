@@ -92,7 +92,7 @@ DEFAULT_CONFIG = ProvidersConfig(
         "caption": TaskRoute(provider="ollama", model="minicpm-v4.6:1b"),
         "asr": TaskRoute(provider="local", model="faster-whisper/large-v3-turbo-int8"),
         "embed": TaskRoute(provider="ollama", model="qwen3-embedding:0.6b"),
-        "chapter_summary": TaskRoute(provider="ollama", model="qwen3:4b"),
+        "chapter_summary": TaskRoute(provider="ollama", model="qwen3:8b"),
         "recap": TaskRoute(provider="ollama", model="qwen3:8b"),
         "chat": TaskRoute(provider="ollama", model="qwen3:8b"),
     }
