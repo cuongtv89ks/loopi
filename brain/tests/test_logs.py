@@ -128,7 +128,8 @@ async def test_a_real_uvicorn_request_is_logged_without_its_query(capsys):
                 assert not serving.done(), "uvicorn stopped before it started"
                 await asyncio.sleep(0.01)
         port = server.servers[0].sockets[0].getsockname()[1]
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+        # trust_env=False: a loopback request must not go through HTTP_PROXY / ALL_PROXY of the developer's shell
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
             hit = await client.get("/healthz", params={"q": f"{SECRET} xin chào"})
             plain = await client.get("/healthz")
     finally:
