@@ -12,6 +12,7 @@ from loopi_brain.providers.router import build_router
 
 NINE = dt.datetime(2026, 10, 14, 0, 0, tzinfo=dt.UTC)  # 09:00 in Seoul
 DAY = "2026-10-14"
+LATE = dt.datetime(2026, 10, 14, 15, 30, tzinfo=dt.UTC)  # 00:30 on the 15th in Seoul: the UTC day is the 14th
 
 
 @pytest.fixture
@@ -103,6 +104,27 @@ async def test_the_timeline_has_chapters_markers_and_counts(pool, pki_settings, 
     assert [(m.moment_id, m.text) for m in timeline.markers] == [(marker, "Đánh dấu")]
     empty = await memory.get_timeline(pool, "2026-10-20", zone)
     assert (empty.chapters, empty.markers, empty.counts) == ([], [], {"visual": 0, "speech": 0, "marker": 0})
+
+
+async def test_a_moment_just_after_local_midnight_belongs_to_the_next_local_day(pool, pki_settings, dev):
+    """Days are local (LOOPI_TZ): every other fixture sits between 00:00 and 14:59 UTC, where the local and the UTC day agree."""
+    zone = pki_settings.zone
+    spoken = await insert_moment(pool, dev["device_id"], kind="speech", ts=LATE, seconds=30, axis=0, text="đi chợ")
+    marker = await insert_moment(pool, dev["device_id"], kind="marker", ts=LATE, text="Đánh dấu")
+    found = await memory.search_memories(pool, None, pki_settings, "đi chợ", None, None, 10)
+    [ref] = found.moments
+    assert (ref.moment_id, ref.day, ref.ts_start) == (spoken, "2026-10-15", "2026-10-15T00:30:00+09:00")
+    out, _ = await memory.get_moment(pool, pki_settings, spoken, images=False)
+    assert (out.day, out.ts_start, out.ts_end) == ("2026-10-15", "2026-10-15T00:30:00+09:00", "2026-10-15T00:30:30+09:00")
+    on_15 = await memory.get_timeline(pool, "2026-10-15", zone)
+    on_14 = await memory.get_timeline(pool, DAY, zone)
+    assert on_15.counts == {"visual": 0, "speech": 1, "marker": 1}
+    assert [(m.moment_id, m.ts_start) for m in on_15.markers] == [(marker, "2026-10-15T00:30:00+09:00")]
+    assert on_14.counts == {"visual": 0, "speech": 0, "marker": 0} and on_14.markers == []
+    window = await memory.search_memories(pool, None, pki_settings, "đi chợ", DAY, DAY, 10)  # the 14th, local
+    assert window.moments == []
+    window = await memory.search_memories(pool, None, pki_settings, "đi chợ", "2026-10-15", "2026-10-15", 10)
+    assert [m.moment_id for m in window.moments] == [spoken]
 
 
 @pytest.mark.parametrize("bad", ["2026-13-45", "tomorrow", "2026-1-5", ""])
