@@ -74,7 +74,8 @@ async def vlog_views(pool: AsyncConnectionPool, days: Sequence[dt.date], zone: Z
             "duration": _duration(row.get("duration_s")),
             "at": row["generated_at"].astimezone(zone).strftime("%d/%m %H:%M") if row.get("generated_at") else None,
             "has_file": bool(row.get("path")) and row.get("state") != "empty",
-            "working": lock in waiting or row.get("state") == "scripted" or bool(row.get("stale")),
+            # Only a live job is work: a scripted or stale row alone may be a failed run the planner leaves alone.
+            "working": lock in waiting,
             "error": row.get("error")
             or failed.get(lock)
             or ("lần dựng gần nhất bị lỗi" if lock in failed else None),

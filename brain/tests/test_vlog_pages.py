@@ -77,12 +77,29 @@ async def test_a_day_without_activity_says_so(web, pool):
     assert "Không có hoạt động trong ngày này." in (await web.get("/vlog/2026-10-14")).text
 
 
-async def test_a_failed_vlog_shows_its_error_and_a_working_one_says_so(web, pool):
+async def test_a_failed_vlog_shows_its_error_and_does_not_say_it_is_building(web, pool):
+    # The last attempt failed: no job is alive and the planner leaves the day alone, so "Đang dựng" would be false.
     async with pool.connection() as conn:
         await conn.execute("INSERT INTO vlog (day, state, error) VALUES (%s, 'scripted', 'render failed at assemble"
                            " (ffmpeg exit 234)')", (DAY,))
     text = (await web.get("/vlog/2026-10-14")).text
-    assert "Dựng vlog lỗi: render failed at assemble (ffmpeg exit 234)" in text and "Đang dựng vlog" in text
+    assert "Dựng vlog lỗi: render failed at assemble (ffmpeg exit 234)" in text and "Đang dựng" not in text
+    row = [r.split("</tr>")[0] for r in (await web.get("/vlog")).text.split("<tr>")[2:]][0]
+    assert "lỗi" in row and "đang dựng" not in row
+
+
+async def test_a_vlog_says_it_is_building_only_while_a_job_of_its_day_is_alive(web, pool, jobs_open):
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO vlog (day, state) VALUES (%s, 'scripted')", (DAY,))
+    assert "Đang dựng" not in (await web.get("/vlog/2026-10-14")).text  # a scripted row alone is not work
+    job = await vlogs.defer_render(pool, DAY)
+    assert "Đang dựng vlog…" in (await web.get("/vlog/2026-10-14")).text  # todo
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE procrastinate_jobs SET status = 'doing' WHERE id = %s", (job,))
+    assert "Đang dựng vlog…" in (await web.get("/vlog/2026-10-14")).text  # doing
+    await _fail(pool, job)
+    text = (await web.get("/vlog/2026-10-14")).text
+    assert "Đang dựng" not in text and "Dựng vlog lỗi" in text  # failed: the failure, not the work
 
 
 async def test_rebuild_needs_htmx_and_asks_for_a_script(web, pool):
@@ -233,6 +250,7 @@ async def test_a_missing_title_duration_or_time_never_prints_none(web, pool, pki
 async def test_while_the_first_build_runs_only_that_is_said(web, pool, jobs_open):
     async with pool.connection() as conn:
         await conn.execute("INSERT INTO vlog (day, state) VALUES (%s, 'scripted')", (DAY,))
+    await vlogs.defer_render(pool, DAY)
     text = (await web.get("/vlog/2026-10-14")).text
     assert "Đang dựng vlog…" in text and "Chưa có vlog" not in text
     other = DAY + dt.timedelta(days=1)  # a waiting script job and no row yet
@@ -241,10 +259,13 @@ async def test_while_the_first_build_runs_only_that_is_said(web, pool, jobs_open
     assert "Đang dựng vlog…" in text and "Chưa có vlog" not in text
 
 
-async def test_a_rebuild_of_a_vlog_that_has_a_file_keeps_the_player_and_says_it_rebuilds(web, pool, pki_settings):
+async def test_a_rebuild_of_a_vlog_that_has_a_file_keeps_the_player_and_says_it_rebuilds(web, pool, pki_settings,
+                                                                                         jobs_open):
     await _rendered(pool, pki_settings)
     async with pool.connection() as conn:
         await conn.execute("UPDATE vlog SET stale = true")
+    assert "Đang dựng" not in (await web.get("/vlog/2026-10-14")).text  # stale and waiting for the planner: no job yet
+    await vlogs.defer_script(pool, DAY)
     text = (await web.get("/vlog/2026-10-14")).text
     assert 'src="/vlog/2026-10-14.mp4"' in text and "Đang dựng lại vlog…" in text
     assert "Một ngày &lt;b&gt;ở nhà&lt;/b&gt; · 1:24 · dựng lúc " in text  # model text, escaped
