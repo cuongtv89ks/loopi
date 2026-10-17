@@ -108,14 +108,14 @@ model (`qwen3:8b`). D21/D22 are on `feat/p2c`; D23 is on `feat/p2b`/`feat/phase2
 - `feat/phase1`: P1 + audio level D19 (agent and OS).
 - `feat/phase2`: P2a + P2b, the live branch.
 - `feat/p2b` / `feat/p2c`: the P2b and P2c work branches (worktrees `/home/soul/loopi-p2b`, `/home/soul/loopi-p2c`).
+- `feat/p3` / `feat/p3a`: P3 (design, P3a MCP; P3b vlog next) in the worktree `/home/soul/loopi-p3`.
 
 All are pushed to GitHub. Pushing is outward-facing, so ask the owner first.
 
 ## 6. Next
 
 1. **P3b (vlog):** write its plan from the P3 design §4, then execute (SDD).
-2. **P2c Tasks 12–14:**
-   - deploy P2c (migration 005, the Đánh giá page);
+2. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
    - the owner labels about 22 clips, 30 keyframes and 25 questions;
    - a baseline run, twice, for the noise floor;
    - tuning backed by numbers and the owner's yes;
