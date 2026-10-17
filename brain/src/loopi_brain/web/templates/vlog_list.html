@@ -3,12 +3,13 @@
 <h1>Vlog</h1>
 {% if vlogs %}
 <div class="scroll"><table>
-  <tr><th>Ngày</th><th>Tiêu đề</th><th>Thời lượng</th><th>Trạng thái</th></tr>
+  <tr><th>Ngày</th><th>Tiêu đề</th><th>Thời lượng</th><th>Dựng lúc</th><th>Trạng thái</th></tr>
   {% for v in vlogs %}
   <tr>
     <td><a href="/vlog/{{ v.day }}">{{ v.day.strftime("%d/%m/%Y") }}</a></td>
     <td>{{ v.title or "" }}</td>
     <td>{{ v.duration or "" }}</td>
+    <td>{{ v.at or "" }}</td>
     <td>{% if v.error %}<span class="err">lỗi</span>{% elif v.state == "empty" %}không có hoạt động{% elif v.working %}đang dựng{% elif v.has_file %}xong{% endif %}</td>
   </tr>
   {% endfor %}

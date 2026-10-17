@@ -44,6 +44,18 @@ async def test_the_list_shows_each_vlog_with_its_escaped_title_and_length(web, p
     assert '<a href="/vlog">Vlog</a>' in text  # the menu
 
 
+async def test_the_list_has_a_built_at_column_in_local_time(web, pool, pki_settings):
+    await _rendered(pool, pki_settings)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE vlog SET generated_at = %s", (dt.datetime(2026, 10, 14, 14, 45, tzinfo=dt.UTC),))
+        await conn.execute("INSERT INTO vlog (day, state) VALUES (%s, 'empty')", (DAY - dt.timedelta(days=1),))
+    text = (await web.get("/vlog")).text
+    assert "<tr><th>Ngày</th><th>Tiêu đề</th><th>Thời lượng</th><th>Dựng lúc</th><th>Trạng thái</th></tr>" in text
+    rendered, empty = [row.split("</tr>")[0] for row in text.split("<tr>")[2:]]
+    assert f"<td>{dt.datetime(2026, 10, 14, 14, 45, tzinfo=dt.UTC).astimezone(pki_settings.zone):%d/%m %H:%M}</td>" in rendered
+    assert "<td></td>" in empty and "None" not in text  # a vlog with no file yet has no time
+
+
 async def test_the_day_page_plays_the_vlog_with_its_subtitles_and_offers_the_download(web, pool, pki_settings):
     await _rendered(pool, pki_settings)
     text = (await web.get("/vlog/2026-10-14")).text
