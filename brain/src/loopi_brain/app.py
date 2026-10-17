@@ -21,6 +21,7 @@ from .web.eval_routes import router as eval_router
 from .web.routes import router as web_router
 from .web.search_routes import router as search_router
 from .web.settings_routes import router as settings_router
+from .web.vlog_routes import router as vlog_router
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ def create_app(
     app.include_router(search_router)
     app.include_router(settings_router)
     app.include_router(eval_router)
+    app.include_router(vlog_router)
     app.state.mcp = mcp_server.mount(app, mcp_server.Deps(pool=active_pool, settings=settings, llm=llm))
     settings.media_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=settings.media_root), name="media")

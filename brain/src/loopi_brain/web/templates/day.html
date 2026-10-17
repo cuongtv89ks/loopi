@@ -51,6 +51,7 @@
   {% if has_data %}<button hx-post="/day/{{ day }}/recap" hx-target="#recap-request">Tạo lại recap</button>
   <span id="recap-request"></span>{% endif %}
 </section>
+{% include "_vlog_card.html" %}
 {% if commitments %}
 <section class="card" id="commitments">
   <h2>Việc cần làm hoặc đã hứa</h2>

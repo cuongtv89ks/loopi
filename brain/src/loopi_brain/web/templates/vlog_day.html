@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Vlog {{ day.strftime("%d/%m/%Y") }}</h1>
+<p><a href="/?day={{ day }}">Trang của ngày này</a> · <a href="/vlog">Mọi vlog</a></p>
+{% include "_vlog_card.html" %}
+{% endblock %}

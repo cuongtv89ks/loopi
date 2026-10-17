@@ -13,6 +13,7 @@ from ..pipeline import moments as moment_rules
 from ..pipeline import recap as recap_rules
 from .markdown import render_markdown
 from .routes import MARKER_LABEL, TEMPLATES, require_htmx
+from .vlog_routes import vlog_view
 
 WEEKDAYS = ("Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật")
 STATUS_LABELS = {"open": "Chưa xong", "done": "Đã xong", "dismissed": "Đã bỏ qua"}
@@ -154,6 +155,7 @@ async def day_page(request: Request, day: dt.date | None = Query(default=None)):
             "is_today": day == today,
             "prev_day": prev_day,
             "next_day": next_day,
+            "vlog": await vlog_view(request.app.state.pool, day, zone),
         },
     )
 

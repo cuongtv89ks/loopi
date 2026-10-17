@@ -164,3 +164,19 @@ The brain serves a read-only MCP server at `https://<brain>:8443/mcp` (spec §10
 Privacy: text returned by the tools (captions, transcripts, recaps, commitments) goes to the model behind the
 client, in the cloud. Keyframe pictures are sent only when "Cho MCP gửi ảnh keyframe" is on (default off, spec D24),
 as 320 px thumbnails. Golden-set pictures are never sent. Revoke a token on Cài đặt to cut its client off at once.
+
+## Vlog (P3b)
+
+Every evening, after the day's recap, the brain makes a vlog of the day (spec §10.3, D25):
+- the hours with activity, sped up to at most 60 s;
+- 6–10 highlight pictures with a slow zoom (marked moments, notable pictures, dense conversations);
+- up to three short clips of their sound (the normalised playback copy, D19);
+- subtitles.
+
+It is written by the recap's model. When that model cannot answer, a rule picks the highlights, so there is still a vlog. Earlier days that have a recap catch up one day per 15 minutes.
+
+- **Where:** "Vlog" in the menu lists every day. A day's page plays it with subtitles and has "Tải về" and "Dựng lại vlog". The Day page shows it too.
+- **Files:** `<LOOPI_DATA_DIR>/media/vlog/YYYY/MM/DD/<day>.mp4` and `.vtt`, about 10–20 MB a day, kept for ever. Retention never deletes them. "Quên khoảng thời gian" deletes the vlogs of the days it touches, and they are made again.
+- **Cost:** about 2–4 minutes of CPU per day on the brain PC (measured: a 4-hour active day took 152 s wall and 212 s CPU, peak 198 MB). It runs one vlog at a time (job lock `vlog`) behind live work.
+- **When the raw video has expired:** the vlog is made from the day's keyframes as a slideshow.
+- **If one fails:** "Dựng vlog lỗi" shows on the day's page and on Xử lý, with a retry button. A failed vlog is not retried by itself after its 3 runs.
