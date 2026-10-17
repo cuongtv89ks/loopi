@@ -17,7 +17,10 @@ deviation from §9.5, which only marks the recap out of date: here it is deleted
 remains, ruling R24). An audit row records the span, the counts and the media paths still to delete, never any
 content. After the commit the media files go: raw files, playback/view copies, keyframes and their thumbnails,
 each checked to lie inside the media root; a file that could not be deleted stays listed on the audit row and
-the nightly retention run tries again. The affected days' chapters are rebuilt.
+the nightly retention run tries again. The vlogs of the days touched go the same way, but by their fixed names
+(whatever their rows named) and without a listing: the planner makes the file again, so the 03:00 run must never get
+it; a vlog file that stayed is replaced by the next render. A killed render's temp folders for those days go too.
+The affected days' chapters are rebuilt.
 """
 from __future__ import annotations
 
@@ -237,18 +240,14 @@ async def _delete_rows(
         # Error texts of these days may quote what goes (written before model answers stopped being quoted), and a
         # failed recap run left behind would keep the planner from writing the deleted recaps again.
         await recap_rules.drop_failed_recaps(conn, affected)
-        # Vlogs show and say what is forgotten: they go with their files, and the planner makes them again.
-        cur = await conn.execute("DELETE FROM vlog WHERE day = ANY(%s) RETURNING day, path", (affected,))
-        vlog_files = [(row["day"], rel) for row in await cur.fetchall() if row["path"]
-                      for rel in (row["path"], vlog_rules.vtt_rel(row["path"]))]
+        # Vlogs show and say what is forgotten: they go, and the planner makes them again. Their files go after the
+        # commit by their fixed names (see forget_range), not as listed paths.
+        await conn.execute("DELETE FROM vlog WHERE day = ANY(%s)", (affected,))
         await vlog_rules.drop_failed_vlogs(conn, affected)
         await conn.execute("DELETE FROM day_job_error WHERE day = ANY(%s)", (affected,))
         counts = ForgetCounts(items=len(item_ids), keyframes=len(targets["keyframes"]), transcript_segments=segments,
                               moments=len(moment_ids), **derived)
         files, owners = _files(targets)
-        for day, rel in vlog_files:
-            files.append(rel)
-            owners[rel] = f"vlog {day}"
         log_id = devices.new_id()
         # Same transaction as the deletions: whoever stores a summary or recap of these days afterwards sees it.
         await conn.execute(
@@ -288,6 +287,13 @@ async def forget_range(pool: AsyncConnectionPool, settings: Settings, start: dt.
     except Exception:  # the audit row still lists every path: the nightly run deletes them
         log.exception("deleting the media files failed; they stay listed on the audit row %s", log_id)
         deleted, failed = 0, files
+    vlog_deleted, vlog_failed = 0, 0
+    try:  # by fixed names, whatever the vlog rows named; not on the audit row: the planner remakes these files
+        vlog_deleted, left = await anyio.to_thread.run_sync(vlog_rules.remove_forgotten, settings.media_root, days)
+        vlog_failed = len(left)
+    except Exception:
+        log.exception("deleting the vlog files of the forgotten days failed; the next vlog of each day replaces them")
+        vlog_failed = 1  # how many files stay is unknown: say that at least one may
     golden_left = 0
     try:  # the golden copies of the forgotten samples; anything left is swept again at 03:00
         _, left = await golden.sweep(pool, settings.eval_dir)
@@ -295,7 +301,8 @@ async def forget_range(pool: AsyncConnectionPool, settings: Settings, start: dt.
     except Exception:
         log.exception("could not sweep the golden copies after the forget %s; the 03:00 run tries again", log_id)
         golden_left = 1  # how many copies stay is unknown: say that at least one may
-    counts = ForgetCounts(**{**asdict(counts), "files": deleted, "files_failed": len(failed) + golden_left})
+    counts = ForgetCounts(**{**asdict(counts), "files": deleted + vlog_deleted,
+                             "files_failed": len(failed) + golden_left + vlog_failed})
     keep = await anyio.to_thread.run_sync(retryable, settings.media_root, failed, owners)
     try:
         async with pool.connection() as conn:

@@ -333,6 +333,8 @@ async def test_files_go_only_after_the_commit_and_every_path_is_on_the_audit_row
     real = media.remove_files
 
     def crash(media_root, rels):
+        if any(rel.startswith("vlog/") for rel in rels):  # the vlog files of the days go through the same function
+            return real(media_root, rels)
         raise RuntimeError("the disk fell off")
 
     monkeypatch.setattr(media, "remove_files", crash)

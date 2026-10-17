@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import uuid
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 import anyio
@@ -67,6 +68,35 @@ def vtt_rel(path: str) -> str:
     return str(PurePosixPath(path).with_suffix(".vtt"))
 
 
+def remove_tmp(root: Path, days: Iterable[dt.date] | None = None) -> None:
+    """Blocking. Remove the temporary work folders under ``vlog/.tmp``: every one (``days`` None: a render that
+    starts holds the ``vlog`` lock, so none belongs to a live render) or those of ``days``. They are the leftovers
+    of a render that was killed (SIGKILL skips its ``finally``) and hold the day's subtitles."""
+    tmp = root / TMP_DIR
+    if days is None:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return
+    for day in days:
+        for folder in tmp.glob(f"{day.isoformat()}-*"):
+            shutil.rmtree(folder, ignore_errors=True)
+
+
+def remove_vlog_files(root: Path, days: Iterable[dt.date]) -> tuple[int, list[str]]:
+    """Blocking. Delete the vlog file and its subtitles of each day, by their fixed names and whatever the row says
+    (a render that failed to commit leaves files its row does not name); a missing file counts as gone.
+    ``(files deleted, paths that could not be deleted)``, as ``media.remove_files``."""
+    return media.remove_files(root, [rel for day in days for rel in (vlog_rel(day), vtt_rel(vlog_rel(day)))])
+
+
+def remove_forgotten(root: Path, days: Iterable[dt.date]) -> tuple[int, list[str]]:
+    """Blocking. What "Quên khoảng thời gian" removes of ``days`` after its commit: their vlog files and temp folders.
+    A path that cannot be deleted is logged and not retried later (it is fixed, so the 03:00 run could delete the
+    vlog the planner has made again): the next render replaces it, or the day is stored 'empty'."""
+    days = list(days)
+    remove_tmp(root, days)
+    return remove_vlog_files(root, days)
+
+
 def plan_seconds(n_segments: int, n_stills: int) -> tuple[float, float]:
     """(timelapse seconds, seconds per picture), D25: 60–90 s on a full day, not under VLOG_MIN when it can be."""
     timelapse = min(TIMELAPSE_MAX, max(TIMELAPSE_MIN, SECONDS_PER_SEGMENT * n_segments)) if n_segments else 0.0
@@ -116,7 +146,6 @@ async def write_vlog_script(ctx: PipelineContext, day: dt.date) -> str:
     when part of the day was forgotten meanwhile (nothing stored: the planner asks again)."""
     pool, zone = ctx.pool, ctx.settings.zone
     start, end = day_bounds_utc(day, zone)
-    old_path = None
     try:
         async with pool.connection() as conn:
             generation = await forgotten(conn, start, end)
@@ -128,9 +157,6 @@ async def write_vlog_script(ctx: PipelineContext, day: dt.date) -> str:
                 log.info("vlog of %s: part of the day was forgotten while it was scripted; not stored", day)
                 return "skipped"
             if written is None:
-                cur = await conn.execute("SELECT path FROM vlog WHERE day = %s FOR UPDATE", (day,))
-                old = await cur.fetchone()
-                old_path = old["path"] if old else None
                 await conn.execute(_STORE_EMPTY, (day,))
                 state = "empty"
             else:
@@ -140,8 +166,8 @@ async def write_vlog_script(ctx: PipelineContext, day: dt.date) -> str:
     except Exception as exc:
         await record_day_error(pool, jobs.WRITE_VLOG_SCRIPT, day, exc)
         raise
-    if old_path:  # the day has nothing left to show: its earlier vlog goes
-        media.remove_files(ctx.settings.media_root, [old_path, vtt_rel(old_path)])
+    if state == "empty":  # the day has nothing left to show: its earlier vlog goes, whatever its row named
+        remove_vlog_files(ctx.settings.media_root, [day])
     await clear_day_error(pool, jobs.WRITE_VLOG_SCRIPT, day)
     log.info("vlog of %s: %s (%d highlights)", day, state, len(written.highlights) if written else 0)
     return state
@@ -230,12 +256,13 @@ async def render_vlog(ctx: PipelineContext, day: dt.date) -> bool:
     pool, settings = ctx.pool, ctx.settings
     root, zone = settings.media_root, settings.zone
     start, end = day_bounds_utc(day, zone)
-    async with pool.connection() as conn:
+    async with pool.connection() as conn:  # the count first, as write_vlog_script does
+        generation = await forgotten(conn, start, end)
         cur = await conn.execute("SELECT state, script, scripted_at FROM vlog WHERE day = %s", (day,))
         row = await cur.fetchone()
-        generation = await forgotten(conn, start, end)
     if row is None or row["state"] != "scripted":
         return False
+    await anyio.to_thread.run_sync(remove_tmp, root)  # the leftovers of a render that was killed
     work = root / TMP_DIR / f"{day.isoformat()}-{uuid.uuid4().hex}"
     try:
         material = await vlog_material(pool, day, zone)
@@ -277,10 +304,16 @@ async def render_vlog(ctx: PipelineContext, day: dt.date) -> bool:
 
 
 async def request_rebuild(pool: AsyncConnectionPool, day: dt.date) -> int | None:
-    """"Dựng lại vlog": drop the day's failed vlog runs and their errors, mark its vlog out of date (it stays until
-    the new one is stored, R5), and ask for a new script now. Its job id, or None when it could not be queued."""
+    """"Dựng lại vlog": drop the day's failed vlog runs and their errors and its waiting render (the new script
+    replaces it), mark its vlog out of date (it stays until the new one is stored, R5), and ask for a new script now.
+    Its job id, or None when it could not be queued."""
     async with pool.connection() as conn, conn.transaction():
         await drop_failed_vlogs(conn, [day])
+        # A waiting render holds the day's queueing lock and would swallow the request for the new script.
+        await conn.execute(
+            "DELETE FROM procrastinate_jobs WHERE task_name = %s AND queueing_lock = %s AND status = 'todo'",
+            (jobs.RENDER_VLOG, vlog_lock(day)),
+        )
         await conn.execute("UPDATE vlog SET stale = true WHERE day = %s", (day,))
     try:
         return await defer_script(pool, day)

@@ -99,3 +99,13 @@ def test_a_marker_line_carries_the_note_only_when_there_is_one():
     long_note = marker_line("09:40", "x " * 200)
     assert long_note.startswith("09:40 the user pressed the mark button: x x") and long_note.endswith("…")
     assert len(long_note) == len("09:40 the user pressed the mark button: ") + 100
+
+
+def test_clip_drops_what_a_database_text_column_cannot_hold():
+    assert clip("a\x00b \ud800c\udfffd\udbff", 20) == "ab cd"  # NUL and lone surrogates (both halves, any position)
+    assert clip("\x00" * 5 + "abcdef", 4) == "abc…"  # the limit counts what is kept
+
+
+def test_a_model_answer_with_nul_or_a_lone_surrogate_is_cleaned_by_clipped_text():
+    answer = parse_answer('{"title": "Bữa\\u0000 sáng\\ud83d", "n": 1}', Answer)
+    assert answer.title == "Bữa sáng"

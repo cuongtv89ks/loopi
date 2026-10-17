@@ -3,6 +3,7 @@ material, answer parsing, and bounding the material so a prompt always fits the 
 from __future__ import annotations
 
 import json
+import re
 from typing import Annotated, TypeVar
 
 from pydantic import BaseModel, BeforeValidator, ValidationError
@@ -64,9 +65,15 @@ def parse_answer(text: str, model: type[M], invalid: type[Exception] = AnswerInv
     raise invalid(f"{problem}; answer of {len(text)} characters")
 
 
+# What a database text or JSONB column cannot hold: NUL, and the lone surrogates that a JSON answer can spell
+# (\ud800 ...). PostgreSQL refuses them with an error that quotes the text around them.
+_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
+
+
 def clip(text: str, limit: int) -> str:
-    """``text`` on one line (whitespace collapsed), cut to ``limit`` characters; "…" marks a cut."""
-    flat = " ".join(text.split())
+    """``text`` on one line (whitespace collapsed, NUL and lone surrogates dropped), cut to ``limit`` characters;
+    "…" marks a cut."""
+    flat = " ".join(_UNSTORABLE.sub("", text).split())
     return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 

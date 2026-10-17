@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
 import logging
+import os
 from pathlib import PurePosixPath
 
 import pytest
@@ -553,3 +554,155 @@ async def test_a_render_failure_still_surfaces_when_its_error_cannot_be_stored_o
     assert (await _row(pool))["error"] is None
     assert len(await fetch_all(pool, "SELECT error FROM day_job_error WHERE task = 'render_vlog'")) == 1
     assert _tmp_empty(pki_settings)
+
+
+# ---- fix round 1
+
+
+def _final_files(settings):
+    mp4 = settings.media_root / vlogs.vlog_rel(DAY)
+    return mp4, mp4.with_suffix(".vtt")
+
+
+def _write_final_files(settings):
+    for path in _final_files(settings):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+
+def _leftover_tmp(settings, name):
+    leftover = settings.media_root / vlogs.TMP_DIR / name
+    leftover.mkdir(parents=True)
+    (leftover / "subs.srt").write_text("secret subtitle", encoding="utf-8")
+    return leftover
+
+
+async def test_forget_removes_a_vlog_file_the_row_does_not_name(pool, pki_settings, dev, jobs_open):
+    """I1: a render that renamed its files and then failed to commit leaves files with ``path`` still NULL."""
+    _write_final_files(pki_settings)
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO vlog (day, state, script) VALUES (%s, 'scripted', '{}')", (DAY,))
+    await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, text="x")
+    counts = await forget.forget_range(pool, pki_settings, NINE, NINE + dt.timedelta(minutes=1))
+    assert counts.vlogs == 1 and counts.files == 2 and counts.files_failed == 0
+    assert not any(path.exists() for path in _final_files(pki_settings))
+
+
+async def test_forget_removes_vlog_files_even_when_the_day_has_no_vlog_row(pool, pki_settings, dev, jobs_open):
+    _write_final_files(pki_settings)
+    await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, text="x")
+    other = pki_settings.media_root / vlogs.vlog_rel(dt.date(2026, 10, 20))  # a day the forget does not touch
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_bytes(b"x")
+    await forget.forget_range(pool, pki_settings, NINE, NINE + dt.timedelta(minutes=1))
+    assert not any(path.exists() for path in _final_files(pki_settings)) and other.exists()
+
+
+async def test_a_day_stored_empty_removes_a_vlog_file_its_row_did_not_name(pool, pki_settings, jobs_open):
+    _write_final_files(pki_settings)  # no row at all
+    assert await vlogs.write_vlog_script(make_ctx(pool, pki_settings), DAY) == "empty"
+    assert not any(path.exists() for path in _final_files(pki_settings))
+
+
+async def test_the_audit_row_of_a_forget_lists_no_vlog_file(pool, pki_settings, dev, jobs_open):
+    """Minor 3: a vlog path is fixed and the planner remakes the file, so the 03:00 retry must never get it."""
+    if os.geteuid() == 0:
+        pytest.skip("a read-only folder does not stop root")
+    _write_final_files(pki_settings)
+    folder = _final_files(pki_settings)[0].parent
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO vlog (day, state, path) VALUES (%s, 'rendered', %s)", (DAY, vlogs.vlog_rel(DAY)))
+    await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, text="x")
+    folder.chmod(0o500)  # the unlink fails
+    try:
+        counts = await forget.forget_range(pool, pki_settings, NINE, NINE + dt.timedelta(minutes=1))
+    finally:
+        folder.chmod(0o700)
+    assert counts.files_failed == 2 and all(path.exists() for path in _final_files(pki_settings))
+    [audit] = await fetch_all(pool, "SELECT pending_files FROM forget_log")
+    assert audit["pending_files"] == []
+
+
+async def test_a_render_clears_the_temp_folders_a_killed_render_left(pool, pki_settings, dev, jobs_open):
+    """I2: a SIGKILL skips ``finally``; the ``vlog`` lock lets one render run at a time, so all of it is dead."""
+    ctx = await _scripted(pool, pki_settings, dev["device_id"])
+    old_one, old_two = _leftover_tmp(pki_settings, "2026-10-14-aaaa"), _leftover_tmp(pki_settings, "2026-10-13-bbbb")
+    assert await vlogs.render_vlog(ctx, DAY) is True
+    assert not old_one.exists() and not old_two.exists() and _tmp_empty(pki_settings)
+
+
+async def test_forget_clears_the_temp_folders_of_the_days_it_touches(pool, pki_settings, dev, jobs_open):
+    touched, other = _leftover_tmp(pki_settings, "2026-10-14-aaaa"), _leftover_tmp(pki_settings, "2026-10-15-bbbb")
+    await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, text="x")
+    await forget.forget_range(pool, pki_settings, NINE, NINE + dt.timedelta(minutes=1))
+    assert not touched.exists() and other.exists()
+
+
+def _nul_script(body):
+    return {"title": "Một ngày\x00 ở nhà", "highlights": [{"ref": "H1", "line": "Nấu ăn\x00 SECRETLINE\ud800", "audio": False}]}
+
+
+async def test_a_script_with_nul_or_a_lone_surrogate_is_stored_clean_and_records_no_error(
+        pool, pki_settings, dev, jobs_open):
+    """I3: PostgreSQL refuses NUL in JSONB and quotes the text around it in its error."""
+    await _day(pool, pki_settings, dev["device_id"], talk=False)
+    ollama = FakeOllama()
+    ollama.reply = _nul_script
+    assert await vlogs.write_vlog_script(make_ctx(pool, pki_settings, ollama=ollama), DAY) == "scripted"
+    script = (await fetch_one(pool, "SELECT script FROM vlog"))["script"]
+    assert script["title"] == "Một ngày ở nhà"
+    assert [h["line"] for h in script["highlights"]] == ["Nấu ăn SECRETLINE"]
+    assert await fetch_all(pool, "SELECT task FROM day_job_error") == []
+
+
+async def test_a_rebuild_replaces_a_render_that_is_waiting(pool, pki_settings, jobs_open):
+    """Minor 1: the day's queueing lock is shared; a waiting render would swallow the new script request."""
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO vlog (day, state, script) VALUES (%s, 'scripted', '{}')", (DAY,))
+    render_id = await vlogs.defer_render(pool, DAY)
+    other = await vlogs.defer_render(pool, dt.date(2026, 10, 15))
+    script_id = await vlogs.request_rebuild(pool, DAY)
+    assert script_id not in (None, render_id)
+    assert {r["id"]: r["task_name"] for r in await fetch_all(pool, "SELECT id, task_name FROM procrastinate_jobs")} == {
+        script_id: "write_vlog_script", other: "render_vlog"}  # another day's render is not touched
+
+
+async def test_a_rebuild_leaves_a_render_that_is_running(pool, pki_settings, jobs_open):
+    render_id = await vlogs.defer_render(pool, DAY)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE procrastinate_jobs SET status = 'doing' WHERE id = %s", (render_id,))
+    script_id = await vlogs.request_rebuild(pool, DAY)
+    assert {r["id"]: r["status"] for r in await fetch_all(pool, "SELECT id, status FROM procrastinate_jobs")} == {
+        render_id: "doing", script_id: "todo"}
+
+
+async def test_the_forget_count_is_read_before_the_row_when_a_vlog_renders(pool, pki_settings, dev, jobs_open, monkeypatch):
+    """Minor 7: what the render goes on is the row read *after* the count (as ``write_vlog_script`` does), so a change
+    between the two reads is seen by both or caught at the store, never half of each."""
+    ctx = await _scripted(pool, pki_settings, dev["device_id"])
+    real, calls = vlogs.forgotten, []
+
+    async def forgotten_then_rescripted(conn, start, end):
+        count = await real(conn, start, end)
+        if not calls:  # the first read, i.e. the one before the row
+            async with pool.connection() as other:
+                await other.execute("UPDATE vlog SET scripted_at = scripted_at + interval '1 second'")
+        calls.append(count)
+        return count
+
+    monkeypatch.setattr(vlogs, "forgotten", forgotten_then_rescripted)
+    assert await vlogs.render_vlog(ctx, DAY) is True  # it read the new ``scripted_at`` and stored against it
+
+
+async def test_a_forget_whose_vlog_files_cannot_be_removed_still_reports_and_keeps_the_audit_row_clean(
+        pool, pki_settings, dev, jobs_open, monkeypatch, caplog):
+    def crash(root, days):
+        raise RuntimeError("the disk fell off")
+
+    monkeypatch.setattr(vlogs, "remove_forgotten", crash)
+    await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, text="x")
+    with caplog.at_level(logging.ERROR, logger="loopi_brain.forget"):
+        counts = await forget.forget_range(pool, pki_settings, NINE, NINE + dt.timedelta(minutes=1))
+    assert (counts.moments, counts.files_failed) == (1, 1)
+    assert "deleting the vlog files of the forgotten days failed" in caplog.text
+    assert (await fetch_one(pool, "SELECT pending_files FROM forget_log"))["pending_files"] == []

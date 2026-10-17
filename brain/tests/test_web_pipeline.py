@@ -219,7 +219,7 @@ async def test_the_pipeline_page_shows_the_understanding_schedule(web, pool, pki
     text = (await web.get("/pipeline")).text
     card = " ".join(text.split('<h2>Hiểu ngày</h2>')[1].split("</div>")[0].split())  # whitespace-insensitive
     assert "Chia chương: mỗi giờ (phút thứ 5) · chương chờ tóm tắt: 0" in card
-    assert "gần nhất: chưa có" in card and "<strong>đang tắt</strong>, không xoá gì" in card
+    assert "đã xong · gần nhất: chưa có" in card and "<strong>đang tắt</strong>, không xoá gì" in card  # the recap line
     assert "Vlog: sau recap mỗi tối · gần nhất: chưa có" in card and "vlog lỗi" not in card
     day = dt.date(2026, 10, 14)
     await insert_chapter(pool, day, UTC_9AM_SEOUL, UTC_9AM_SEOUL)  # no summary yet
