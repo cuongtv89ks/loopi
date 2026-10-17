@@ -15,7 +15,7 @@ from PIL import Image
 from helpers import FakeOllama, captioned_keyframe, fetch_all, insert_moment, paired_device
 from loopi_brain import store
 from loopi_brain.app import create_app
-from loopi_brain.mcp import memory, tokens
+from loopi_brain.mcp import memory, server, tokens
 
 NINE = dt.datetime(2026, 10, 14, 0, 0, tzinfo=dt.UTC)  # 09:00 in Seoul
 TOOLS = {"search_memories", "get_timeline", "get_day_recap", "get_moment", "list_commitments"}
@@ -80,9 +80,10 @@ async def test_the_five_tools_are_listed_with_their_output_schemas(app, token, m
     assert all(t.output_schema for t in listed) and all(t.description for t in listed)
 
 
-async def test_search_answers_moments_that_cite_their_ids(app, token, dev, pool):
+@pytest.mark.parametrize("mode", ["auto", "legacy"])
+async def test_search_answers_moments_that_cite_their_ids(app, token, dev, pool, mode):
     moment = await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, axis=0, lang="vi", text="đi chợ")
-    async with mcp_client(app, token) as client:
+    async with mcp_client(app, token, mode) as client:
         result = await client.call_tool("search_memories", {"query": "đi chợ", "start": "2026-10-14", "end": "2026-10-14"})
     assert result.is_error is False
     assert [m["moment_id"] for m in result.structured_content["moments"]] == [moment]
@@ -130,6 +131,51 @@ async def test_errors_are_fixed_texts_that_never_repeat_the_input(app, token, to
     async with mcp_client(app, token) as client:
         result = await client.call_tool(tool, args)
     assert result.is_error is True and [c.text for c in result.content] == [text]
+
+
+@pytest.mark.parametrize("mode", ["auto", "legacy"])
+@pytest.mark.parametrize("args", [
+    {"start": SECRET, "limit": 1000},  # query missing (the error quotes every argument) and limit too high
+    {"query": SECRET, "limit": 0, "end": 5},
+    {"query": 5, "limit": SECRET},
+    {"query": [SECRET], "start": 1, "end": [SECRET], "limit": SECRET},
+])
+async def test_errors_about_several_arguments_are_fixed_texts_too(app, token, args, mode):
+    async with mcp_client(app, token, mode) as client:
+        result = await client.call_tool("search_memories", args)
+    assert result.is_error is True and [c.text for c in result.content] == ["invalid arguments"]
+    assert SECRET not in result.model_dump_json()
+
+
+@pytest.mark.parametrize("mode", ["auto", "legacy"])
+async def test_a_crash_the_sdk_catches_is_an_internal_error(app, token, monkeypatch, mode):
+    async def broken(*_args, **_kwargs):
+        raise RuntimeError(f"connection lost while reading {SECRET}")
+
+    monkeypatch.setattr(server, "_run", broken)  # a crash outside _run reaches the SDK's own error text
+    async with mcp_client(app, token, mode) as client:
+        result = await client.call_tool("get_timeline", {"date": "2026-10-14"})
+    assert result.is_error is True and [c.text for c in result.content] == ["internal error"]
+
+
+async def test_an_unknown_tool_is_named_in_its_error(app, token):
+    async with mcp_client(app, token) as client:
+        result = await client.call_tool("forget_everything", {})
+    assert result.is_error is True and [c.text for c in result.content] == ["Unknown tool: forget_everything"]
+
+
+async def test_a_null_limit_is_the_default_ten(app, token, monkeypatch):
+    seen = []
+    real = memory.search_memories
+
+    async def spy(pool, router, settings, query, start, end, limit):
+        seen.append(limit)
+        return await real(pool, router, settings, query, start, end, limit)
+
+    monkeypatch.setattr(memory, "search_memories", spy)
+    async with mcp_client(app, token) as client:
+        result = await client.call_tool("search_memories", {"query": "x", "limit": None})
+    assert result.is_error is False and seen == [10]
 
 
 async def test_a_crash_inside_a_tool_is_an_internal_error_without_its_text_in_the_logs(app, token, monkeypatch, caplog):

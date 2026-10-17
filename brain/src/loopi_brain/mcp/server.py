@@ -30,6 +30,8 @@ log = logging.getLogger(__name__)
 PATH = "/mcp"
 INVALID_ARGUMENTS = "invalid arguments"
 INTERNAL_ERROR = "internal error"
+SDK_TOOL_ERROR = "Error executing tool "  # how the SDK starts the errors it writes for a tool call
+SEARCH_LIMIT = 10
 INSTRUCTIONS = (
     "Loopi is a private, local-first diary recorded at home by a fixed camera and microphone. These read-only tools "
     "return its moments (picture captions, speech transcripts, marked moments), the day's chapters and recap, and the "
@@ -78,12 +80,16 @@ async def _run(name: str, call: Callable[[], Awaitable[CallToolResult]]) -> Call
 
 
 async def hide_validation_input(ctx: ServerRequestContext[Any, Any], call_next: Any) -> Any:
-    """The SDK's argument-validation errors quote the value that was sent; answer them with a fixed text."""
+    """Our tools answer every error themselves (``_run``), never with a text starting ``Error executing tool ``; such
+    a text is the SDK's own. Its argument-validation errors (one or several: "1 validation error for …", "2 validation
+    errors for …") quote the values that were sent, so they become INVALID_ARGUMENTS; any other SDK tool error
+    becomes INTERNAL_ERROR. ``Unknown tool: …`` names only the tool and is left as it is."""
     result = await call_next(ctx)
     if ctx.method == "tools/call" and isinstance(result, dict) and result.get("isError") is True:
         text = (result.get("content") or [{}])[0].get("text", "")
-        if " validation error for " in text:
-            return {**result, "content": [{"type": "text", "text": INVALID_ARGUMENTS}]}
+        if text.startswith(SDK_TOOL_ERROR):
+            fixed = INVALID_ARGUMENTS if " validation error" in text else INTERNAL_ERROR
+            return {**result, "content": [{"type": "text", "text": fixed}]}
     return result
 
 
@@ -96,13 +102,14 @@ def build_server(deps: Deps) -> MCPServer:
         query: Annotated[str, Field(description="What to look for, in any language (the first 500 characters count).")],
         start: Annotated[str | None, Field(description="Earliest moment: YYYY-MM-DD (from that local day) or an ISO 8601 date-time (local when it has no offset).")] = None,
         end: Annotated[str | None, Field(description="Latest moment: YYYY-MM-DD (that local day included) or an ISO 8601 date-time.")] = None,
-        limit: Annotated[int, Field(ge=1, le=50, description="How many moments to return.")] = 10,
+        limit: Annotated[int | None, Field(ge=1, le=50, description="How many moments to return.")] = SEARCH_LIMIT,
     ) -> Annotated[CallToolResult, memory.SearchOut]:
         """Search the owner's memories (picture captions, speech, marked moments) by meaning and by words. Cite moment_id."""
 
         async def call() -> CallToolResult:
             router = search.request_router(deps.settings, deps.llm)
-            return _result(await memory.search_memories(deps.pool, router, deps.settings, query, start, end, limit))
+            count = limit if limit is not None else SEARCH_LIMIT  # some models send null for an optional argument
+            return _result(await memory.search_memories(deps.pool, router, deps.settings, query, start, end, count))
 
         return await _run("search_memories", call)
 
