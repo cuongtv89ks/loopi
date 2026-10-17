@@ -1559,6 +1559,8 @@ EOF
 Create `brain/tests/test_settings_mcp.py`:
 
 ```python
+import re
+
 import httpx
 import pytest
 
@@ -1588,11 +1590,11 @@ async def test_a_new_token_is_shown_once_with_the_command_to_connect(web, pool):
     r = await web.post("/settings/mcp/tokens", data={"name": "Claude Code"}, headers=HX)
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     [row] = await fetch_all(pool, "SELECT id, token_sha256 FROM mcp_token")
-    shown = [w for w in r.text.replace('"', " ").split() if w.startswith("loopi_")]
-    assert shown and tokens.digest(shown[0]) == row["token_sha256"]
+    shown = set(re.findall(r"loopi_[A-Za-z0-9_-]{40,}", r.text))
+    assert len(shown) == 1 and tokens.digest(next(iter(shown))) == row["token_sha256"]
     assert "claude mcp add --transport http loopi https://localhost:8443/mcp" in r.text
     page = (await web.get("/settings")).text
-    assert shown[0] not in page and "Claude Code" in page and "chưa dùng" in page  # never shown again
+    assert next(iter(shown)) not in page and "Claude Code" in page and "chưa dùng" in page  # never shown again
 
 
 @pytest.mark.parametrize("name", ["", "   ", "x" * 61])
