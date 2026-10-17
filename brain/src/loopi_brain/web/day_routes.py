@@ -3,7 +3,6 @@ moments, the recap and the commitments of one local day; keyframe thumbnails; th
 from __future__ import annotations
 
 import datetime as dt
-import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
@@ -15,7 +14,6 @@ from ..pipeline import recap as recap_rules
 from .markdown import render_markdown
 from .routes import MARKER_LABEL, TEMPLATES, require_htmx
 
-log = logging.getLogger(__name__)
 WEEKDAYS = ("Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật")
 STATUS_LABELS = {"open": "Chưa xong", "done": "Đã xong", "dismissed": "Đã bỏ qua"}
 FRAMES_SHOWN = 6  # pictures per chapter shown at once; the others are behind "Tất cả khung hình"
