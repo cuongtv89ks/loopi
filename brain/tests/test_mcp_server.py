@@ -241,15 +241,22 @@ async def test_the_gate_refuses_before_any_mcp_code_runs(app, token, pool):
     await tokens.revoke_token(pool, revoked_id)
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://brain.test") as c:
-        for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": token},
+        for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": "Bearer "}, {"Authorization": token},
                         {"Authorization": f"Basic {token}"}, {"Authorization": f"Bearer {revoked}"}):
             r = await c.post("/mcp", json=body, headers=headers)
             assert (r.status_code, r.json()) == (401, {"error": "unauthorized"})
             assert r.headers["www-authenticate"] == "Bearer"
-        r = await c.get("/mcp", headers={"Authorization": f"Bearer {token}", "Accept": "text/event-stream"})
-        assert (r.status_code, r.headers["allow"]) == (405, "POST")
-        assert (await c.get("/mcp")).status_code == 401
-    assert all(t["last_used_at"] is None for t in await tokens.list_tokens(pool) if t["id"] == revoked_id)
+        for method in ("GET", "HEAD", "OPTIONS", "DELETE", "PUT"):  # no token: 401 whatever the method
+            r = await c.request(method, "/mcp")
+            assert (r.status_code, r.headers["www-authenticate"]) == (401, "Bearer"), method
+            assert r.content == (b"" if method == "HEAD" else b'{"error": "unauthorized"}'), method
+        for method in ("GET", "HEAD", "OPTIONS", "DELETE", "PUT"):  # a good token: only POST gets through the gate
+            r = await c.request(method, "/mcp", headers={"Authorization": f"Bearer {token}", "Accept": "text/event-stream"})
+            assert (r.status_code, r.headers["allow"]) == (405, "POST"), method
+    [old] = [t for t in await tokens.list_tokens(pool) if t["id"] == revoked_id]
+    assert old["last_used_at"] is None  # a revoked token is refused without being marked as used
+    [live] = [t for t in await tokens.list_tokens(pool) if t["name"] == "test"]
+    assert live["last_used_at"] is not None  # … while the good one, which got the 405s, was
 
 
 async def test_a_good_call_marks_its_token_used(app, token, pool):
