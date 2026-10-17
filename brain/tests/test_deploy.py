@@ -203,5 +203,8 @@ def test_mcp_goes_to_the_api_without_basic_auth_and_without_a_client_fingerprint
 def test_the_readme_says_how_to_connect_claude_code():
     readme = (DEPLOY / "README.md").read_text()
     assert "## MCP for Claude Code (P3a)" in readme
-    assert "NODE_EXTRA_CA_CERTS" in readme and "claude mcp add --transport http loopi" in readme
+    section = readme.split("## MCP for Claude Code (P3a)", 1)[1]
+    assert "claude mcp add --scope user --transport http loopi https://localhost:8443/mcp" in section
+    assert "export NODE_EXTRA_CA_CERTS=/srv/loopi/pki/ca.crt" in section  # the path itself, not an unexported variable
+    assert "$LOOPI_DATA_DIR" not in section and "deploy/.env" in section
     assert "loopi-brain mcp-token create" in readme

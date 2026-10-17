@@ -151,11 +151,14 @@ The brain serves a read-only MCP server at `https://<brain>:8443/mcp` (spec §10
    On the brain PC you can also run
    `docker compose -p deploy exec -T api loopi-brain mcp-token create "Claude Code" > ~/.config/loopi/mcp-token`
    (run `umask 077 && mkdir -p ~/.config/loopi` first). `mcp-token list` and `mcp-token revoke <id>` manage tokens.
-2. Claude Code (Node) must trust the Loopi CA: `export NODE_EXTRA_CA_CERTS=$LOOPI_DATA_DIR/pki/ca.crt` in the shell
-   (or the profile) that starts `claude`.
-3. `claude mcp add --transport http loopi https://localhost:8443/mcp --header "Authorization: Bearer <token>"`.
-   From another machine in the LAN, copy `ca.crt` there and use `https://<brain LAN IP>:8443/mcp`. The server
-   certificate must name that address (`init-pki --ip`).
+2. Claude Code (Node) must trust the Loopi CA. The CA is `<LOOPI_DATA_DIR from deploy/.env>/pki/ca.crt`, which is
+   `/srv/loopi/pki/ca.crt` on a default install. `LOOPI_DATA_DIR` lives in `deploy/.env` and is not exported to your
+   shell, so write the path out: `export NODE_EXTRA_CA_CERTS=/srv/loopi/pki/ca.crt` in the shell (or the profile)
+   that starts `claude`.
+3. `claude mcp add --scope user --transport http loopi https://localhost:8443/mcp --header "Authorization: Bearer <token>"`.
+   `--scope user` makes `loopi` available in every directory; the default (local) scope would offer it only in the
+   directory where you ran the command. From another machine in the LAN, copy `ca.crt` there and use
+   `https://<brain LAN IP>:8443/mcp`. The server certificate must name that address (`init-pki --ip`).
 4. `claude mcp list` shows `loopi` as connected. In a session, `/mcp` lists its tools.
 
 Privacy: text returned by the tools (captions, transcripts, recaps, commitments) goes to the model behind the

@@ -5,7 +5,7 @@
   <pre><code>{{ created }}</code></pre>
   <p>Kết nối Claude Code trên máy brain (đường dẫn CA nằm trong thư mục dữ liệu, ví dụ <code>/home/soul/loopi-data/pki/ca.crt</code>):</p>
   <pre><code>export NODE_EXTRA_CA_CERTS=&lt;thư mục dữ liệu&gt;/pki/ca.crt
-claude mcp add --transport http loopi https://localhost:8443/mcp --header "Authorization: Bearer {{ created }}"</code></pre>
+claude mcp add --scope user --transport http loopi https://localhost:8443/mcp --header "Authorization: Bearer {{ created }}"</code></pre>
   {% endif %}
   {% if mcp_tokens %}
   <div class="scroll"><table>
