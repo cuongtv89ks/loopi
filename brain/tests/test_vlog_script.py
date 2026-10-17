@@ -77,6 +77,16 @@ def test_the_rule_script_takes_the_best_candidates():
     assert {h.candidate.ref for h in written.highlights} == {f"H{k}" for k in range(5, 13)}  # scores 1.4 … 2.1
 
 
+@pytest.mark.parametrize("kind, blank, label", [
+    ("marker", "", "Đánh dấu"), ("notable", "   ", "Khung hình đáng chú ý"), ("talk", "\n", "Hội thoại"),
+])
+def test_a_candidate_with_no_text_gets_its_kinds_label_as_the_line(kind, blank, label):
+    at = NINE
+    candidate = Candidate("H1", kind, at, Frame("K0", "keyframes/K0.jpg", at), blank, 3.0)
+    written = script.rule_script(Material(DAY, [], [], [candidate]))
+    assert [h.line for h in written.highlights] == [label]
+
+
 def test_the_stored_script_is_json_with_utc_times():
     written = script.rule_script(_material(n=2))
     stored = script.to_json(written)

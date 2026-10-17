@@ -115,11 +115,12 @@ def resolve(answer: ScriptAnswer, material: Material) -> list[Highlight]:
 
 
 def rule_script(material: Material) -> Script:
-    """The fallback: the HIGHLIGHTS_RULE best candidates in time order, their own text as lines, sound on the first
-    AUDIO_RULE conversations that have it."""
+    """The fallback: the HIGHLIGHTS_RULE best candidates in time order, their own text as lines (the kind's label when
+    the text is blank), sound on the first AUDIO_RULE conversations that have it."""
     best = sorted(material.candidates, key=lambda c: (-c.score, c.at))[:HIGHLIGHTS_RULE]
     ordered = sorted(best, key=lambda c: c.at)
-    highlights = _cap_audio([Highlight(c, c.text[:LINE_MAX], c.kind == "talk") for c in ordered], AUDIO_RULE)
+    highlights = _cap_audio([Highlight(c, c.text[:LINE_MAX].strip() or KIND_LABELS[c.kind].capitalize(),
+                                       c.kind == "talk") for c in ordered], AUDIO_RULE)
     return Script(default_title(material.day), highlights, RULE)
 
 
