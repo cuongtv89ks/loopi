@@ -38,6 +38,7 @@ from .days import local_day
 from .evaluation import golden
 from .pipeline import chapters as chapter_rules
 from .pipeline import recap as recap_rules
+from .pipeline import vlogs as vlog_rules
 from .pipeline.state import lock_day
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ class ForgetCounts:
     commitments: int = 0
     chapters: int = 0  # chapters that lose their title and summary
     recaps: int = 0
+    vlogs: int = 0  # vlogs deleted (made again by the planner)
     golden: int = 0  # golden clips, keyframes and correct moments of questions
     files: int = 0
     files_failed: int = 0  # media files and golden copies that could not be deleted (the 03:00 run retries them)
@@ -132,9 +134,12 @@ async def _derived(conn: AsyncConnection, targets: dict, days: list[dt.date], sp
     chapters = (await cur.fetchone())["n"]
     cur = await conn.execute("SELECT count(*) AS n FROM day_recap WHERE day = ANY(%s)", (days,))
     recaps = (await cur.fetchone())["n"]
+    cur = await conn.execute("SELECT count(*) AS n FROM vlog WHERE day = ANY(%s)", (days,))
+    vlogs = (await cur.fetchone())["n"]
     golden_count = await golden.forget_rows(conn, [i["id"] for i in targets["items"]],
                                             [k["id"] for k in targets["keyframes"]], moment_ids, delete=False)
-    return {"commitments": commitments, "chapters": chapters, "recaps": recaps, "golden": golden_count}
+    return {"commitments": commitments, "chapters": chapters, "recaps": recaps, "vlogs": vlogs,
+            "golden": golden_count}
 
 
 async def preview_span(
@@ -232,10 +237,18 @@ async def _delete_rows(
         # Error texts of these days may quote what goes (written before model answers stopped being quoted), and a
         # failed recap run left behind would keep the planner from writing the deleted recaps again.
         await recap_rules.drop_failed_recaps(conn, affected)
+        # Vlogs show and say what is forgotten: they go with their files, and the planner makes them again.
+        cur = await conn.execute("DELETE FROM vlog WHERE day = ANY(%s) RETURNING day, path", (affected,))
+        vlog_files = [(row["day"], rel) for row in await cur.fetchall() if row["path"]
+                      for rel in (row["path"], vlog_rules.vtt_rel(row["path"]))]
+        await vlog_rules.drop_failed_vlogs(conn, affected)
         await conn.execute("DELETE FROM day_job_error WHERE day = ANY(%s)", (affected,))
         counts = ForgetCounts(items=len(item_ids), keyframes=len(targets["keyframes"]), transcript_segments=segments,
                               moments=len(moment_ids), **derived)
         files, owners = _files(targets)
+        for day, rel in vlog_files:
+            files.append(rel)
+            owners[rel] = f"vlog {day}"
         log_id = devices.new_id()
         # Same transaction as the deletions: whoever stores a summary or recap of these days afterwards sees it.
         await conn.execute(

@@ -31,6 +31,9 @@ TASK_LABELS = {
     jobs.BUILD_CHAPTERS: "Chia chương",
     jobs.PLAN_RECAPS: "Lên lịch recap",
     jobs.WRITE_RECAP: "Viết recap",
+    jobs.PLAN_VLOGS: "Lên lịch vlog",
+    jobs.WRITE_VLOG_SCRIPT: "Viết kịch bản vlog",
+    jobs.RENDER_VLOG: "Dựng vlog",
     jobs.APPLY_RETENTION: "Dọn dữ liệu cũ",
     jobs.RUN_EVAL: "Chạy đánh giá",
 }
@@ -155,11 +158,24 @@ async def understanding_status(pool: AsyncConnectionPool, zone) -> dict:
             (jobs.WRITE_RECAP,),
         )
         recaps_failed = (await cur.fetchone())["n"]
+        cur = await conn.execute(
+            "SELECT day, generated_at FROM vlog WHERE state = 'rendered' ORDER BY generated_at DESC LIMIT 1"
+        )
+        vlog = await cur.fetchone()
+        cur = await conn.execute(
+            "SELECT count(*) AS n FROM procrastinate_jobs WHERE task_name = ANY(%s) AND status = 'failed'",
+            ([jobs.WRITE_VLOG_SCRIPT, jobs.RENDER_VLOG],),
+        )
+        vlogs_failed = (await cur.fetchone())["n"]
     return {
         "chapters_waiting": waiting,
         "recaps_failed": recaps_failed,
         "last_recap": (
             {"day": recap["day"], "at": recap["generated_at"].astimezone(zone).strftime("%d/%m %H:%M")} if recap else None
+        ),
+        "vlogs_failed": vlogs_failed,
+        "last_vlog": (
+            {"day": vlog["day"], "at": vlog["generated_at"].astimezone(zone).strftime("%d/%m %H:%M")} if vlog else None
         ),
         "retention": await store.get_retention(pool),
     }

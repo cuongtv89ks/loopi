@@ -28,6 +28,8 @@
     <li>Chia chương: mỗi giờ (phút thứ 5) · chương chờ tóm tắt: {{ u.chapters_waiting }}</li>
     <li>Recap: lúc 23:30, và cho ngày trước khi mọi chương của ngày đó đã xong · gần nhất:
       {% if u.last_recap %}<a href="/?day={{ u.last_recap.day }}">{{ u.last_recap.day }}</a> (viết lúc {{ u.last_recap.at }}){% else %}chưa có{% endif %}{% if u.recaps_failed %} · <span class="err">{{ u.recaps_failed }} recap lỗi (xem Job lỗi)</span>{% endif %}</li>
+    <li>Vlog: sau recap mỗi tối · gần nhất:
+      {% if u.last_vlog %}<a href="/vlog/{{ u.last_vlog.day }}">{{ u.last_vlog.day }}</a> (dựng lúc {{ u.last_vlog.at }}){% else %}chưa có{% endif %}{% if u.vlogs_failed %} · <span class="err">{{ u.vlogs_failed }} vlog lỗi (xem Job lỗi)</span>{% endif %}</li>
     <li>Dọn dữ liệu cũ: 03:00 mỗi đêm · {% if u.retention.enabled %}đang bật, giữ video thô {{ u.retention.video_days }} ngày, audio thô {{ u.retention.audio_days }} ngày{% else %}<strong>đang tắt</strong>, không xoá gì{% endif %} (<a href="/settings">Cài đặt</a>)</li>
   </ul>
 </div>

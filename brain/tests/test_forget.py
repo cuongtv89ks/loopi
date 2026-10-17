@@ -540,6 +540,7 @@ async def test_the_settings_page_previews_then_forgets_after_confirmation(web, p
     r = await web.post("/settings/forget/preview", data=form, headers=HX)
     assert r.status_code == 200 and "Từ 14/10/2026 09:00 đến 14/10/2026 09:30 sẽ bị xoá vĩnh viễn" in r.text
     assert "3 đoạn ghi, 1 khung hình, 1 đoạn transcript" in r.text
+    assert "recap sẽ được viết lại và 0 vlog sẽ được dựng lại" in " ".join(r.text.split())
     assert 'name="confirm" value="yes"' in r.text and 'value="2026-10-14T09:00"' in r.text
     assert len(await fetch_all(pool, "SELECT id FROM item")) == 4
     assert (await web.post("/settings/forget", data=form, headers=HX)).status_code == 422  # not confirmed
@@ -547,6 +548,7 @@ async def test_the_settings_page_previews_then_forgets_after_confirmation(web, p
     r = await web.post("/settings/forget", data={**form, "confirm": "yes"}, headers=HX)
     assert r.status_code == 200 and "Đã quên khoảng 14/10/2026 09:00 – 14/10/2026 09:30" in r.text
     assert "7 file" in r.text and len(await fetch_all(pool, "SELECT id FROM item")) == 1
+    assert "Chương, recap và vlog của những ngày này sẽ được làm lại." in r.text
     for bad in ({"start": "hôm qua", "end": "2026-10-14T09:30"}, {"start": "2026-10-14T10:00", "end": "2026-10-14T09:30"},
                 {"start": "2026-09-01T00:00", "end": "2026-10-14T00:00"}):
         assert (await web.post("/settings/forget/preview", data=bad, headers=HX)).status_code == 422

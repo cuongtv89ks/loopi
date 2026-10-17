@@ -17,7 +17,7 @@ from helpers import (
     paired_device,
 )
 from loopi_brain.app import create_app
-from loopi_brain.pipeline import dispatch, jobs, moments, recap
+from loopi_brain.pipeline import dispatch, jobs, moments, recap, vlogs
 from loopi_brain.pipeline.status import fmt_duration
 
 HX = {"HX-Request": "true"}
@@ -220,6 +220,7 @@ async def test_the_pipeline_page_shows_the_understanding_schedule(web, pool, pki
     card = " ".join(text.split('<h2>Hiểu ngày</h2>')[1].split("</div>")[0].split())  # whitespace-insensitive
     assert "Chia chương: mỗi giờ (phút thứ 5) · chương chờ tóm tắt: 0" in card
     assert "gần nhất: chưa có" in card and "<strong>đang tắt</strong>, không xoá gì" in card
+    assert "Vlog: sau recap mỗi tối · gần nhất: chưa có" in card and "vlog lỗi" not in card
     day = dt.date(2026, 10, 14)
     await insert_chapter(pool, day, UTC_9AM_SEOUL, UTC_9AM_SEOUL)  # no summary yet
     async with pool.connection() as conn:
@@ -234,3 +235,15 @@ async def test_the_pipeline_page_shows_the_understanding_schedule(web, pool, pki
     assert "chương chờ tóm tắt: 1" in card
     assert '<a href="/?day=2026-10-14">2026-10-14</a> (viết lúc 14/10 23:30)' in card
     assert "1 recap lỗi (xem Job lỗi)" in card and "đang bật, giữ video thô 7 ngày, audio thô 7 ngày" in card
+    assert "vlog lỗi" not in card
+    async with pool.connection() as conn:
+        await conn.execute("INSERT INTO vlog (day, state, path, generated_at) VALUES (%s, 'rendered', 'vlog/x.mp4',"
+                           " '2026-10-14T14:45:00Z')", (day,))
+        await conn.execute("INSERT INTO vlog (day, state) VALUES (%s, 'scripted')", (dt.date(2026, 10, 13),))
+    await _fail_job(pool, await vlogs.defer_script(pool, dt.date(2026, 10, 13)))
+    await _fail_job(pool, await vlogs.defer_render(pool, day))
+    text = (await web.get("/pipeline")).text
+    card = " ".join(text.split('<h2>Hiểu ngày</h2>')[1].split("</div>")[0].split())
+    assert '<a href="/vlog/2026-10-14">2026-10-14</a> (dựng lúc 14/10 23:45)' in card
+    assert "2 vlog lỗi (xem Job lỗi)" in card
+    assert "Viết kịch bản vlog" in text and "Dựng vlog" in text  # the dead-letter list names them
