@@ -15,6 +15,8 @@ Context memory for whoever continues this project, whether that is the owner or 
 | P2a: perception pipeline | `plans/2026-10-15-p2a-perception-pipeline.md` | **complete**; live since 2026-10-15 23:51 KST; measurements in `docs/measurements/2026-10-p2a-pipeline.md` | `feat/phase2` |
 | P2b: understanding + UI | `plans/2026-10-16-p2b-understanding-ui.md` | **complete**; live since 2026-10-17 09:00 KST (§3) | `feat/p2b` → `feat/phase2` |
 | P2c: evaluation + P2 acceptance | `plans/2026-10-16-p2c-evaluation-acceptance.md` | Tasks 1–10 complete and reviewed; Tasks 11–14 (deploy, the owner labels, runs, report) in progress | `feat/p2c` |
+| P3 design (MCP + vlog) | `specs/2026-10-17-p3-mcp-vlog-design.md` | approved 2026-10-17; D24 (MCP pictures off by default), D25 (vlog: active hours only) | `feat/p3` |
+| P3a: read-only MCP server | `plans/2026-10-17-p3a-mcp-server.md` | **complete**; live since 2026-10-17 16:47 KST at `/mcp`; Claude Code on the brain PC registered as `loopi` (`--scope user`, token in `~/.config/loopi/mcp-token`), the five tools called OK; pictures off (D24); the api access log no longer records query strings | `feat/p3a` → `feat/phase2` |
 
 All plan paths are under `docs/superpowers/`. Execution ledgers are under `docs/superpowers/ledgers/`. They record every
 ruling with its cost if wrong, every deferred finding, and the pre-flight scans. The P1c ledger is still only in the
@@ -111,7 +113,8 @@ All are pushed to GitHub. Pushing is outward-facing, so ask the owner first.
 
 ## 6. Next
 
-1. **P2c Tasks 11–14:**
+1. **P3b (vlog):** write its plan from the P3 design §4, then execute (SDD).
+2. **P2c Tasks 12–14:**
    - deploy P2c (migration 005, the Đánh giá page);
    - the owner labels about 22 clips, 30 keyframes and 25 questions;
    - a baseline run, twice, for the noise floor;
@@ -119,7 +122,6 @@ All are pushed to GitHub. Pushing is outward-facing, so ask the owner first.
    - a final run with no overrides;
    - a fresh 24 h CPU window;
    - the acceptance report, numbers only.
-2. **P3:** MCP server (§10.5) and vlog (§10.3).
 3. **P4.**
 
 ## 7. How to resume with Claude Code
