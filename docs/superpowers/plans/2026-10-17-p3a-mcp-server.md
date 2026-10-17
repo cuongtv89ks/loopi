@@ -2032,7 +2032,7 @@ docker compose -p deploy exec -T db psql -U loopi -d loopi -tAc "SELECT task_nam
 Expected:
 - the api's memory grows by tens of MB, not hundreds;
 - `0`;
-- only `mcp <tool> ok in … s` lines;
+- only `mcp <tool> ok in … s (<n> items)` lines (tool name, time and result count: the line is logged at INFO by the module's own logger, which `serve`'s WARNING root level does not silence);
 - no failed jobs.
 
 Run the P2b latency query once (P2b plan Task 14 Step 2) and record it.

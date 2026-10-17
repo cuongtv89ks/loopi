@@ -4,12 +4,14 @@ import contextlib
 import datetime as dt
 import io
 import logging
+import re
 
 import httpx
 import httpx2
 import pytest
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
+from mcp.types import CallToolResult
 from PIL import Image
 
 from helpers import FakeOllama, captioned_keyframe, fetch_all, insert_moment, paired_device
@@ -198,6 +200,40 @@ async def test_questions_and_answers_never_reach_the_logs(app, token, dev, pool,
     assert result.structured_content["moments"]  # the secret was searched and found …
     assert SECRET not in caplog.text  # … and appears in no log record, from the server, the SDK or its client
     assert "mcp search_memories ok" in caplog.text
+
+
+async def test_a_call_is_logged_with_its_count_even_when_the_root_logger_only_warns(app, token, dev, pool, caplog):
+    """`serve` keeps the root logger at WARNING: the tool lines must still print, with tool, time and count only."""
+    await insert_moment(pool, dev["device_id"], kind="speech", ts=NINE, axis=0, text=f"nói {SECRET} hôm nay")
+    root = logging.getLogger()  # not caplog.set_level(): it would also set the level of the capture handler
+    before = root.level
+    root.setLevel(logging.WARNING)
+    try:
+        async with mcp_client(app, token) as client:
+            found = await client.call_tool("search_memories", {"query": f"{SECRET} hôm nay"})
+            await client.call_tool("list_commitments", {})
+            await client.call_tool("get_day_recap", {"date": "2026-10-14"})
+    finally:
+        root.setLevel(before)
+    assert len(found.structured_content["moments"]) == 1
+    lines = [r.getMessage() for r in caplog.records if r.name == "loopi_brain.mcp.server"]
+    assert [re.sub(r" in [\d.]+ s", " in S s", line) for line in lines] == [
+        "mcp search_memories ok in S s (1 items)",
+        "mcp list_commitments ok in S s (0 items)",
+        "mcp get_day_recap ok in S s (1 items)",
+    ]
+    assert SECRET not in caplog.text
+
+
+def test_the_count_is_the_main_list_or_one():
+    def timeline(chapters: int) -> CallToolResult:
+        chapter = memory.ChapterOut(id="c", ts_start="t", ts_end="t", title=None, summary=None, closed=True)
+        return server._result(memory.TimelineOut(day="2026-10-14", chapters=[chapter] * chapters, markers=[], counts={}))
+
+    assert server._item_count(timeline(3)) == 3 and server._item_count(timeline(0)) == 0
+    moment = memory.MomentOut(moment_id="m", kind="marker", ts_start="t", ts_end="t", day="d", text="x", lang=None,
+                              caption=None, image=False)
+    assert server._item_count(server._result(moment)) == 1
 
 
 async def test_the_gate_refuses_before_any_mcp_code_runs(app, token, pool):

@@ -40,9 +40,13 @@ INSTRUCTIONS = (
 UNAUTHORIZED = json.dumps({"error": "unauthorized"}).encode()
 NOT_ALLOWED = json.dumps({"error": "method_not_allowed"}).encode()
 
-# The SDK logs tool failures with their text (INFO) and its client logs request arguments (DEBUG); none of that may
-# carry a question or a memory. The tool wrappers below log only tool names, durations and error classes.
+# The SDK logs tool failures with their text (INFO) under ``mcp``, which may carry a question or a memory: keep it at
+# WARNING. (Its client side logs under the top-level ``client`` logger and never runs in the api; the tests that run it
+# in process check every log record.) The tool wrappers below log only tool names, durations, result counts and error
+# classes, which are safe by construction, so this module's logger stays at INFO: ``serve`` keeps the root logger at
+# WARNING for everything else, and the owner still sees what the cloud client read.
 logging.getLogger("mcp").setLevel(logging.WARNING)
+log.setLevel(logging.INFO)
 
 
 @dataclass(frozen=True)
@@ -63,9 +67,19 @@ def _error(text: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=text)], is_error=True)
 
 
+def _item_count(result: CallToolResult) -> int:
+    """How many items an ok result carries, for the log line: the length of its main list, 1 for a recap or a moment."""
+    structured = result.structured_content or {}
+    for key in ("moments", "chapters", "commitments"):
+        if key in structured:
+            return len(structured[key])
+    return 1
+
+
 async def _run(name: str, call: Callable[[], Awaitable[CallToolResult]]) -> CallToolResult:
     """Run one tool body. NotFound and BadInput become tool errors with their fixed text, anything else
-    INTERNAL_ERROR; only the tool's name, its time and an error's class are logged, never an argument or a result."""
+    INTERNAL_ERROR; only the tool's name, its time, an ok result's item count and an error's class are logged, never an
+    argument or a result."""
     started = time.monotonic()
     try:
         result = await call()
@@ -75,7 +89,7 @@ async def _run(name: str, call: Callable[[], Awaitable[CallToolResult]]) -> Call
     except Exception as exc:  # noqa: BLE001 - the client gets a fixed text; the class is logged, not the message
         log.error("mcp %s failed: %s", name, type(exc).__name__)
         return _error(INTERNAL_ERROR)
-    log.info("mcp %s ok in %.2f s", name, time.monotonic() - started)
+    log.info("mcp %s ok in %.2f s (%d items)", name, time.monotonic() - started, _item_count(result))
     return result
 
 
