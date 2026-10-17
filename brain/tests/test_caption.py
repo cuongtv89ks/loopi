@@ -95,6 +95,19 @@ async def test_overlong_answers_are_cut_to_the_limits_not_rejected(pool, pki_set
     assert stored["objects"] == [f"chair {i}" for i in range(20)]
 
 
+async def test_characters_the_database_cannot_hold_are_dropped_before_the_slice(pool, pki_settings, keyframe):
+    # NUL and a lone surrogate (spelled \u0000 / \ud800 in the model's JSON): PostgreSQL text and JSONB refuse them.
+    dirty = {**DEFAULT_CAPTION, "scene": "a\x00b\ud800c", "activity": "\x00" * 300 + "x" * 300,
+             "objects": ["ch\x00air", "\udfff"], "text_seen": "\ud800x\udfff"}
+    ctx = make_ctx(pool, pki_settings, ollama=FakeOllama(caption=dirty))
+    assert await caption.caption_keyframe(ctx, keyframe) is True
+    stored = (await fetch_one(pool, "SELECT caption FROM keyframe WHERE id = %s", (keyframe,)))["caption"]
+    assert stored["scene"] == "abc" and stored["objects"] == ["chair", ""] and stored["text_seen"] == "x"
+    assert stored["activity"] == "x" * 300  # the NULs were dropped first, so they used none of the 300
+    [moment] = await fetch_all(pool, "SELECT text FROM moment")
+    assert "\x00" not in moment["text"] and "abc" in moment["text"]
+
+
 @pytest.mark.parametrize(
     "answer",
     [

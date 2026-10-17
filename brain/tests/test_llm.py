@@ -3,7 +3,9 @@ import traceback
 import pytest
 from pydantic import BaseModel
 
-from loopi_brain.llm import ASR_CAVEAT, AnswerInvalid, clip, clipped, marker_line, parse_answer, spread, within
+from loopi_brain.llm import (
+    ASR_CAVEAT, AnswerInvalid, clip, clipped, marker_line, parse_answer, spread, storable, within,
+)
 
 
 class Answer(BaseModel):
@@ -104,6 +106,10 @@ def test_a_marker_line_carries_the_note_only_when_there_is_one():
 def test_clip_drops_what_a_database_text_column_cannot_hold():
     assert clip("a\x00b \ud800c\udfffd\udbff", 20) == "ab cd"  # NUL and lone surrogates (both halves, any position)
     assert clip("\x00" * 5 + "abcdef", 4) == "abc…"  # the limit counts what is kept
+
+
+def test_storable_drops_only_what_a_database_cannot_hold():
+    assert storable(" a\x00b\n\ud800  c\udfff ") == " ab\n  c "  # whitespace is kept, unlike clip()
 
 
 def test_a_model_answer_with_nul_or_a_lone_surrogate_is_cleaned_by_clipped_text():

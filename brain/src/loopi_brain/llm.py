@@ -70,10 +70,15 @@ def parse_answer(text: str, model: type[M], invalid: type[Exception] = AnswerInv
 _UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
 
 
+def storable(text: str) -> str:
+    """``text`` without the characters a database text or JSONB column cannot hold; nothing else changes."""
+    return _UNSTORABLE.sub("", text)
+
+
 def clip(text: str, limit: int) -> str:
     """``text`` on one line (whitespace collapsed, NUL and lone surrogates dropped), cut to ``limit`` characters;
     "…" marks a cut."""
-    flat = " ".join(_UNSTORABLE.sub("", text).split())
+    flat = " ".join(storable(text).split())
     return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 

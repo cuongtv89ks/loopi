@@ -13,7 +13,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator
 
 from .. import devices
-from ..llm import parse_answer
+from ..llm import parse_answer, storable
 from ..providers.base import ProviderUnavailable
 from . import dispatch, jobs
 from .context import PipelineContext, get_context
@@ -53,7 +53,9 @@ CAPTION_SCHEMA = {
 
 
 def _clip_text(value):
-    return value[:MAX_TEXT] if isinstance(value, str) else value
+    # Characters the database cannot hold (NUL, lone surrogates) go first, so they use none of the limit. Not llm.clip:
+    # that collapses whitespace and adds "…", which would change the captions P2 stores.
+    return storable(value)[:MAX_TEXT] if isinstance(value, str) else value
 
 
 Short = Annotated[str, BeforeValidator(_clip_text)]
