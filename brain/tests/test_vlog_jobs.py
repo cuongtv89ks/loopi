@@ -3,6 +3,7 @@ import datetime as dt
 import logging
 import os
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 from psycopg.types.json import Jsonb
@@ -324,6 +325,19 @@ def test_the_planner_runs_every_15_minutes_and_is_never_retried_by_hand():
     assert (jobs.PLAN_VLOGS, "*/15 * * * *") in periodic
     assert jobs.PLAN_VLOGS in jobs.AUTO_RERUN_TASKS
     assert jobs.WRITE_VLOG_SCRIPT not in jobs.AUTO_RERUN_TASKS and jobs.RENDER_VLOG not in jobs.AUTO_RERUN_TASKS
+
+
+def test_a_render_retries_after_a_fixed_minute_and_runs_three_times_at_most():
+    # A render waiting for its retry stays `todo` and holds the `vlog` lock, so every other day's render waits too:
+    # the wait must stay short (the exponential 60 s reached an hour on the second retry).
+    strategy = jobs.job_app.tasks[jobs.RENDER_VLOG].retry_strategy
+    assert strategy is vlogs.RENDER_RETRY
+    for attempts in (0, 1):
+        before = dt.datetime.now(dt.UTC)
+        decision = strategy.get_retry_decision(exception=RuntimeError(), job=SimpleNamespace(attempts=attempts))
+        after = dt.datetime.now(dt.UTC)
+        assert before + dt.timedelta(seconds=60) <= decision.retry_at <= after + dt.timedelta(seconds=60)
+    assert strategy.get_retry_decision(exception=RuntimeError(), job=SimpleNamespace(attempts=2)) is None
 
 
 async def test_vlog_jobs_never_run_ahead_of_live_work_even_when_deferred_directly(pool, jobs_open):

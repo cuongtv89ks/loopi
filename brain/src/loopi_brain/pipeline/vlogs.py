@@ -32,7 +32,9 @@ from .state import clear_day_error, forgotten, lock_day, raw_kept, record_day_er
 log = logging.getLogger(__name__)
 
 VLOG_LOCK = "vlog"
-RENDER_RETRY = procrastinate.RetryStrategy(max_attempts=2, exponential_wait=60)  # at most 3 runs
+# A fixed minute: a render waiting for its retry stays `todo` and holds the `vlog` lock, so the exponential wait (60 s,
+# then 3600 s) would hold every other day's render for an hour.
+RENDER_RETRY = procrastinate.RetryStrategy(max_attempts=2, wait=60)  # at most 3 runs
 RENDER_TIMEOUT_S = 1200.0
 SECONDS_PER_SEGMENT = 0.25  # of timelapse per active one-minute recording
 TIMELAPSE_MIN, TIMELAPSE_MAX = 10.0, 60.0
