@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
 from .. import forget, reprocess, store
+from ..mcp import tokens as mcp_tokens
 from ..pipeline import retention, status
 from ..providers.config import TASKS, ProvidersConfigError, load_providers
 from ..providers.router import model_version
@@ -56,6 +57,9 @@ async def settings_context(request: Request) -> dict:
         "would_delete": await retention.preview_retention(state.pool),
         "max_days": store.MAX_DAYS,
         "choices": CHOICE_LABELS,
+        "mcp": await store.get_mcp(state.pool),
+        "mcp_tokens": await mcp_tokens.list_tokens(state.pool),
+        "zone": state.settings.zone,
     }
 
 
@@ -125,3 +129,43 @@ async def forget_now(request: Request, start: str = Form(...), end: str = Form(.
     first, last = _local_range(start, end, state.settings.zone)
     counts = await forget.forget_range(state.pool, state.settings, first, last)
     return TEMPLATES.TemplateResponse(request, "_forgotten.html", {"first": first, "last": last, "c": counts})
+
+
+NAME_REASON = f"Tên token phải có từ 1 tới {mcp_tokens.NAME_MAX} ký tự."
+
+
+async def _tokens_view(request: Request, *, created: str | None = None, error: str | None = None) -> HTMLResponse:
+    """The token list; right after a token is made it is shown once, so the answer must never be cached."""
+    state = request.app.state
+    return TEMPLATES.TemplateResponse(
+        request,
+        "_mcp_tokens.html",
+        {"mcp_tokens": await mcp_tokens.list_tokens(state.pool), "created": created, "error": error,
+         "zone": state.settings.zone},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/settings/mcp/tokens", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
+async def create_mcp_token(request: Request, name: str = Form("")):
+    try:
+        _, token = await mcp_tokens.create_token(request.app.state.pool, name)
+    except mcp_tokens.TokenError:
+        return await _tokens_view(request, error=NAME_REASON)
+    return await _tokens_view(request, created=token)
+
+
+@router.post("/settings/mcp/tokens/{token_id}/revoke", response_class=HTMLResponse,
+             dependencies=[Depends(require_htmx)])
+async def revoke_mcp_token(request: Request, token_id: str):
+    if not await mcp_tokens.revoke_token(request.app.state.pool, token_id):
+        raise HTTPException(status_code=404, detail="unknown token")
+    return await _tokens_view(request)
+
+
+@router.post("/settings/mcp/images", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
+async def save_mcp_images(request: Request, enabled: str = Form("")):
+    chosen = store.McpSettings(images=enabled == "on")
+    await store.set_mcp(request.app.state.pool, chosen)
+    what = "<strong>được gửi</strong> ảnh keyframe (320 px)" if chosen.images else "không gửi ảnh, chỉ gửi chữ"
+    return HTMLResponse(f"<span>Đã lưu: MCP {what}.</span>")

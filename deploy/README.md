@@ -141,3 +141,23 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
     echo "$s memory.peak $(docker compose -p deploy exec -T $s cat /sys/fs/cgroup/memory.peak </dev/null)"
   done >> "$out"
   ```
+
+## MCP for Claude Code (P3a)
+
+The brain serves a read-only MCP server at `https://<brain>:8443/mcp` (spec §10.5) with five tools: `search_memories`,
+`get_timeline`, `get_day_recap`, `get_moment`, `list_commitments`. Every client needs its own bearer token.
+
+1. Make a token on Cài đặt → "MCP (Claude Code)" → "Tạo token". The page shows it once; only its SHA-256 is kept.
+   On the brain PC you can also run
+   `docker compose -p deploy exec -T api loopi-brain mcp-token create "Claude Code" > ~/.config/loopi/mcp-token`
+   (run `umask 077 && mkdir -p ~/.config/loopi` first). `mcp-token list` and `mcp-token revoke <id>` manage tokens.
+2. Claude Code (Node) must trust the Loopi CA: `export NODE_EXTRA_CA_CERTS=$LOOPI_DATA_DIR/pki/ca.crt` in the shell
+   (or the profile) that starts `claude`.
+3. `claude mcp add --transport http loopi https://localhost:8443/mcp --header "Authorization: Bearer <token>"`.
+   From another machine in the LAN, copy `ca.crt` there and use `https://<brain LAN IP>:8443/mcp`. The server
+   certificate must name that address (`init-pki --ip`).
+4. `claude mcp list` shows `loopi` as connected. In a session, `/mcp` lists its tools.
+
+Privacy: text returned by the tools (captions, transcripts, recaps, commitments) goes to the model behind the
+client, in the cloud. Keyframe pictures are sent only when "Cho MCP gửi ảnh keyframe" is on (default off, spec D24),
+as 320 px thumbnails. Golden-set pictures are never sent. Revoke a token on Cài đặt to cut its client off at once.

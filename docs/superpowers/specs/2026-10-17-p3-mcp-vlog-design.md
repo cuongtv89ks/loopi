@@ -57,13 +57,13 @@ Cả hai đi qua `feat/p3`, rồi tới `feat/phase2`, rồi deploy lên live nh
 
 Quy ước chung:
 - Giờ hiển thị theo `LOOPI_TZ`, định dạng ISO 8601 có offset. Ngày dạng `YYYY-MM-DD`, tính theo giờ địa phương.
-- Mỗi chữ trả về được cắt ở 500 ký tự.
+- Chữ của moment và tóm tắt chương được cắt ở 500 ký tự, recap ở 8000.
 - Kết quả là JSON có cấu trúc (structured content), kèm bản text.
 - Mỗi moment đi kèm `moment_id` để client trích nguồn.
 
 | Tool | Vào | Ra |
 |---|---|---|
-| `search_memories(query, start?, end?, limit=10)` | `query` 1–500 ký tự; `start`/`end` là datetime có offset, hoặc ngày; `limit` 1–50 | Các moment của hybrid search P2b (`search.search_moments`, cùng ngưỡng với trang Tìm kiếm): `moment_id`, `kind`, `ts_start`, `ts_end`, `text`, `lang`, `day`. Không có gì liên quan thì trả danh sách rỗng kèm `"not_found": true` |
+| `search_memories(query, start?, end?, limit=10)` | `query` 1–500 ký tự; `start`/`end` là datetime có offset, hoặc ngày; `limit` 1–50 | Các moment của hybrid search P2b (`search.search_moments`, cùng ngưỡng với trang Tìm kiếm): `moment_id`, `kind`, `ts_start`, `ts_end`, `text`, `lang`, `day`. Không có gì liên quan thì trả danh sách rỗng kèm `"not_found": true`; không gọi được model embedding thì vẫn tìm theo chữ và trả `"semantic": false` (như trang Tìm kiếm) |
 | `get_timeline(date)` | ngày | Các chương (`id`, `ts_start`, `ts_end`, `title`, `summary`, `closed`), các marker trong ngày, và số moment theo loại |
 | `get_day_recap(date)` | ngày | `markdown`, `generated_at`, `stale`; chưa có recap thì trả `"exists": false` |
 | `get_moment(moment_id)` | ULID | `text`, `kind`, giờ, `lang`. Moment hình có thêm caption (`scene`, `activity`, `objects`, `people_count`). Khi D24 bật và keyframe không thuộc bộ đánh giá: thêm ảnh JPEG 320 px (MCP image content) |
@@ -71,7 +71,6 @@ Quy ước chung:
 
 **Khi có lỗi:**
 - Ngày sai, id không tồn tại hoặc `status` lạ: tool trả lỗi (`isError`) với thông báo tiếng Anh cố định, không nhắc lại dữ liệu người dùng gửi.
-- Không có model embedding: `search_memories` trả lỗi "search is not ready".
 - Dữ liệu đã bị "Quên" thì không còn nữa, tool trả như không có.
 
 **Log:** chỉ ghi tên tool, thời gian chạy và số kết quả. Không bao giờ ghi query hay nội dung trả về.

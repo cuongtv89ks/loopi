@@ -1,0 +1,26 @@
+<div id="mcp-tokens">
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+  {% if created %}
+  <p><strong>Token mới (chỉ hiện một lần, hãy chép ngay):</strong></p>
+  <pre><code>{{ created }}</code></pre>
+  <p>Kết nối Claude Code trên máy brain (đường dẫn CA nằm trong thư mục dữ liệu, ví dụ <code>/home/soul/loopi-data/pki/ca.crt</code>):</p>
+  <pre><code>export NODE_EXTRA_CA_CERTS=&lt;thư mục dữ liệu&gt;/pki/ca.crt
+claude mcp add --transport http loopi https://localhost:8443/mcp --header "Authorization: Bearer {{ created }}"</code></pre>
+  {% endif %}
+  {% if mcp_tokens %}
+  <div class="scroll"><table>
+    <tr><th>Tên</th><th>Tạo lúc</th><th>Dùng lần cuối</th><th></th></tr>
+    {% for t in mcp_tokens %}
+    <tr id="mcp-token-{{ t.id }}">
+      <td>{{ t.name }}</td>
+      <td>{{ t.created_at.astimezone(zone).strftime("%d/%m/%Y %H:%M") }}</td>
+      <td>{% if t.last_used_at %}{{ t.last_used_at.astimezone(zone).strftime("%d/%m/%Y %H:%M") }}{% else %}chưa dùng{% endif %}</td>
+      <td>{% if t.revoked_at %}đã thu hồi{% else %}
+        <form method="post" hx-post="/settings/mcp/tokens/{{ t.id }}/revoke" hx-target="#mcp-tokens" hx-swap="outerHTML"
+              hx-confirm="Thu hồi token “{{ t.name }}”? Client dùng token này sẽ không đọc được nữa."><button>Thu hồi</button></form>
+      {% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="muted">Chưa có token nào.</p>{% endif %}
+</div>

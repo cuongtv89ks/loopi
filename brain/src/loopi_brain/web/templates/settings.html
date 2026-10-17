@@ -63,6 +63,24 @@
   <p class="muted">Transcript chỉ làm lại được khi audio thô còn giữ.</p>
   <div id="reprocess-result"></div>
 </section>
+<section class="card" id="mcp">
+  <h2>MCP (Claude Code)</h2>
+  <p>Claude Code và các client MCP khác đọc trí nhớ (chỉ đọc) qua <code>/mcp</code>, mỗi client một token riêng.
+     <strong>Chữ trả về qua MCP sẽ được client gửi lên model trên cloud.</strong></p>
+  <form method="post" hx-post="/settings/mcp/images" hx-target="#mcp-images-result"
+        hx-confirm="Bật gửi ảnh? Ảnh keyframe (320 px) của các khoảnh khắc được hỏi sẽ được client MCP gửi lên model trên cloud."
+        hx-on::confirm="if (!this.elements.enabled.checked) { event.preventDefault(); event.detail.issueRequest(true); }">
+    <label><input type="checkbox" name="enabled"{% if mcp.images %} checked{% endif %}> Cho MCP gửi ảnh keyframe (320 px)</label>
+    <button>Lưu</button>
+  </form>
+  <p>Ảnh qua MCP: {% if mcp.images %}<strong>đang bật</strong>{% else %}<strong>đang tắt</strong> (chỉ gửi chữ){% endif %}. Ảnh của bộ đánh giá không bao giờ được gửi.</p>
+  <div id="mcp-images-result"></div>
+  <form method="post" hx-post="/settings/mcp/tokens" hx-target="#mcp-tokens" hx-swap="outerHTML">
+    <label>Tên token <input name="name" maxlength="60" required placeholder="Claude Code trên máy brain"></label>
+    <button>Tạo token</button>
+  </form>
+  {% include "_mcp_tokens.html" %}
+</section>
 <section class="card">
   <h2>Job lỗi</h2>
   <p>Job lỗi và nút xử lý lại ở trang <a href="/pipeline">Xử lý</a>.</p>

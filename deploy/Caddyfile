@@ -47,6 +47,17 @@
 		}
 	}
 
+	# MCP (spec §10.5): read only; the brain checks the bearer token itself. No basic auth, no client certificate
+	# (the site's verify_if_given policy lets a client without one through); small JSON requests only.
+	handle /mcp* {
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy api:8000 {
+			header_up -X-Loopi-Client-Fingerprint
+		}
+	}
+
 	# Web UI and media: basic auth; never trust a client-supplied fingerprint header.
 	handle {
 		header X-Frame-Options DENY

@@ -48,6 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance.add_argument("--cpu-samples", help="the cgroup CPU samples of the measurement window ('-': stdin)")
     acceptance.add_argument("--exclude-day", action="append", default=[], type=dt.date.fromisoformat,
                             help="a local day (YYYY-MM-DD) left out of the latency, e.g. one reprocessed (repeatable)")
+    mcp_token = sub.add_parser("mcp-token", help="bearer tokens of the read-only MCP server (spec §10.5)")
+    mcp_sub = mcp_token.add_subparsers(dest="mcp_cmd", required=True)
+    create = mcp_sub.add_parser("create", help="make a token and print it once (only its hash is kept)")
+    create.add_argument("name")
+    mcp_sub.add_parser("list", help="list the tokens (never the tokens themselves)")
+    revoke = mcp_sub.add_parser("revoke", help="revoke a token by its id")
+    revoke.add_argument("token_id")
     return parser
 
 
@@ -210,6 +217,38 @@ async def _acceptance(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _mcp_token(args: argparse.Namespace) -> int:
+    from .config import Settings
+    from .db import make_pool
+    from .mcp import tokens
+
+    settings = Settings()
+    pool = make_pool(settings.database_url)
+    await pool.open()
+    try:
+        if args.mcp_cmd == "create":
+            try:
+                _, token = await tokens.create_token(pool, args.name)
+            except tokens.TokenError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            print(token)
+            return 0
+        if args.mcp_cmd == "list":
+            for t in await tokens.list_tokens(pool):
+                state = "revoked" if t["revoked_at"] else "live"
+                used = t["last_used_at"].astimezone(settings.zone).strftime("%Y-%m-%d %H:%M") if t["last_used_at"] else "never"
+                print(f"{t['id']}  {state:7}  last used {used}  {t['name']}")
+            return 0
+        if await tokens.revoke_token(pool, args.token_id):
+            print("revoked")
+            return 0
+        print("error: no live token with that id", file=sys.stderr)
+        return 1
+    finally:
+        await pool.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "init-pki":
@@ -230,4 +269,6 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_eval(args))
     if args.cmd == "acceptance":
         return asyncio.run(_acceptance(args))
+    if args.cmd == "mcp-token":
+        return asyncio.run(_mcp_token(args))
     return 2

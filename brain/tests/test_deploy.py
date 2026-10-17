@@ -184,3 +184,19 @@ def test_the_readme_cpu_loop_writes_the_lines_that_acceptance_reads(tmp_path):
     assert not any(row["restarted"] for row in cpu.values())
     assert round(cpu["models"]["hours"], 2) == 24.08
     assert round(cpu["models"]["cpu_s"], 3) == 86.4
+
+
+def test_mcp_goes_to_the_api_without_basic_auth_and_without_a_client_fingerprint():
+    caddy = (DEPLOY / "Caddyfile").read_text()
+    assert "\thandle /mcp* {" in caddy
+    block = caddy.split("\thandle /mcp* {", 1)[1].split("\n\t}\n", 1)[0]
+    assert "reverse_proxy api:8000" in block and "header_up -X-Loopi-Client-Fingerprint" in block
+    assert "max_size 64KB" in block and "basic_auth" not in block
+    assert caddy.index("\thandle /mcp* {") < caddy.index("\thandle {\n")
+
+
+def test_the_readme_says_how_to_connect_claude_code():
+    readme = (DEPLOY / "README.md").read_text()
+    assert "## MCP for Claude Code (P3a)" in readme
+    assert "NODE_EXTRA_CA_CERTS" in readme and "claude mcp add --transport http loopi" in readme
+    assert "loopi-brain mcp-token create" in readme
