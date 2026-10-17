@@ -25,6 +25,9 @@ dependencies = [
     "av>=15,<19",
     "httpx>=0.28",
     "pyyaml>=6.0",
+    # The official MCP SDK (spec §10.5). 2.x: MCPServer (no FastMCP) and its own httpx2 client; pinned exactly because
+    # this plan was verified against 2.3.0 and parts of its server API (middleware) are marked provisional.
+    "mcp==2.3.0",
 ]
 
 [project.scripts]
