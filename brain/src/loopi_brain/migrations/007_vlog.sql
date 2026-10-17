@@ -16,3 +16,8 @@ CREATE TABLE vlog (
     error          TEXT,
     error_at       TIMESTAMPTZ
 );
+
+-- vlog/material.py reads keyframes by time alone (`ts >= … AND ts < …`, twice per vlog). The existing indexes are
+-- (device_id, ts), which PG17 cannot use without the leading column, and a partial one on uncaptioned rows. The table
+-- grows by thousands of rows a day and is kept for ever.
+CREATE INDEX keyframe_ts ON keyframe (ts);

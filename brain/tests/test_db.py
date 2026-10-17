@@ -115,6 +115,16 @@ def test_cascading_foreign_keys_are_indexed(database_url):
             ("eval_run_audio", "run_id"), ("eval_run_audio", "sample_id")} <= indexed
 
 
+def test_keyframe_has_a_plain_time_index_for_the_vlog_queries(database_url):
+    # vlog/material.py reads keyframes by `ts` alone; (device_id, ts) cannot serve that on PG17 and the partial
+    # (ts) WHERE caption IS NULL index does not cover captioned rows.
+    with psycopg.connect(database_url) as conn:
+        defs = [r[0] for r in conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE tablename = 'keyframe' AND indexname = 'keyframe_ts'")]
+    assert len(defs) == 1
+    assert defs[0].endswith("USING btree (ts)")  # no WHERE clause: it covers every keyframe
+
+
 async def test_pool_connections_read_and_write_vectors(pool, pki_settings):
     dev = await paired_device(pool, pki_settings)
     vec = Vector([1.0] + [0.0] * 1023)
