@@ -444,6 +444,22 @@ async def _slides(jpegs: Sequence[Path]) -> AsyncIterator[bytes]:
         yield await asyncio.to_thread(jpeg_canvas, p, OUT_W, OUT_H)
 
 
+def _inspect_segments(segments: Sequence[Segment]) -> tuple[list[tuple[Segment, Track]], list[str]]:
+    """The readable segments with their video track, in time order, and why each other one is skipped."""
+    good: list[tuple[Segment, Track]] = []
+    skipped: list[str] = []
+    for s in sorted(segments, key=lambda s: s.start):
+        try:
+            good.append((s, video_track(s.path)))
+        except InvalidMedia as exc:
+            skipped.append(f"segment {exc}")
+    return good, skipped
+
+
+def _write_concat(dest: Path, paths: Sequence[Path]) -> None:
+    dest.write_text(concat_list(paths), encoding="utf-8")
+
+
 async def render(*, segments: Sequence[Segment], stills: Sequence[Still], keyframes: Sequence[Keyframe],
                  target_seconds: float, workdir: Path, out: Path, still_seconds: float = 3.0,
                  title: str | None = None, allow_keyframes_only: bool = True,
@@ -452,13 +468,10 @@ async def render(*, segments: Sequence[Segment], stills: Sequence[Still], keyfra
     skipped: list[str] = []
     n_out = round(target_seconds * FPS)
 
-    # ---- 0. inspect inputs (pure Python; bad inputs are skipped, never handed to ffmpeg)
-    good: list[tuple[Segment, Track]] = []
-    for s in sorted(segments, key=lambda s: s.start):
-        try:
-            good.append((s, video_track(s.path)))
-        except InvalidMedia as exc:
-            skipped.append(f"segment {exc}")
+    # ---- 0. inspect inputs (pure Python; bad inputs are skipped, never handed to ffmpeg). The segment reads (up to
+    # ~1000 a day, a cold disk) run in a thread: they must not stall the worker's loop and its heartbeat.
+    good, bad_segments = await asyncio.to_thread(_inspect_segments, segments)
+    skipped.extend(bad_segments)
     ok_stills: list[tuple[Still, None]] = []
     for st in sorted(stills, key=lambda s: s.at):
         try:
@@ -489,7 +502,7 @@ async def render(*, segments: Sequence[Segment], stills: Sequence[Still], keyfra
 
         bounds = chunk_boundaries([units_before(st.at) for st, _ in ok_stills], n_in, n_out)
         lst = workdir / "segments.ffconcat"
-        lst.write_text(concat_list(s.path for s, _ in good), encoding="utf-8")
+        await asyncio.to_thread(_write_concat, lst, [s.path for s, _ in good])
         cut = sorted({b for b in bounds if 0 < b < n_out})
         await runner("timelapse", timelapse_argv(lst, chunk_pat, n_out=n_out, n_in=n_in,
                                                  keyframes_only=keyframes_only, boundaries=cut), None)

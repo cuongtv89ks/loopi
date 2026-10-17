@@ -1,4 +1,5 @@
 import datetime as dt
+import threading
 
 import pytest
 
@@ -51,6 +52,31 @@ async def test_bad_inputs_are_skipped_before_ffmpeg_runs(tmp_path, day):
     )
     assert len(result.skipped) == 3 and result.frames == 72
     assert all("ffmpeg" not in s for s in result.skipped)
+
+
+async def test_the_segment_checks_run_off_the_event_loop(tmp_path, day, monkeypatch):
+    # ~1000 moov reads on a cold disk must not stall the worker's loop (its heartbeat, its other jobs).
+    segments, stills = day
+    seen: list[tuple[str, threading.Thread]] = []
+    real = render.video_track
+
+    def recording(path):
+        seen.append((path.name, threading.current_thread()))
+        return real(path)
+
+    class Stop(Exception):
+        pass
+
+    async def runner(step, argv, feed):
+        raise Stop  # the inspection is what is under test, not ffmpeg
+
+    monkeypatch.setattr(render, "video_track", recording)
+    with pytest.raises(Stop):
+        await render.render(segments=segments, stills=stills, keyframes=[], target_seconds=1.0,
+                            workdir=tmp_path / "work", out=tmp_path / "vlog.mp4", still_seconds=1.0, title=None,
+                            runner=runner)
+    assert [name for name, _ in seen] == [f"seg{i}.mp4" for i in range(4)]
+    assert all(thread is not threading.main_thread() for _, thread in seen)
 
 
 async def test_a_segment_vanishing_after_the_check_fails_the_render(tmp_path, day):
