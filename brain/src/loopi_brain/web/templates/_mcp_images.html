@@ -1,0 +1,4 @@
+<div id="mcp-images-state">
+  <p>Ảnh qua MCP: {% if mcp.images %}<strong>đang bật</strong>{% else %}<strong>đang tắt</strong> (chỉ gửi chữ){% endif %}. Ảnh của bộ đánh giá không bao giờ được gửi.</p>
+  {% if saved %}<p><span>Đã lưu: MCP {% if mcp.images %}<strong>được gửi</strong> ảnh keyframe (320 px){% else %}không gửi ảnh, chỉ gửi chữ{% endif %}.</span></p>{% endif %}
+</div>

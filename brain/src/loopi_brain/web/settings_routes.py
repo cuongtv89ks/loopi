@@ -167,5 +167,5 @@ async def revoke_mcp_token(request: Request, token_id: str):
 async def save_mcp_images(request: Request, enabled: str = Form("")):
     chosen = store.McpSettings(images=enabled == "on")
     await store.set_mcp(request.app.state.pool, chosen)
-    what = "<strong>được gửi</strong> ảnh keyframe (320 px)" if chosen.images else "không gửi ảnh, chỉ gửi chữ"
-    return HTMLResponse(f"<span>Đã lưu: MCP {what}.</span>")
+    # One fragment holds the status line and the saved message, so the page never shows two different states.
+    return TEMPLATES.TemplateResponse(request, "_mcp_images.html", {"mcp": chosen, "saved": True})

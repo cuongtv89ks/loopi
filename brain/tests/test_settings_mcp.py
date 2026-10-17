@@ -59,6 +59,22 @@ async def test_the_picture_switch_saves(web, pool):
     assert "không gửi ảnh" in r.text and (await store.get_mcp(pool)).images is False
 
 
+async def test_saving_the_switch_refreshes_the_status_line_with_the_saved_state(web, pool):
+    """The status line and the saved message are one swapped fragment, so they can never contradict each other."""
+    page = (await web.get("/settings")).text
+    assert 'hx-target="#mcp-images-state" hx-swap="outerHTML"' in page and page.count('id="mcp-images-state"') == 1
+    r = await web.post("/settings/mcp/images", data={"enabled": "on"}, headers=HX)
+    assert r.text.lstrip().startswith('<div id="mcp-images-state">')  # the element the form's swap replaces
+    assert "Ảnh qua MCP: <strong>đang bật</strong>" in r.text and "Đã lưu: MCP <strong>được gửi</strong>" in r.text
+    assert "đang tắt" not in r.text
+    assert "Ảnh qua MCP: <strong>đang bật</strong>" in (await web.get("/settings")).text  # a reload agrees
+    r = await web.post("/settings/mcp/images", data={}, headers=HX)
+    assert "Ảnh qua MCP: <strong>đang tắt</strong>" in r.text and "Đã lưu: MCP không gửi ảnh" in r.text
+    assert "đang bật" not in r.text
+    assert "Ảnh qua MCP: <strong>đang tắt</strong>" in (await web.get("/settings")).text
+    assert (await store.get_mcp(pool)).images is False
+
+
 @pytest.mark.parametrize("path", ["/settings/mcp/tokens", "/settings/mcp/tokens/x/revoke", "/settings/mcp/images"])
 async def test_every_mcp_post_needs_htmx_and_every_form_is_a_post(web, pool, path):
     assert (await web.post(path, data={"name": "a", "enabled": "on"})).status_code == 403
