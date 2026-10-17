@@ -49,7 +49,11 @@
 
 	# MCP (spec §10.5): read only; the brain checks the bearer token itself. No basic auth, no client certificate
 	# (the site's verify_if_given policy lets a client without one through); small JSON requests only.
+	# Caddy matches the cleaned path but forwards the raw one, so without the rewrite /commitments/../mcp would skip
+	# basic auth and reach a web handler, and /mcp/ would draw the api's redirect to http://. The rewrite makes the
+	# api see exactly /mcp (the query string is kept), so everything that skips basic auth reaches only the bearer gate.
 	handle /mcp* {
+		rewrite * /mcp
 		request_body {
 			max_size 64KB
 		}

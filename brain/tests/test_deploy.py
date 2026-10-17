@@ -193,6 +193,11 @@ def test_mcp_goes_to_the_api_without_basic_auth_and_without_a_client_fingerprint
     assert "reverse_proxy api:8000" in block and "header_up -X-Loopi-Client-Fingerprint" in block
     assert "max_size 64KB" in block and "basic_auth" not in block
     assert caddy.index("\thandle /mcp* {") < caddy.index("\thandle {\n")
+    # Caddy matches the cleaned path but forwards the raw one: without the rewrite, /commitments/../mcp would skip
+    # basic auth and reach a web handler, and /mcp/ would draw Starlette's http:// redirect.
+    directives = [line.strip() for line in block.splitlines() if line.strip()]
+    assert directives[0] == "rewrite * /mcp"  # the block's first directive: the api always sees exactly /mcp
+    assert block.index("rewrite * /mcp") < block.index("reverse_proxy")
 
 
 def test_the_readme_says_how_to_connect_claude_code():

@@ -1983,6 +1983,10 @@ Expected:
 curl -s -o /dev/null -w '%{http_code}\n' --cacert /home/soul/loopi-data/pki/ca.crt -X POST https://localhost:8443/mcp \
   -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'      # 401
 curl -s -o /dev/null -w '%{http_code}\n' --cacert /home/soul/loopi-data/pki/ca.crt https://localhost:8443/settings   # 401 (basic auth)
+curl -s -o /dev/null -w '%{http_code}\n' --cacert /home/soul/loopi-data/pki/ca.crt --path-as-is -X POST \
+  https://localhost:8443/commitments/../mcp      # 401: the bearer gate, never a web handler
+curl -s -o /dev/null -w '%{http_code}\n' --cacert /home/soul/loopi-data/pki/ca.crt -X POST \
+  https://localhost:8443/mcp/                    # 401, not a 307 to http://
 docker compose -p deploy exec -T api python - <<'PY'
 import urllib.request
 with urllib.request.urlopen("http://127.0.0.1:8000/settings", timeout=60) as r:
@@ -1991,7 +1995,7 @@ print(r.status, 'id="mcp"' in page)
 PY
 ```
 
-Expected: `401`, `401`, `200 True`.
+Expected: `401`, `401`, `401`, `401`, `200 True`.
 
 - [ ] **Step 5: A token, Claude Code, the five tools**
 
