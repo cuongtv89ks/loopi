@@ -28,28 +28,28 @@ Findings: 0 Critical, 4 Important (I1–I4), 16 Minor. Rulings appended as "Pre-
 Plan amended: e669c7a
 
 ## Tasks
-Task 1: dispatched (BASE e669c7a)
+Task 1: dispatched (sonnet implementer ab1b19449a2c5528f, BASE e669c7a)
 Task 1: minor (deferred, final review): spec still implies unconditional deletion at :284 ("sau đó job lưu trữ mới xoá") and :291 ("03:00: áp dụng chính sách lưu trữ") and §12 disk-full row — add "nếu đã bật"; §9.4 table (date vs day, new tables/columns) not updated.
 Task 1: minor (deferred): tests do not pin the exact midnight instant / round-trip, some indexes/constraints untested; days.* silently misreads naive datetimes (docstring says aware).
 Task 1: note for Task 14: ALTER TABLE item in 003 waits behind any open transaction on item (no lock_timeout, same as 002) — deploy when the worker is idle-ish.
 Task 1: complete (commits e669c7a..8df01f2, review clean)
-Task 2: dispatched (BASE 8df01f2)
+Task 2: dispatched (sonnet implementer a048b58696ad1167b, BASE 8df01f2)
 Task 2: minor (deferred): text treatment keyed on model name only (a custom providers.yaml using one model for vision and text would give captions the short keep-alive/900 s) — guard `and not images` suggested; repeated connect literal 5.0; test gaps (fallback in ollama_text_models, upper bounds); clip(text, 0) edge; AnswerInvalid stores pydantic's multi-line text.
 Task 2: complete (commits 8df01f2..5362dad, review clean)
-Task 3: dispatched (BASE 5362dad)
+Task 3: dispatched (sonnet implementer a291d5e623518eb98, BASE 5362dad)
 Task 3: review — Needs fixes: 1 Important (plan-mandated): closed_count's docstring promises "data still to come can no longer change" a closed chapter, but a drift boundary is confirmed by the next same-kind point however far away, so later data can split a chapter that is already closed (12 of 600 fuzzed days; Task 4 keeps closed rows, so the split is dropped; a full rebuild may differ).
 - Ruling: T3-I1 option (b) — keep the plan's algorithm (Tasks 4–13 were prototyped on it); correct closed_count's docstring to the real guarantee ("closed chapters are frozen as they stood when they closed; data arriving later never changes them, but a full rebuild of the day (forget/reprocess) may draw different boundaries"), and add one test pinning that closed_count never counts the open last chapter before day end — cost if wrong: a rebuilt day can show different chapter boundaries than the live run did.
 Task 3: fix round 1/5 (1 addressed, 0 open — closed_count docstring states the real guarantee + open-last-chapter test; commits 091e251..0bf0b77)
 Task 3: minor (deferred): ChapterParams unvalidated (window=0 → unbounded window, min_s > max_s, gap_s <= 0); drift range 0–2 documented as 0–1 and the zero-mean branch untested; no direct partition property test, exact >= thresholds untested; zip strict=False; tail copy per call; last chapter before a long silence closes only at day end (plan-mandated).
 Task 3: note for Task 4: a late-analysed moment whose timestamp falls inside an already-closed chapter — settle_s / reopen rule must cover it (check in Task 4 review).
 Task 3: complete (commits 5362dad..0bf0b77, review clean after 1 fix round)
-Task 4: dispatched (BASE 0bf0b77)
+Task 4: dispatched (sonnet implementer a06f46f9da544d1f7, BASE 0bf0b77)
 Task 4: minor (deferred, final review): tied timestamps across a chapter boundary make the frozen frontier reopen the day on every build until the open chapter closes (rare; fix: never cut between equal starts, or frontier (ts, id)).
 Task 4: minor (deferred, final review): a cooldown-skipped chapter lets the build succeed and clear day_job_error (error text blinks every 6 h) — fix: clear only when no chapter of the day has summary_error.
 Task 4: minor (deferred): _pending_since only partly tested (uncaptioned keyframe, unembedded moment, dead-lettered work branches); `written += 1` over-counts when the guarded UPDATE matched nothing; hourly catch-up query is a full scan and holds a pooled connection across router.health(); test name overstates.
 - Ruling: T4 minor 5 is load-bearing for later tasks — priority −10 is set only at chapters.defer_build; Tasks 5, 9, 10, 13 dispatches carry "defer chapter/recap jobs only through their defer_* helpers (priority −10, lock llm), never .defer directly" — cost if wrong: a direct defer would run a chapter build ahead of live work.
 Task 4: complete (commits 0bf0b77..a9b3f43, review clean)
-Task 5: dispatched (BASE a9b3f43)
+Task 5: dispatched (sonnet implementer a4e4204bb1d3c0109, BASE a9b3f43)
 - Ruling: R-I4 moves to Task 6 — rewrite_recap and its test live in Task 6's web/day_routes.py and test_day_page.py (my pre-flight block put it on Task 5 by mistake); Task 5 added a planner-side test (deleting the failed write_recap job lets plan_recaps plan the day again) — cost: none.
 Task 5: review (opus) — Needs fixes: 1 Important (plan-mandated): the prompt budget keeps the EARLIEST lines (within() on time-ordered lists) — on a busy day the recap sees nothing after ~14:00 (chapters) / ~11:34 (speech), so evening events and commitments are lost (simulated).
 - Ruling: T5-I1 — choose speech lines greedily longest-first under the budget (≤ 60), then order the chosen ones by time and number S1…Sn; chapters: clip each summary to about CHAPTER_BUDGET // len(rows) (all chapters always present); markers: spread() over the day; add a test that a long late line (22:xx) and the last chapter appear in the prompt — spec §10.2 recaps the whole day — cost if wrong: shorter per-chapter summaries in the prompt.
@@ -59,12 +59,12 @@ Task 5: minor (deferred, final review): llm.parse_answer puts the first 200 char
 Task 5: fix round 1/5 (2 addressed, 0 open — whole-day prompt (all chapters clipped, markers spread, speech longest-first then by time), no commitment text in logs; commits da2c814..60af51f)
 Task 5: minor (deferred): recap of None if day omitted (only call site passes it); clip(source, 20) bounds but does not rule out leakage via the free-form source field; one line of budget may stay unused; >80 chapters/day would starve speech (unreachable).
 Task 5: complete (commits a9b3f43..60af51f, review clean after 1 fix round)
-Task 6: dispatched (BASE 60af51f; carries R-I4)
+Task 6: dispatched (sonnet implementer a7021753e84a1d972, BASE 60af51f; carries R-I4)
 Housekeeping: killed a stuck 'cp -iv …mod.rs' left by an audio-level subagent (cwd: removed /home/soul/loopi-audio/agent, waiting on a prompt since 10-15).
 Task 6: minor (deferred): corrupt keyframe → 500 on /thumb (map to 404/422 + log); thumb_rel raise untested; lexical-only "keyframes/" check (a DB path keyframes/../raw/x.mp4 would pass — DB is brain-written); _recap_lock is a 3rd copy of the recap:<day> format; HX_ERRORS[404] says "Không tìm thấy thiết bị" for commitment 404s; duplicated <figure> markup; rewrite_recap uses 4 connections (rare 500 on a race, retry works).
 - Ruling: T6 minor 4 is load-bearing (Tasks 10–11 delete files through media.inside): the Task 10 dispatch adds direct unit tests of media.inside (absolute path, the root itself, a symlink pointing out of the root, a '..' that stays inside) — cost: none.
 Task 6: complete (commits 60af51f..27d05ed, review clean)
-Task 7: dispatched (BASE 27d05ed)
+Task 7: dispatched (sonnet implementer af8423eed835074e7, BASE 27d05ed)
 Task 7: review — Needs fixes: 1 Important: a NUL byte in the question (/search?q=%00) → psycopg DataError → HTTP 500 (and Task 8 chat would inherit it).
 - Ruling: T7-I1 — strip NUL/control characters in the query normalisation before embedding and SQL, with a test; fold in minor 2 (a 16:00Z moment test that pins the local-day bounds of the time filter) — cost: none.
 Task 7: minor (deferred, final review): unfiltered search uses seq scans at 30k moments (~0.2–0.45 s; ~0.6–1.5 s at 10^5) — thresholds/planner tuning is P2c; request_router None branch and hit_view marker branch untested; a wedged Ollama holds /search up to the 300 s read timeout before falling back to words (a short query-embedding timeout would be kinder); style (130-char line, untyped pool params).
@@ -72,7 +72,7 @@ Task 7: minor (deferred, final review): unfiltered search uses seq scans at 30k 
 Task 7: fix round 1/5 (3 addressed, 0 open — control characters stripped, local-day filter pinned, empty form dates = no limit; commits 595a996..e75ead3)
 Task 7: minor (deferred): clean_query also splits ZWJ/ZWNJ sequences (harmless for vi/en).
 Task 7: complete (commits 27d05ed..e75ead3, review clean after 1 fix round)
-Task 8: dispatched (BASE e75ead3)
+Task 8: dispatched (sonnet implementer accb20eecd44d785d, BASE e75ead3)
 Task 8: review (opus) — Needs fixes: 2 Important, both plan-mandated.
 - Ruling: T8-I1 — a model date in year 1 (a common "zero date") overflows in clean_filter/day_bounds_utc and crashes the chat; dates before 2000-01-01 (or any OverflowError) mean "no filter", with a parametrized case — cost: none.
 - Ruling: T8-I2 — the answer prompt states the current local date/time ("Now is <weekday, YYYY-MM-DD HH:MM> (<zone>)"), passed from chat_events, so "Mai…" questions are not answered from an old plan — cost: a few prompt tokens.
@@ -82,7 +82,7 @@ Task 8: minor (deferred): partial streamed text stays on screen after an error (
 Task 8: fix round 1/5 (4 addressed, 0 open — pre-2000 dates are open bounds, the prompt carries the local date, sources wording, empty answer = error; commits 2451405..6717210)
 Task 8: minor (deferred): year-0 strings ("0000-01-01") fail fromisoformat and count as missing (single-day) instead of placeholders; ANSWER_FAILED text says the model server fails even for an empty answer from a running server.
 Task 8: complete (commits e75ead3..6717210, review clean after 1 fix round)
-Task 9: dispatched (BASE 6717210)
+Task 9: dispatched (sonnet implementer a19ff37c9bb9c5fd4, BASE 6717210)
 Task 9: review — Needs fixes: 1 Important: reprocess_day never takes state.lock_day, so it can interleave with a chapter rebuild/summary/recap write (and Task 10's forget relies on the lock excluding every derived-text writer).
 - Ruling: T9-I1 — reprocess_day takes lock_day(conn, day) as the first statement of its transaction, with a test that it waits for a concurrent holder — cost: none.
 - Ruling: T9 minors folded in: day_bounds OverflowError for 0001-01-01/9999-12-31 → 422 not 500; defer_recap failure after the committed reset is logged, not a 500 (like defer_build); the providers error view shows only error locations/messages, never pydantic's input_value (a pasted key must not be echoed), with a test — cost: none.
@@ -92,7 +92,7 @@ Task 9: minor (deferred, final review): chained exceptions still put pydantic's 
 Task 9: fix round 1/5 (4 addressed, 0 open — reprocess takes lock_day, out-of-range days 422, failing defer_recap logged, providers errors without values; commits aff8220..b85ec1a)
 Task 9: minor (deferred): validator messages still quote file-supplied names (needed by an operator); non-UTF-8 providers.yaml → UnicodeDecodeError 500 (pre-existing P2a).
 Task 9: complete (commits 6717210..b85ec1a, review clean after 1 fix round)
-Task 10: dispatched (BASE b85ec1a)
+Task 10: dispatched (sonnet implementer a8649efb9f7fd344c, BASE b85ec1a)
 Task 10: implemented (33ccddf, 574 passed + 1 skipped, 99 %); implementer deviations ruled by the controller:
 - Ruling: T10-D1 accept — media.inside now rejects an absolute path even if it points into the root (its docstring said so; callers pass DB-relative paths) — cost if wrong: none.
 - Ruling: T10-D2 accept — all affected days are locked in one ascending pass, the day set re-checked under the locks and restarted if a recording appeared (the plan's out-of-order extra-day locks could deadlock two forgets across midnight) — cost: none.
@@ -106,7 +106,7 @@ Task 10: review (opus) — Needs fixes: 1 Important: a remux / first audio play 
 Task 10: fix round 1/5 (6 addressed, 0 open — in-flight remux/playback/thumbnail copies removed when their row is gone, item_files lists the video mp4, symlink-safe unlink, deadlock retry, preview states the span, comment + tests; commits 33ccddf..10c98f3)
 Task 10: minor (deferred): if remove_files fails inside remux_item the MP4 stays with only a log line; audio fallback FileResponse(raw) gives 500 instead of 404 if a forget removed the raw file in between (nothing leaked).
 Task 10: complete (commits b85ec1a..10c98f3, review clean after 1 fix round)
-Task 11: dispatched (BASE 10c98f3)
+Task 11: dispatched (sonnet implementer adc0ed392857a3387, BASE 10c98f3)
 Task 11: implemented (6a0e046, 606 passed + 1 skipped); implementer concerns are correctness/privacy → addressed before review:
 - Ruling: T11-C1 — a crash between the mark commit and the unlinking must not leave files forever: each tick also re-tries rows with raw_deleted_at set whose files are still recorded (view_path not cleared / a still-present raw path), bounded like the main batch; test with a simulated crash — cost: none.
 - Ruling: T11-C2 — the audio playback route (and the thumbnail route if it serves anything of a retained item) treats an item with raw_deleted_at set as gone: 404, never create a new copy, and unlink a copy written while retention ran; test — cost: none.
@@ -121,7 +121,7 @@ Task 11: fix round 1/5 (5 addressed, 1 open — the failing row is un-marked; sa
 Task 11: fix round 2/5 (1 addressed, 0 open — fail closed: unexpected per-row errors keep the mark in both phases, un-mark only when the raw entry verifiably exists; commits 379b5c7..74e5471)
 Task 11: minor (deferred): lexists treats a dangling symlink / an existing raw path outside the root as present (retention cannot create either); a `left` video whose MP4 went before a later failure keeps view_path to a missing MP4 until the next night.
 Task 11: complete (commits 10c98f3..74e5471, review clean after 2 fix rounds)
-Task 12: dispatched (BASE 74e5471)
+Task 12: dispatched (sonnet implementer abf1a8497bd2e1ec6, BASE 74e5471)
 - Ruling: T12 concern — Anthropic stream_chat cut off by max_tokens before any text raises ProviderError (like chat), so the router falls back to the next route instead of answering empty; with a test — cost: none.
 Task 12: review (opus) — Needs fixes: 1 Important: an API key with surrounding whitespace/CR/LF (pasted key, CRLF .env) makes h11 raise LocalProtocolError("Illegal header value b'<key>'"), and the provider puts {exc} into the ProviderError → key in logs, day_job_error, the Xử lý/Day pages and tracebacks (reproduced with a real socket).
 - Ruling: T12-I1 — the settings validator returns value.strip() (no raise: pydantic would echo input_value); the provider maps httpx.LocalProtocolError (and any transport error text) to a fixed message without the key (`from None`) and scrubs the key from every message built from {exc}; regression test with a real AsyncHTTPTransport against a local listener — cost: none.
@@ -129,7 +129,7 @@ Task 12: review (opus) — Needs fixes: 1 Important: an API key with surrounding
 Task 12: fix round 1/5 (9 addressed, 0 open — key trimmed, scrubbed, never chained; non-visible-ASCII keys refused before httpx; per-call timeout; warning once; local providers kept; stream errors mapped; empty streams fall back; strict_schema; docstrings; zero-request test; commits 0cab7ae..97d7f9f)
 Task 12: minor (deferred, final review): _http_error truncates before scrubbing (a >500-char error echoing the key across the cut keeps its tail) — scrub first; 120 s read timeout can be short for non-THINKING_OFF models on the 8192-token path (configured Haiku/Sonnet unaffected); DecodingError/TooManyRedirects escape as raw httpx errors (pre-existing); ProviderError docstring "cut-off answers" nit; zero-request test's only-cloud half not discriminating.
 Task 12: complete (commits 74e5471..97d7f9f, review clean after 1 fix round)
-Task 13: dispatched (BASE 97d7f9f)
+Task 13: dispatched (sonnet implementer a7ab96e113fbc8cf6, BASE 97d7f9f)
 Task 13: review — Approved with 1 Important (plan-mandated): README says `docker compose up -d api worker` after editing the bind-mounted providers.yaml — that recreates nothing, so the edit has no effect.
 - Ruling: T13-I1 — README says `docker compose up -d --force-recreate api worker`; minors folded in: the privacy bullet says text sent to the cloud includes captions and transcripts derived from the recordings; test_deploy walks the whole route chain (fallbacks too) for "100 % local by default" — cost: none.
 Task 13: minor (deferred): "Hiểu ngày" waiting count looser than the planner's rule (open chapters < OPEN_MIN_MOMENTS, cooldown); card test exercises one recap row only and sets retention by raw SQL.
@@ -152,3 +152,29 @@ Follow-up (owner approved a+b 2026-10-16): fix the two parked private-text log l
 Follow-up: complete (commit 46339cb, 696 passed + 1 skipped, 99 %; review clean): recap drop log carries day + length + ref-shape only; parse_caption reuses llm.parse_answer (invalid=CaptionInvalid) — no answer text in errors, caption_error, logs or chains; retries unchanged.
 - Ruling: at deploy (Task 14) scrub old keyframe.caption_error rows written by P2a that quote caption text (`… got '…'`): count them, then replace the message with a neutral one (derived error text, not user data) — cost if wrong: an old error loses its detail.
 Follow-up minors (deferred): the cut-off caption test pins a fixture-derived character position; `invalid: type[Exception]` could be a Callable.
+Task 14 Step 1 (2026-10-17 04:31 KST): after the P2a window; P2a Task 11 closed (dac2a95 on feat/p2b); both worktrees clean; loopi-p2 on feat/phase2 @ 54e22f3, fast-forward to feat/p2b possible (42 commits). Owner yes = "okie a vaf b" (2026-10-16).
+Task 14 Step 2: P2a baseline p95 (last 24 h) video→caption 1.2 min (n=131), audio→transcript 1.2 min (n=1 436); free: 12 580 MB available, swap 4 744 / 6 143 MB used; pg_dump → ~/loopi-backups/p2a-2026-10-17-0431.dump (8.0 MB).
+Task 14 Step 3: ROLLBACK=54e22f332ba6046b7381ff50d52572c1dd3fe907; feat/phase2 fast-forwarded to dac2a95; 4 models present.
+Task 14 Step 3: `up -d --build` at 04:33 KST — api + worker recreated (models unchanged: MAX_LOADED_MODELS 2, NUM_PARALLEL 1; worker concurrency 3), all healthy; migrations 003_understanding + 004_retention_files applied; no `retention` setting row (off). smoke.sh (SMOKE_ANALYSIS_TIMEOUT=600) PASSED, smoke device 01M5337XQZG7FC5QR4VEQ98S2M revoked, its data removed.
+Task 14 extra ruling (caption_error scrub): 0 keyframe rows with caption_error on the live DB — nothing to scrub.
+Task 14 Step 4: /, /hours, /search?q=test, /settings, /pipeline → 200; 0 errors/tracebacks in worker/api logs in the first 3 min. Browser check by the owner pending (they are away).
+Task 14 Step 5 (05:29 KST): 49 chapters for 2026-10-14/15/16, all closed and summarised by ollama:qwen3:4b; build_chapters 24 s / 825 s / 592 s; 0 failed jobs, 0 day_job_error. Live audio→transcript p95 0.1 min during the builds. No recap stored yet.
+Task 14 Step 7 THRESHOLD BREACH (05:30 KST): while write_recap (2026-10-15, qwen3:8b 6.7 GB) ran, qwen3:4b (3.9 GB) was still loaded from the last summary (1 min keep-alive) → available 661–714 MB, swap 6 143 / 6 143 MB (100 %, +3.8 GB since 05:08). No OOM kill, no container restart.
+Task 14 (05:31): stopped the worker (the recap's request was cancelled; job 9324 left `doing`), `ollama stop` both text models → 13.1 GB available, swap 2.4 GB.
+- Ruling: roll back to P2a now, as the plan prescribes on a memory breach without the owner's other choice (owner asleep; LOOPI_LLM_NUM_CTX=4096 alone would still load 4b + 8b together) — cost if wrong: P2b's pages and chapters wait for the owner's decision; nothing is lost (chapters stay in their tables, planners re-create the jobs).
+Task 14 rollback (05:33 KST): 13 P2b job rows deleted; /home/soul/loopi-p2 detached at 54e22f3 (feat/phase2 stays at dac2a95); up -d --build → api/worker healthy; backlog from the 2-min worker stop analysed; 0 todo/doing/failed jobs; / and /pipeline 200; smoke.sh PASSED (device 01M536PXCJYAWB3BN3X164T7T0 revoked). Live = P2a again; P2b tables and 49 chapters kept.
+Task 14 root cause: the `llm` lock serialises chapter and recap jobs, but the 1-min text keep-alive leaves qwen3:4b loaded when the recap loads qwen3:8b (MAX_LOADED_MODELS 2 lets both stay): 3.9 + 6.7 GB on top of ≈ 3.7 GB used by the host → < 1 GB free. Chat (api, qwen3:8b, not under the lock — R28) during a chapter build hits the same pair. LOOPI_LLM_NUM_CTX=4096 alone does not prevent the pair.
+Task 14: waiting for the owner — options put to the owner: (A, recommended) one text model for every text task (chapter_summary → qwen3:8b in providers.yaml; peak ≈ 6.7 + ≤ 2.9 GB); (B) every text task on qwen3:4b; (C) stay on P2a. Deploy again only on the owner's word (spec §… providers example lists qwen3:4b for chapter_summary).
+Task 14: owner decision 2026-10-17 08:59 — "okie, dùng chung qwen3:8b, push lên github": option A. Spec D23 (one text model): chapter_summary → qwen3:8b in DEFAULT_CONFIG and deploy/providers.yaml; README/compose memory notes; tests updated test-first (5 RED → GREEN); suite 696 passed + 1 skipped, 99 %; commit 6a46d1d on feat/p2b.
+- Ruling: D23 is numbered after P2c's D21/D22 (feat/p2c) so the spec merge does not collide — cost if wrong: a gap D21–D22 on feat/p2b until the merge.
+Task 14 redeploy (08:59–09:00 KST): DB dump ~/loopi-backups/p2a-rollback-2026-10-17-0859.dump; /home/soul/loopi-p2 back on feat/phase2, fast-forwarded to 6a46d1d (D23); `up -d --build` → healthy; smoke.sh PASSED (device 01M53JHK8B33DJ764HMB7YVV4B revoked). The planner deferred recaps for 2026-10-15 (running at 09:00) and 2026-10-16. Memory watcher (30 s, thresholds: available < 1000 MB or swap +1 GB) running.
+Pushed 2026-10-17 (owner "push lên github"): feat/p2b 80a88b8..6a46d1d, feat/phase2 54e22f3..6a46d1d, feat/p2c 2c2eb6d..31d5b84 (diffs scanned: only test fake keys, empty ANTHROPIC_API_KEY in .env.example, no LAN IPs, no media).
+Task 14 Step 7 (09:00–09:10, recaps 2026-10-15 and 2026-10-16 on qwen3:8b while captions run): available 1 580–1 900 MB while qwen3:8b + minicpm-v were loaded (models container 9.6 GiB: llama-server 6.4 GB + 3.25 GB), 5.7 GB between recaps; swap 2 401 → 3 441 MB (+1 040 MB, most of it at 09:02 when qwen3:8b loaded); vmstat si/so 0–62 KB/s (no thrashing). Recap 2026-10-15: 826 chars in ≈ 5 min; 2026-10-14's recap (312 chars) was stored by the 05:30 run.
+- Ruling: stay on P2b — the swap-growth line was crossed by 16 MB through a one-time page-out at model load, available never went below 1.5 GB and the host is not swapping (si/so < 100 KB/s); the watcher restarts with a fresh baseline and stops the worker if available < 1 GB or swap grows another 1 GB — cost if wrong: a later peak (chat during a recap) swaps; the watcher catches it and the owner can still pick LOOPI_LLM_NUM_CTX=4096 or a rollback.
+Task 14 (09:11): swap 3 637 MB (+1.2 GB since 09:00), available ≈ 1.5 GB during text runs; Claude Code's memory-pressure reaper killed the watcher and the chat timing run. Owner asked (AskUserQuestion) → "hãy tắt hết các dịch vụ khác ko liên quan để save RAM, sau đó giữ nguyên và theo dõi tiếp".
+Task 14 (09:15): stopped (not removed) the owner's erp-nemo-platform services: containers nemo-base, nemo-whisper, nemo-minio, nemo-control-db (`docker stop`; restart=unless-stopped, so they stay stopped) and PM2 apps nemo-web, nemo-provisioner, nemo-telegram-bridge, nemo-scheduler, cf-tunnel-2 (`pm2 stop`; not saved, so a reboot's pm2 resurrect starts them again). Kept: cloudflared.service (remote access), desktop apps, other Claude sessions. Restore: `docker start nemo-base nemo-whisper nemo-minio nemo-control-db && pm2 start nemo-web nemo-provisioner nemo-telegram-bridge nemo-scheduler cf-tunnel-2`. Swap 3 662 → 2 639 MB.
+Task 14 Step 5/6 (09:19): recaps 2026-10-14 (312 chars), 2026-10-15 (826), 2026-10-16 (1 162) by ollama:qwen3:8b; chapters 10-14 2/2, 10-15 28/28, 10-16 19/19, 10-17 3/3 summarised; 0 failed jobs, 0 day_job_error. Live latency during the recap catch-up (since 09:00): video→caption p95 2.7 / max 3.1 min (n=22), audio→transcript p95 2.0 / max 2.6 min (n=20) — inside 15 min. Watcher until 10:40 (covers the 10:05 chapter build). Chat timing run was reaped by Claude Code; not re-run (owner can check streaming in the browser).
+Task 14 Step 7 (streaming): owner asked a question in the browser — "Hiện dần từng phần" (answer streams through Caddy; no Caddyfile change). Two POST /chat 200 via the proxy in the api log.
+Task 14 Step 8: nothing is older than 7 days yet (first recordings 2026-10-14; 3 444 video 19.29 GB, 3 665 audio 0.58 GB; 228 GB free, ≈ 6.4 GB video/day). Owner: "Chưa bật" → retention stays OFF.
+- Ruling: remind the owner about retention in about two weeks (after the golden set is labelled) — cost if wrong: disk fills in ≈ 35 days if nobody decides.
+Task 14 Step 9: HANDOFF.md rewritten once (P1c waivers, D19, P2a, D20, P2b + rollback + D23, live stack location, branches, next); ledger copied. Task 14: complete.
