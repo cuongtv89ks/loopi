@@ -80,7 +80,7 @@ def _migrate() -> int:
     return 0
 
 
-def _serve() -> int:  # pragma: no cover - blocks serving; exercised by deploy/smoke.sh
+def _serve() -> int:
     import logging
 
     import uvicorn
@@ -88,13 +88,18 @@ def _serve() -> int:  # pragma: no cover - blocks serving; exercised by deploy/s
     from .app import create_app
     from .config import Settings
     from .db import migrate
+    from .logs import uvicorn_log_config
 
     # The MCP SDK calls logging.basicConfig(INFO) when the root logger has no handler; configure it first so the api
     # keeps logging what it logged before (warnings and errors; uvicorn keeps its own access log).
     logging.basicConfig(level=logging.WARNING)
     settings = Settings()
     migrate(settings.database_url)
-    uvicorn.run(create_app(settings), host="0.0.0.0", port=8000, proxy_headers=False)
+    # uvicorn keeps its access log (method, path, status) but never the query string: GET /search?q=... carries the
+    # owner's question. The filter has to come in through log_config, which uvicorn applies with dictConfig.
+    uvicorn.run(
+        create_app(settings), host="0.0.0.0", port=8000, proxy_headers=False, log_config=uvicorn_log_config()
+    )
     return 0
 
 
