@@ -481,3 +481,23 @@ async def captioned_keyframe(pool, settings, device_id: str, ts: dt.datetime, *,
             (Jsonb(caption or DEFAULT_CAPTION), model, kf_id),
         )
     return kf_id
+
+
+def make_mp4(path, seconds: float = 6, fps: int = 2, size: str = "320x180", gop: int = 4):
+    """A video segment as the brain keeps it: H.264 at ``fps`` in an MP4 (lavfi testsrc2), a keyframe every ``gop``
+    frames exactly (no scene-cut keyframes)."""
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg is required for video tests")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size={size}:rate={fps}",
+         "-t", str(seconds), "-c:v", "libx264", "-g", str(gop), "-x264-params", "scenecut=0", "-pix_fmt", "yuv420p",
+         "-movflags", "+faststart", str(path)],
+        check=True,
+    )
+    return path
