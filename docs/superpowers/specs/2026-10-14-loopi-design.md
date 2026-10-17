@@ -2,7 +2,7 @@
 
 - **Ngày:** 2026-10-14
 - **Trạng thái:** Draft, chờ review
-- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18); 2026-10-15: agent khuếch đại âm thanh (có bộ giới hạn đỉnh) trước khi encode, brain chuẩn hoá mức âm thanh trước ASR và khi phát lại (D19); 2026-10-16: brain giữ audio thô 7 ngày như video thay vì xoá ngay sau khi có transcript, số ngày chỉnh được trong trang Cài đặt (D20); 2026-10-16: dữ liệu của bộ đánh giá (golden set) nằm ngoài git, trong thư mục dữ liệu và database của brain, người dùng tự gán nhãn trên trang Đánh giá, repo chỉ giữ code và các con số kết quả (D21); recall@5 trong tiêu chí nghiệm thu P2 là hit@5, quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh (D22)
+- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18); 2026-10-15: agent khuếch đại âm thanh (có bộ giới hạn đỉnh) trước khi encode, brain chuẩn hoá mức âm thanh trước ASR và khi phát lại (D19); 2026-10-16: brain giữ audio thô 7 ngày như video thay vì xoá ngay sau khi có transcript, số ngày chỉnh được trong trang Cài đặt (D20); 2026-10-16: dữ liệu của bộ đánh giá (golden set) nằm ngoài git, trong thư mục dữ liệu và database của brain, người dùng tự gán nhãn trên trang Đánh giá, repo chỉ giữ code và các con số kết quả (D21); recall@5 trong tiêu chí nghiệm thu P2 là hit@5, quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh (D22); 2026-10-17: tóm tắt chương, recap và chat dùng chung một model chữ `qwen3:8b` (D23); MCP mặc định không gửi ảnh keyframe, có công tắc riêng trong Cài đặt (D24); vlog chỉ tua nhanh những giờ có hoạt động (D25)
 - **Phạm vi tài liệu:** kiến trúc tổng thể và thiết kế cho cả 3 dự án con (`os/`, `agent/`, `brain/`). Mỗi phase sẽ có implementation plan riêng.
 
 ---
@@ -81,6 +81,8 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D21 | Bộ đánh giá chất lượng AI | Dữ liệu của bộ đánh giá (golden set) không vào git: các đoạn audio thật, bản sao keyframe, transcript chuẩn và câu hỏi nằm trong thư mục dữ liệu của brain (`/srv/loopi/eval` trong container, đặt bằng `LOOPI_EVAL_DIR`) và trong database của brain. Repo chỉ chứa code đánh giá (`brain/src/loopi_brain/evaluation/`) và các con số kết quả (WER, CER, điểm caption, recall), không chứa transcript hay câu hỏi nào. Người dùng tự gán nhãn trên trang "Đánh giá" của brain: nghe từng đoạn audio đã chuẩn hoá mức âm thanh rồi sửa transcript thành bản chuẩn (hoặc đánh dấu "không có lời nói"), chấm điểm caption của keyframe, viết câu hỏi và chọn moment đúng. Job lưu trữ không xoá bản sao trong bộ đánh giá; "Quên khoảng thời gian" xoá cả các mẫu đánh giá lấy từ khoảng đó |
 | D22 | Cách đo nghiệm thu P2 | "Recall@5 ≥ 70%" ở mục 14 là **hit@5**: một câu hỏi được tính là tìm thấy khi ít nhất một khoảnh khắc đúng của nó nằm trong 5 kết quả đầu. Báo cáo ghi thêm recall@5 có giới hạn (số khoảnh khắc đúng tìm được trong 5 kết quả đầu chia cho min(n, 5), n là số khoảnh khắc đúng của câu hỏi), hit@10 và MRR. Quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh; báo cáo ghi cả WER lẫn CER cho mọi ngôn ngữ. Mọi con số kèm số mẫu và khoảng tin cậy 95% |
 | D23 | Một model chữ | Tóm tắt chương, recap và chat dùng chung một model chữ cục bộ (`qwen3:8b`) thay vì `qwen3:4b` cho tóm tắt chương: đo ngày 2026-10-17, recap nạp `qwen3:8b` (6,7 GB) khi `qwen3:4b` (3,9 GB) vẫn còn trong RAM sau lượt tóm tắt cuối, máy chỉ còn 661 MB trống và swap đầy. Với một model chữ, lúc cao nhất Ollama giữ `qwen3:8b` cùng một model ảnh hoặc embedding (≈ 9,6 GB). Tóm tắt chương chậm hơn khoảng gấp đôi |
+| D24 | Ảnh qua MCP | `get_moment` mặc định chỉ trả chữ (caption, transcript); ảnh keyframe chỉ được gửi khi người dùng bật công tắc "Cho MCP gửi ảnh keyframe" trong Cài đặt (mặc định tắt), và khi đó ảnh được thu nhỏ còn 320 px. Lý do: client MCP (Claude Code) gửi kết quả tool lên model trên cloud, trong khi ảnh và audio không bao giờ lên cloud theo mặc định (mục 9.3, 11). Ảnh của mẫu đánh giá (D21) không bao giờ đi qua MCP |
+| D25 | Vlog tua nhanh giờ có hoạt động | Phần tua nhanh của vlog chỉ lấy những đoạn ghi có khoảnh khắc ở gần (keyframe đổi cảnh, lời nói, marker); bỏ qua quãng tối, đứng yên hoặc đang Pause. Tổng thời lượng 60–90s; ngày ít hoạt động thì ngắn hơn nhưng không dưới 20s; ngày không có hoạt động thì không dựng vlog |
 
 ---
 
@@ -359,7 +361,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 
 ### 10.3 Vlog timelapse
 - Ứng viên highlight gồm: marker ±30s, keyframe có `notable=true`, và những đoạn hội thoại dày đặc.
-- LLM viết kịch bản dưới dạng JSON. ffmpeg dựng: cả ngày tua nhanh 60–90s, chèn ảnh tĩnh highlight có hiệu ứng Ken Burns, phụ đề lấy từ transcript, kèm vài đoạn âm thanh gốc.
+- LLM viết kịch bản dưới dạng JSON. ffmpeg dựng: những giờ có hoạt động trong ngày tua nhanh 60–90s (D25), chèn ảnh tĩnh highlight có hiệu ứng Ken Burns, phụ đề lấy từ transcript, kèm vài đoạn âm thanh gốc.
 
 ### 10.4 Tìm kiếm và hỏi đáp
 1. LLM trích bộ lọc thời gian từ câu hỏi (structured output).
@@ -373,7 +375,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
   - `search_memories(query: str, start?: datetime, end?: datetime, limit?: int = 10)`: trả về moment kèm trích dẫn
   - `get_timeline(date: date)`: trả về chương và các mốc
   - `get_day_recap(date: date)`
-  - `get_moment(moment_id: str)`: trả text kèm ảnh keyframe (MCP image content)
+  - `get_moment(moment_id: str)`: trả text, kèm ảnh keyframe (MCP image content) khi đã bật trong Cài đặt (D24)
   - `list_commitments(status?: open|done|dismissed)`
 
 ### 10.6 Web UI (Jinja + HTMX, chat stream qua SSE)
