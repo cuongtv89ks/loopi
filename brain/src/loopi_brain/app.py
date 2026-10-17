@@ -13,6 +13,7 @@ from . import media
 from .api.device_routes import router as device_router
 from .config import Settings
 from .db import make_pool
+from .mcp import server as mcp_server
 from .pipeline.jobs import open_jobs
 from .providers.ollama import DEFAULT_TIMEOUT
 from .web.day_routes import router as day_router
@@ -52,7 +53,8 @@ def create_app(
                 requeue = asyncio.create_task(media.requeue_stored(active_pool, settings))
                 _app.state.requeue_task = requeue
                 try:
-                    yield
+                    async with _app.state.mcp.session_manager.run():  # the MCP server's task group (spec §10.5)
+                        yield
                 finally:
                     requeue.cancel()
                     try:
@@ -84,6 +86,7 @@ def create_app(
     app.include_router(search_router)
     app.include_router(settings_router)
     app.include_router(eval_router)
+    app.state.mcp = mcp_server.mount(app, mcp_server.Deps(pool=active_pool, settings=settings, llm=llm))
     settings.media_root.mkdir(parents=True, exist_ok=True)
     app.mount("/media", StaticFiles(directory=settings.media_root), name="media")
     app.mount(

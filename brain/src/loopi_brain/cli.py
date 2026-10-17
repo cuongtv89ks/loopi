@@ -74,12 +74,17 @@ def _migrate() -> int:
 
 
 def _serve() -> int:  # pragma: no cover - blocks serving; exercised by deploy/smoke.sh
+    import logging
+
     import uvicorn
 
     from .app import create_app
     from .config import Settings
     from .db import migrate
 
+    # The MCP SDK calls logging.basicConfig(INFO) when the root logger has no handler; configure it first so the api
+    # keeps logging what it logged before (warnings and errors; uvicorn keeps its own access log).
+    logging.basicConfig(level=logging.WARNING)
     settings = Settings()
     migrate(settings.database_url)
     uvicorn.run(create_app(settings), host="0.0.0.0", port=8000, proxy_headers=False)
