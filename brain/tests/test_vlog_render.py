@@ -109,3 +109,13 @@ def test_media_checks_read_headers_only(tmp_path):
     (tmp_path / "x.mp4").write_bytes(b"\x00\x00\x00\x08free")
     with pytest.raises(render.InvalidMedia):
         render.video_track(tmp_path / "x.mp4")
+
+
+@pytest.mark.parametrize("blob", [
+    b"OggS" + b"\x00" * 16,  # 20 bytes: the segment count at byte 26 is missing
+    b"OggS" + b"\x00" * 22 + b"\x01\x00" + b"OpusHead\x01\x01",  # pre-skip bytes cut off
+])
+def test_a_truncated_opus_header_is_invalid_media_not_a_crash(tmp_path, blob):
+    (tmp_path / "t.ogg").write_bytes(blob)
+    with pytest.raises(render.InvalidMedia):
+        render.ogg_opus_duration(tmp_path / "t.ogg")

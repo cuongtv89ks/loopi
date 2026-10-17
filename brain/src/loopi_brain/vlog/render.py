@@ -182,10 +182,13 @@ def ogg_opus_duration(path: Path) -> float:
         head = f.read(4096)
         if head[:4] != b"OggS":
             raise InvalidMedia(f"{path}: not Ogg")
-        body = 27 + head[26]
-        if head[body:body + 8] != b"OpusHead":
-            raise InvalidMedia(f"{path}: not Opus")
-        pre_skip = struct.unpack("<H", head[body + 10:body + 12])[0]
+        try:
+            body = 27 + head[26]
+            if head[body:body + 8] != b"OpusHead":
+                raise InvalidMedia(f"{path}: not Opus")
+            pre_skip = struct.unpack("<H", head[body + 10:body + 12])[0]
+        except (IndexError, struct.error) as exc:  # cut inside the header: skip the clip, not the vlog
+            raise InvalidMedia(f"{path}: truncated Ogg header") from exc
         size = f.seek(0, 2)
         f.seek(max(0, size - 65536))
         tail = f.read()
