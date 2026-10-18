@@ -34,7 +34,7 @@
     <button hx-post="/devices/{{ d.id }}/revoke" hx-confirm="Thu hồi thiết bị này?">Thu hồi</button>
   </div>
   <div id="result-{{ d.id }}"></div>
-  <form hx-post="/devices/{{ d.id }}/update" hx-target="#update-{{ d.id }}"
+  <form hx-post="/devices/{{ d.id }}/update" hx-target="#update-{{ d.id }}" hx-disinherit="hx-confirm"
         hx-confirm="Cài bản đã chọn? Thiết bị ngừng ghi khoảng 1 phút lúc khởi động lại.">
     <select name="bundle" hx-get="/devices/update-notes" hx-trigger="change" hx-target="#notes-{{ d.id }}"
             {% if busy %}disabled{% endif %}>

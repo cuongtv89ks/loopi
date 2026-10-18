@@ -11,6 +11,6 @@
   <code>{{ stem }}</code>
   {% endif %}
   {% if error %}<p class="err">{{ error }}</p>{% endif %}
-  <button hx-post="/versions/{{ stem }}/delete" hx-target="#bundle-{{ stem }}" hx-swap="outerHTML"
+  <button hx-post="/versions/{{ stem }}/delete" hx-target="closest .card" hx-swap="outerHTML"
           hx-confirm="Xoá {{ stem }}?">Xoá</button>
 </div>

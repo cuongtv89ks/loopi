@@ -155,3 +155,21 @@ async def test_revoked_and_silent_devices_are_not_listed_as_running(client, pool
     r = await client.get("/versions")
     assert "Đang chạy trên: không thiết bị nào" in r.text
     assert "loopi-" + revoked["device_id"][-4:].lower() not in r.text
+
+
+async def test_previewing_notes_does_not_ask_for_the_install_confirmation(client, pool, pki_settings, ota_dir):
+    # hx-confirm on the form would be inherited by the select's hx-get and ask "Cài bản đã chọn?" on a preview.
+    await paired_device(pool, pki_settings)
+    html = (await client.get("/devices")).text
+    form = html[html.index("<form hx-post"):html.index("</form>")]
+    assert 'hx-disinherit="hx-confirm"' in form and "hx-confirm=" in form
+    assert '<select name="bundle" hx-get="/devices/update-notes"' in form
+
+
+async def test_delete_buttons_target_their_card_not_an_id_with_dots(client, pki_settings, ota_dir):
+    # "#bundle-loopi-dev-2026.10.21-a1b2c3d" is not a valid CSS selector (the dots), so htmx could not find it.
+    (ota_dir / "loopi-dev-orphan.raucb").write_bytes(b"x")
+    html = (await client.get("/versions")).text
+    assert html.count('hx-target="closest .card"') == 2  # the bundle card and the unusable card
+    assert 'hx-target="#bundle-' not in html
+    assert f'id="bundle-{STEM}"' in html and 'id="bundle-loopi-dev-orphan"' in html

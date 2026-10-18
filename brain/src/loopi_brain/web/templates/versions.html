@@ -13,7 +13,7 @@
 {% for u in unusable %}
 <div class="card" id="bundle-{{ u.stem }}">
   <code>{{ u.file }}</code>: {{ u.reason }}
-  <button hx-post="/versions/{{ u.stem }}/delete" hx-target="#bundle-{{ u.stem }}" hx-swap="outerHTML"
+  <button hx-post="/versions/{{ u.stem }}/delete" hx-target="closest .card" hx-swap="outerHTML"
           hx-confirm="Xoá {{ u.file }}?">Xoá</button>
 </div>
 {% endfor %}
