@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # marker file volume.MARKER, so an unmounted disk never sends recordings to the empty mount point beneath it.
     media_require_marker: bool = False
     pki_dir: Path = Path("/srv/loopi/pki")
+    # OTA bundles (P4a design §8): signed RAUC bundles and their JSON descriptions, put here by
+    # os/scripts/publish-bundle.sh; served to paired devices at GET /v1/ota/{bundle}.
+    ota_dir: Path = Path("/srv/loopi/ota")
     tz: str = "Asia/Seoul"
     min_free_bytes: int = 2 * 1024**3
     max_item_bytes: int = 64 * 1024**2

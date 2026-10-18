@@ -48,6 +48,7 @@ def settings(database_url, tmp_path):
         media_root=tmp_path / "media",
         pki_dir=tmp_path / "pki",
         eval_dir=tmp_path / "eval",
+        ota_dir=tmp_path / "ota",
         min_free_bytes=0,
     )
 

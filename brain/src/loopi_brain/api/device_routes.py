@@ -2,10 +2,10 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
-from .. import devices, items, media, pki
+from .. import bundles, devices, items, media, pki
 from ..pipeline import dispatch
 from .device_auth import check_agent_version, current_device
 
@@ -81,6 +81,16 @@ async def put_item(
         if header.kind == "video":
             background.add_task(media.remux_item, request.app.state.pool, settings, header.id)
     return JSONResponse(ack, status_code=status)
+
+
+@router.get("/v1/ota/{bundle}", dependencies=[Depends(check_agent_version)])
+async def get_bundle(bundle: str, request: Request, device: dict = Depends(current_device)) -> FileResponse:
+    """A signed update bundle for a paired device (P4a design §7). Starlette answers Range requests with 206."""
+    ota_dir = request.app.state.settings.ota_dir
+    found = bundles.find(ota_dir, bundle)
+    if found is None:
+        raise HTTPException(status_code=404, detail="unknown bundle")
+    return FileResponse(ota_dir / found.name, media_type="application/octet-stream")
 
 
 ULID_PATTERN = r"^[0-9A-HJKMNP-TV-Z]{26}$"

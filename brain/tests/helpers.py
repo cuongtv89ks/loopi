@@ -501,3 +501,38 @@ def make_mp4(path, seconds: float = 6, fps: int = 2, size: str = "320x180", gop:
         check=True,
     )
     return path
+
+
+def write_bundle(
+    ota_dir,
+    version: str = "2026.10.21-a1b2c3d",
+    variant: str = "dev",
+    body: bytes = b"rauc-bundle-bytes",
+    built_at: str = "2026-10-21T01:00:00Z",
+    commit: str = "c" * 40,
+    notes: list | None = None,
+    notes_base: str | None = None,
+    **override,
+) -> dict:
+    """Publish a fake OTA bundle (the .raucb and its JSON description) the way os/scripts/publish-bundle.sh does."""
+    import hashlib
+    import json
+
+    ota_dir.mkdir(parents=True, exist_ok=True)
+    name = f"loopi-{variant}-{version}"
+    (ota_dir / f"{name}.raucb").write_bytes(body)
+    description = {
+        "bundle": f"{name}.raucb",
+        "version": version,
+        "variant": variant,
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "size": len(body),
+        "built_at": built_at,
+        "commit": commit,
+        "notes_base": notes_base,
+        "notes": [] if notes is None else notes,
+        "notes_truncated": False,
+        **override,
+    }
+    (ota_dir / f"{name}.json").write_text(json.dumps(description))
+    return description
