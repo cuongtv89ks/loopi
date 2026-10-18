@@ -169,6 +169,36 @@ async def test_heartbeat_records_the_ota_report(client, pool, pki_settings, ota_
     assert row["state"] == "rebooting"
 
 
+async def test_heartbeat_expires_a_stale_update_before_delivering_it(client, pool, pki_settings, ota_dir):
+    """A device that returns after hours must not be handed an update the brain gave up on (nobody called expire_stale)."""
+    dev = await paired_device(pool, pki_settings)
+    command_id = await ota.request_update(pool, ota_dir, dev["device_id"], NAME)
+    await _age(pool, 31)
+    r = await client.post("/v1/heartbeat", json=HEARTBEAT, headers=auth_headers(dev["fingerprint"]))
+    assert r.status_code == 200, r.text
+    assert r.json()["commands"] == []
+    (row,) = await fetch_all(pool, "SELECT id, state, error, finished_at FROM ota_update")
+    assert (row["id"], row["state"], row["error"]) == (command_id, "failed", ota.TIMEOUT_ERROR)
+    assert row["finished_at"] is not None
+    assert await fetch_all(pool, "SELECT id FROM device_command WHERE type = 'update'") == []
+
+
+async def test_heartbeat_with_a_fresh_report_does_not_expire_that_update(client, pool, pki_settings, ota_dir):
+    """The device's own report refreshes updated_at first, so a live device is never expired by its own heartbeat."""
+    dev = await paired_device(pool, pki_settings)
+    command_id = await ota.request_update(pool, ota_dir, dev["device_id"], NAME)
+    await _age(pool, 31)
+    body = {**HEARTBEAT, "acked_command_ids": [command_id],
+            "ota": {"command_id": command_id, "state": "downloading", "version": "2026.10.21-a1b2c3d", "error": None}}
+    r = await client.post("/v1/heartbeat", json=body, headers=auth_headers(dev["fingerprint"]))
+    assert r.status_code == 200, r.text
+    (row,) = await fetch_all(pool, "SELECT state, error, finished_at FROM ota_update")
+    assert row == {"state": "downloading", "error": None, "finished_at": None}
+    # never expired and revived: the command the device just acked is still on record, acked
+    (cmd,) = await fetch_all(pool, "SELECT id, acked_at FROM device_command WHERE type = 'update'")
+    assert cmd["id"] == command_id and cmd["acked_at"] is not None
+
+
 async def test_recent_updates_are_per_device_newest_first(pool, pki_settings, ota_dir):
     device = await _device(pool, pki_settings)
     ids = []

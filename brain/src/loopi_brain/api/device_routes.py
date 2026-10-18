@@ -155,10 +155,12 @@ class HeartbeatResponse(BaseModel):
 async def heartbeat(
     body: Heartbeat, request: Request, device: dict = Depends(current_device)
 ) -> HeartbeatResponse:
+    pool = request.app.state.pool
     status = body.model_dump(exclude={"acked_command_ids"})
-    pending = await devices.record_heartbeat(
-        request.app.state.pool, device["id"], status, body.acked_command_ids
-    )
+    # Order matters: the device's own report first (it refreshes updated_at, so a live device is never expired by its
+    # own heartbeat), then give up on silent updates, so an update the brain abandoned is never handed out below.
     if body.ota is not None:
-        await ota.record_report(request.app.state.pool, device["id"], body.ota.model_dump())
+        await ota.record_report(pool, device["id"], body.ota.model_dump())
+    await ota.expire_stale(pool)
+    pending = await devices.record_heartbeat(pool, device["id"], status, body.acked_command_ids)
     return HeartbeatResponse(commands=[Command(**row) for row in pending])
