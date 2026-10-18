@@ -1,4 +1,4 @@
-# Loopi — handoff (2026-10-17)
+# Loopi — handoff (2026-10-18)
 
 Context memory for whoever continues this project, whether that is the owner or a Claude Code session on the brain PC
 (Linux). Read this file first, then `CLAUDE.md`, then the plan you are about to execute.
@@ -17,6 +17,9 @@ Context memory for whoever continues this project, whether that is the owner or 
 | P2c: evaluation + P2 acceptance | `plans/2026-10-16-p2c-evaluation-acceptance.md` | Tasks 1–10 complete and reviewed; Tasks 11–14 (deploy, the owner labels, runs, report) in progress | `feat/p2c` |
 | P3 design (MCP + vlog) | `specs/2026-10-17-p3-mcp-vlog-design.md` | approved 2026-10-17; D24 (MCP pictures off by default), D25 (vlog: active hours only) | `feat/p3` |
 | P3a: read-only MCP server | `plans/2026-10-17-p3a-mcp-server.md` | **complete**; live since 2026-10-17 16:47 KST at `/mcp`; Claude Code on the brain PC registered as `loopi` (`--scope user`, token in `~/.config/loopi/mcp-token`), the five tools called OK; pictures off (D24); the api access log no longer records query strings | `feat/p3a` → `feat/phase2` |
+| P3b: daily vlog | `plans/2026-10-17-p3b-vlog.md` | **complete**; live since 2026-10-18 07:21 KST; the first run caught up 10-14 … 10-17. Acceptance (§14: a vlog made by itself every evening) is checked at 08:00 on 10-19, 10-20 and 10-21, then the owner watches one | `feat/p3b` → `feat/phase2` |
+| Media on their own disk | — (bounded change, owner's yes 2026-10-18) | **on `feat/phase2`, not in use**: `LOOPI_MEDIA_DIR` + a required `.loopi-media` marker; with the marker missing the brain writes and forgets nothing. The 1 TB HDD dropped off the bus during the first copy (§3, Storage); media stay on the SSD | `feat/media-volume` e4861ce, bef6df5 → `feat/phase2` |
+| P3c decisions (multi-camera) | `specs/2026-10-18-p3c-multicam-decisions.md` | the owner's decisions only (agent-per-camera bridge + MediaMTX, Imou and two iPhones, all four record audio); design, spec and plan come **after P4** | `feat/p3b` 400e4b1 |
 
 All plan paths are under `docs/superpowers/`. Execution ledgers are under `docs/superpowers/ledgers/`. They record every
 ruling with its cost if wrong, every deferred finding, and the pre-flight scans. The P1c ledger is still only in the
@@ -79,8 +82,26 @@ Deploy notes:
   the recap prompt budget must shrink, test-first).
 - **First results.** 52 chapters (10-14 … 10-17), recaps for 10-14/15/16 (each ≈ 5 min on `qwen3:8b`), 0 failed
   jobs. Latency while the recaps caught up: video→caption p95 2.7 min, audio→transcript p95 2.0 min.
-- **Retention.** Nothing is older than 7 days yet. The disk has 228 GB free at ≈ 6.4 GB of video a day, ≈ 35 days of
-  room. The owner said "not yet". Ask again once the golden set is labelled, about two weeks after 2026-10-17.
+- **Retention.** Still off (D20: 7/7 days once enabled); see Storage below.
+
+**P3b (since 2026-10-18 07:21 KST).** The vlog planner runs every 15 minutes and builds yesterday's vlog after 23:30
+(script on `qwen3:8b`, then the ffmpeg render). Backup before the deploy: `~/loopi-backups/p3a-2026-10-18-0720.dump`;
+rollback commit 22f523c. Ledger: `docs/superpowers/ledgers/p3b-progress.md`.
+
+**Storage (2026-10-18).**
+- One Pi camera at 1080p/2 fps writes **≈ 15 GB a day**. Each segment is kept twice: raw H.264 ≈ 7.5 GB and its
+  `-c copy` MP4 for playback ≈ 7.3 GB. Audio adds ≈ 240 MB.
+- The SSD had 202 GB free (media 58 GB). With retention off it **fills around 2026-10-31**; uploads then get 507 and
+  the device queues. **Ask the owner by about 10-25**: enable retention, or keep only one copy of each segment.
+- Four cameras (P3c) at this rate need ≈ 60 GB a day: 7 days of retention is ≈ 420 GB, more than the SSD holds. The
+  P3c design must halve this (one copy per segment) or shorten retention.
+- **The 1 TB HDD is not usable as is.** On 2026-10-18 the owner formatted it (ext4 `loopi-media`, fstab `nofail`,
+  `/mnt/loopi-media`). During the first copy, after ≈ 52 GB of sustained writes at 16:05, it stopped answering: the
+  NCQ writes timed out, four link resets failed, the kernel disabled it and ext4 went read-only. The SATA port runs
+  `min_power_with_partial` link power management, and the drive is SMR; no SMART report was taken. The owner chose to
+  stay on the SSD. The live `deploy/.env` has neither `LOOPI_MEDIA_DIR` nor the marker setting.
+- The api and worker images were rebuilt at e4861ce, but their containers still run the d166a2a build. The next
+  `up -d` picks the new images up with no change in behaviour (the defaults keep media under `LOOPI_DATA_DIR`).
 
 **Rollback P2b → P2a.**
 
@@ -106,27 +127,31 @@ model (`qwen3:8b`). D21/D22 are on `feat/p2c`; D23 is on `feat/p2b`/`feat/phase2
 
 - `main`: P1, at 7021705.
 - `feat/phase1`: P1 + audio level D19 (agent and OS).
-- `feat/phase2`: P2a + P2b, the live branch.
+- `feat/phase2`: the live branch: P2a + P2b + P2c (Tasks 1–10) + P3a + P3b + the media-volume change.
 - `feat/p2b` / `feat/p2c`: the P2b and P2c work branches (worktrees `/home/soul/loopi-p2b`, `/home/soul/loopi-p2c`).
-- `feat/p3` / `feat/p3a`: P3 (design, P3a MCP; P3b vlog next) in the worktree `/home/soul/loopi-p3`.
+- `feat/p3` / `feat/p3a` / `feat/p3b` / `feat/media-volume`: P3 work in the worktree `/home/soul/loopi-p3`.
 
-All are pushed to GitHub. Pushing is outward-facing, so ask the owner first.
+**Not pushed yet:** `feat/phase2` (20 commits ahead of GitHub), `feat/p2c` (4), `feat/p3b`, `feat/media-volume`.
+Pushing is outward-facing, so ask the owner first.
 
 ## 6. Next
 
-1. **P3b (vlog):** write its plan from the P3 design §4, then execute (SDD).
-2. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
+1. **P4** (spec §14: prod image without SSH, WiFi by QR with a captive-portal fallback, OTA through RAUC with
+   automatic rollback, BLE presence that stops audio within 60 s): brainstorm, spec, plan, then SDD.
+2. **P3b acceptance:** the vlog of 10-18, 10-19 and 10-20 appears by itself; the owner watches one.
+3. **Storage decision by ≈ 10-25** (§3, Storage).
+4. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
    - the owner labels about 22 clips, 30 keyframes and 25 questions;
    - a baseline run, twice, for the noise floor;
    - tuning backed by numbers and the owner's yes;
    - a final run with no overrides;
    - a fresh 24 h CPU window;
    - the acceptance report, numbers only.
-3. **P4.**
+5. **P3c (multi-camera)** after P4, from `specs/2026-10-18-p3c-multicam-decisions.md`.
 
 ## 7. How to resume with Claude Code
 
 ```
-Read CLAUDE.md and docs/HANDOFF.md, then docs/superpowers/ledgers/p2c-progress.md. Continue P2c at the first task
-without a "complete" line (Tasks 11–14 are controller-executed; each needs the owner's yes where the plan says so).
+Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P4 brainstorm, unless a P4 spec or plan already exists
+under docs/superpowers/; then resume from its ledger.
 ```
