@@ -2,8 +2,8 @@
 
 - **Ngày:** 2026-10-18
 - **Trạng thái:** chờ chủ dự án duyệt
-- **Spec gốc (bắt buộc):** `docs/superpowers/specs/2026-10-14-loopi-design.md`, gồm §6.3 (phân vùng thẻ SD), §6.5 (hai biến thể image), §6.7 (OTA), §7 (agent), §8 (protocol v1), §12 (xử lý lỗi), §14 (dòng P4). Tài liệu này chỉ chốt những điểm spec gốc còn để ngỏ. Nếu có chỗ mâu thuẫn, spec gốc thắng, trừ các quyết định mới D26–D28 dưới đây; plan P4a sửa spec gốc cho khớp.
-- **Nghiệm thu (phần của §14 thuộc P4a):** OTA thành công; boot lỗi thì tự rollback; image prod không có SSH.
+- **Spec gốc (bắt buộc):** `docs/superpowers/specs/2026-10-14-loopi-design.md`, gồm §6.3 (phân vùng thẻ SD), §6.5 (hai biến thể image), §6.7 (OTA), §7 (agent), §8 (protocol v1), §12 (xử lý lỗi), §14 (dòng P4). Tài liệu này chỉ chốt những điểm spec gốc còn để ngỏ. Nếu có chỗ mâu thuẫn, spec gốc thắng, trừ các quyết định mới D26–D29 dưới đây; plan P4a sửa spec gốc cho khớp.
+- **Nghiệm thu (phần của §14 thuộc P4a):** OTA thành công; boot lỗi thì tự rollback; image prod không có SSH. Thêm theo D29: trang Phiên bản và ghi chú phát hành.
 
 ## 1. P4 chia thành ba phần
 
@@ -20,13 +20,14 @@ Chủ dự án chốt ngày 2026-10-18. Mỗi phần có thiết kế, plan và 
 | D26 | Cơ chế A/B và rollback trên Pi Zero W | Dùng **tryboot của firmware Raspberry Pi**, không thêm U-Boot. Phân vùng boot có hai thư mục `a/` và `b/`, mỗi thư mục chứa kernel, device tree, overlays và cmdline của slot đó. `config.txt` luôn trỏ vào slot tốt (`os_prefix=`). Khi thử bản mới, `tryboot.txt` trỏ vào slot mới và thiết bị khởi động lại bằng `systemctl reboot --reboot-argument="0 tryboot"`. Cờ thử chỉ có hiệu lực một lần, nên mọi lần khởi động lại sau đó (watchdog, kernel panic, rút điện, hẹn giờ) đều quay về `config.txt`, tức là slot cũ. Đã thử trên thiết bị thật (§3) |
 | D27 | Cách bắt đầu một lần cập nhật và khi nào bản mới được coi là tốt | Chủ dự án chọn bundle rồi bấm "Cập nhật" cho từng thiết bị trên trang Thiết bị; không có cập nhật tự động. Bản mới chỉ được coi là tốt khi agent trên slot mới gửi được một heartbeat (brain trả `200`) **trong vòng 10 phút** kể từ lúc boot; nếu không, một bộ hẹn giờ độc lập với agent khởi động lại bình thường và thiết bị về slot cũ |
 | D28 | Biến thể dev/prod và cách gỡ lỗi khi không có SSH | Bundle dev và bundle prod dùng **chung khoá ký và chung `compatible`**, nên cài qua lại được bằng OTA, kể cả bản cũ hơn. Khi thiết bị prod gặp sự cố, chủ dự án cài bản dev từ web để có lại SSH (chỉ bằng key, chỉ trên thiết bị đã có key dev trong `/data/dev/ssh`), rồi cài lại prod. Không thêm chức năng gửi log |
+| D29 | Quản lý phiên bản | Chủ dự án thêm vào P4a ngày 2026-10-18: **trang "Phiên bản"** liệt kê mọi bundle (phiên bản, biến thể, ngày build, kích thước, thiết bị đang chạy bản đó) và xoá được bundle cũ; mỗi bundle có **ghi chú phát hành** sinh tự động từ commit, hiện trước khi bấm Cập nhật. Không làm nút "Quay về bản trước" và không dùng số phiên bản semver |
 
 Các điểm nhỏ do người viết thiết kế tự chốt (ghi ở đây để chủ dự án sửa nếu không đồng ý):
 
 - Bundle RAUC định dạng `verity`, tải hết về `/data/ota/` rồi mới cài (không cài kiểu streaming).
 - Agent từ chối tải khi thẻ đã dùng quá 80 %, để bundle không đẩy hàng đợi lên ngưỡng xoá video 85 % (§7.2).
 - Mỗi thiết bị chỉ có một lần cập nhật đang chạy.
-- Phiên bản OS có dạng `<ngày build>-<7 ký tự commit>`, ví dụ `2026.10.21-a1b2c3d`. Brain không so sánh phiên bản; chủ dự án tự chọn bản muốn cài.
+- Phiên bản OS có dạng `<ngày build>-<7 ký tự commit>`, ví dụ `2026.10.21-a1b2c3d`, tính trên máy build từ git. Cây code có thay đổi chưa commit thì phiên bản có thêm hậu tố `-dirty`, và bản đó không được phát hành (§9). Brain không so sánh phiên bản; chủ dự án tự chọn bản muốn cài.
 - OTA không cập nhật firmware khởi động (`bootcode.bin`, `start.elf`, `fixup.dat`); đổi firmware vẫn phải flash lại thẻ.
 
 ## 3. Kết quả thử tryboot trên thiết bị thật (2026-10-18)
@@ -139,16 +140,33 @@ Nếu brain tắt đúng lúc thử, bản mới cũng bị quay về dù không
 
 ## 8. Brain
 
-- **Thư mục bundle:** `LOOPI_OTA_DIR`, mặc định `<LOOPI_DATA_DIR>/ota` (trong container là `/srv/loopi/ota`). Mỗi bundle đi kèm một file mô tả `loopi-<variant>-<version>.json` do bước build ghi: `{bundle, version, variant, sha256, size, built_at}`. Brain chỉ liệt kê những bundle có file mô tả hợp lệ và có file `.raucb` đúng kích thước; file hỏng thì bỏ qua và ghi log. Brain không đọc nội dung bundle.
+- **Thư mục bundle:** `LOOPI_OTA_DIR`, mặc định `<LOOPI_DATA_DIR>/ota` (trong container là `/srv/loopi/ota`). Mỗi bundle đi kèm một file mô tả `loopi-<variant>-<version>.json` do bước build và bước phát hành ghi: `{bundle, version, variant, sha256, size, built_at, commit, notes_base, notes}`. `commit` là mã commit đầy đủ của bản build. `notes` là ghi chú phát hành (§8.1), `notes_base` là phiên bản mà ghi chú so sánh với. Brain chỉ liệt kê những bundle có file mô tả hợp lệ và có file `.raucb` đúng kích thước; file hỏng thì bỏ qua và ghi log. Brain không đọc nội dung bundle.
 - **Migration 008:**
   - Mở rộng ràng buộc `device_command.type` để nhận thêm `update`.
   - Bảng `ota_update`: `id` (= id lệnh), `device_id`, `bundle`, `version`, `variant`, `requested_at`, `state`, `error`, `finished_at`.
 - **Heartbeat:** khi heartbeat có trường `ota` khớp một `ota_update` đang chạy, brain cập nhật `state` và `error`; gặp `succeeded`, `rolled_back` hoặc `failed` thì ghi thêm `finished_at`.
 - **Trang Thiết bị:**
   - Mỗi thiết bị hiện phiên bản OS, biến thể (dev/prod), slot đang chạy và trạng thái cập nhật gần nhất, bằng tiếng Việt: "Đang tải", "Đang cài", "Đang khởi động lại", "Đang thử bản mới", "Đã cập nhật", "Đã quay về bản cũ", "Lỗi: …".
-  - Có ô chọn bundle và nút "Cập nhật" (POST có `HX-Request`). Nút bị khoá khi thiết bị đang có một lần cập nhật chưa xong, hoặc khi thiết bị đã bị thu hồi.
+  - Có ô chọn bundle và nút "Cập nhật" (POST có `HX-Request`). Chọn một bundle thì ghi chú phát hành của nó hiện ngay bên dưới, trước khi bấm. Nút bị khoá khi thiết bị đang có một lần cập nhật chưa xong, hoặc khi thiết bị đã bị thu hồi.
   - Hiện 5 lần cập nhật gần nhất.
 - **Hết hạn:** một lần cập nhật đã gửi lệnh mà 30 phút không có tiến triển nào được đánh dấu `failed` với lý do "thiết bị không phản hồi", để nút Cập nhật không bị khoá mãi. Thiết bị là nguồn sự thật: nếu sau đó heartbeat lại báo tiến triển cho đúng lần cập nhật đó, brain ghi theo thiết bị.
+
+### 8.1 Trang "Phiên bản" và ghi chú phát hành (D29)
+
+- **Trang `/versions`**, có mục "Phiên bản" trên thanh menu. Mỗi dòng là một bundle, mới nhất trước (theo `built_at`):
+  - phiên bản, biến thể (dev/prod), ngày build, kích thước, 7 ký tự đầu của commit;
+  - các thiết bị đang chạy đúng bản đó (so `os_version` và `os_variant` trong heartbeat gần nhất);
+  - ghi chú phát hành, thu gọn được.
+- **Bundle không dùng được** (file mô tả hỏng, thiếu `.raucb`, sai kích thước) hiện trong một mục riêng kèm lý do, để chủ dự án xoá được.
+- **Xoá bundle:** nút "Xoá", hỏi xác nhận, POST có `HX-Request`. Xoá cả `.raucb` lẫn `.json` khỏi thư mục bundle. Brain từ chối và nói rõ lý do khi:
+  - có thiết bị đang chạy đúng bản đó;
+  - có một lần cập nhật chưa xong đang dùng bundle đó.
+
+  Tên file phải khớp mẫu ở §7 và nằm ngay trong thư mục bundle. Lịch sử cập nhật (`ota_update`) vẫn giữ tên và phiên bản của bundle đã xoá.
+- **Ghi chú phát hành** do `publish-bundle.sh` sinh trên máy build, nơi có git:
+  - `notes_base` là phiên bản mới nhất (theo `built_at`) đang có trong thư mục bundle lúc phát hành, không phân biệt dev hay prod, vì hai biến thể dùng chung code. Chưa có bundle nào thì `notes_base` để trống.
+  - `notes` là danh sách `{commit, subject}` của các commit từ commit của `notes_base` tới commit của bản này, chỉ tính những commit đụng tới `agent/`, `os/` hoặc `docs/protocol/`, cũ trước mới sau. Tối đa 50 dòng; dài hơn thì giữ 50 dòng mới nhất và ghi `notes_truncated: true`. Chưa có `notes_base` thì lấy 20 commit gần nhất đụng tới các thư mục đó.
+  - Ghi chú lấy nguyên tiêu đề commit (tiếng Anh, conventional commits). Trang web ghi rõ "Thay đổi so với <notes_base>", vì thiết bị có thể đang chạy một bản cũ hơn `notes_base`.
 
 ## 9. Build và ký
 
@@ -157,7 +175,7 @@ Nếu brain tắt đúng lúc thử, bản mới cũng bị quay về dù không
   - `os/build.sh` nhận biến thể (`VARIANT=dev|prod`, mặc định `dev`). Mỗi biến thể build trong một thư mục output riêng trong volume build, vì Buildroot không build lại đúng khi đổi fragment trong cùng một thư mục.
   - Những gì chỉ có ở dev (dropbear, rsync, strace, alsa-utils, `/etc/loopi-dev`, `loopi-devkeys.service`, `loopi-usbgadget.service`, `loopi-usbmode`, dòng `dwc2` trong mẫu `config.txt`) được tách khỏi phần dùng chung.
 - **Image prod** (§6.5): không SSH; cổng USB luôn ở chế độ host; công cụ gỡ lỗi chỉ còn `loopi-selftest`; `run-agent` chỉ chạy `/usr/bin/loopi-agent`. Cấp WiFi vẫn qua `boot/loopi.toml` cho tới khi có P4b.
-- **Đầu ra của một lần build:** `os/out/loopi-<variant>-<version>.img` (thẻ SD đầy đủ, dùng cho lần flash đầu), `.raucb` (bundle đã ký) và `.json` (file mô tả §8). Script `os/scripts/publish-bundle.sh` chép bundle và file mô tả vào thư mục bundle của brain; build không tự chép.
+- **Đầu ra của một lần build:** `os/out/loopi-<variant>-<version>.img` (thẻ SD đầy đủ, dùng cho lần flash đầu), `.raucb` (bundle đã ký) và `.json` (file mô tả §8). Script `os/scripts/publish-bundle.sh` thêm ghi chú phát hành vào file mô tả (§8.1), rồi chép bundle và file mô tả vào thư mục bundle của brain; build không tự chép. Script từ chối phát hành bản `-dirty`, bản đã có trong thư mục bundle, và bản có commit không tìm thấy trong git.
 - **Khoá ký:**
   - Script `os/scripts/rauc-keys.sh` tạo một lần một CA và một chứng chỉ ký (ECDSA P-256) trong `~/.config/loopi/rauc/`, thư mục quyền 700, file quyền 600.
   - Không bao giờ vào git, không bao giờ in ra. Build mount thư mục này chỉ đọc vào container. Thiếu khoá thì build từ chối tạo bundle.
@@ -207,11 +225,14 @@ TDD, coverage ≥ 80 % (thư viện agent, package brain).
   - nút Cập nhật tạo đúng lệnh và `ota_update`;
   - nút bị khoá khi đang cập nhật;
   - heartbeat chuyển trạng thái; hết hạn sau 30 phút;
+  - trang Phiên bản: thứ tự, thiết bị đang chạy, mục bundle không dùng được, ghi chú thu gọn;
+  - xoá bundle: thành công; từ chối khi có thiết bị đang chạy bản đó hoặc đang có lần cập nhật dùng nó; tên lạ hoặc `../` bị từ chối; lịch sử vẫn còn sau khi xoá;
   - contract test phía server.
 - **Image:** `os/tests/check-image.sh` kiểm thêm:
   - cả hai biến thể có `system.conf`, `keyring.pem`, `rauc-boot`, `rauc-post-install`, bộ hẹn giờ, `/usr/share/loopi/boot/` đầy đủ;
   - `a/cmdline.txt` và `b/cmdline.txt` có đúng `root=`, `rauc.slot=` và `panic=10`;
   - **prod** không có `dropbear` hay bất kỳ SSH server nào, không có `/etc/loopi-dev`, không có dòng `dwc2`, và `run-agent` không đọc `/data/dev`.
+- **`publish-bundle.sh`:** test trên một repo git tạm: ghi chú đúng khoảng commit, chỉ các thư mục `agent/`, `os/`, `docs/protocol/`, cắt ở 50 dòng, trường hợp chưa có bundle nào, và từ chối bản `-dirty`, bản trùng, commit lạ.
 - **Script boot (`rauc-boot`, `rauc-post-install`, `migrate-to-ab.sh`):** test chạy trên PC với một thư mục boot giả, kiểm đúng nội dung `config.txt` và `tryboot.txt` sau mỗi thao tác, kể cả giữ chế độ USB của dev.
 
 ## 13. Nghiệm thu trên thiết bị thật
@@ -224,6 +245,7 @@ Mỗi lần khởi động lại ngừng ghi khoảng 45 s. Bước 3 ngừng gh
 4. Cài một **bundle làm kernel panic** (`root=` trỏ sai phân vùng): thiết bị tự khởi động lại và quay về; web hiện "Đã quay về bản cũ".
 5. Cập nhật dev → **prod**: cổng 22 đóng (kết nối bị từ chối); thiết bị vẫn ghi, gửi và heartbeat bình thường; web hiện biến thể "prod".
 6. Cập nhật prod → dev, để làm tiếp P4b.
+7. Trang Phiên bản: các bundle đã phát hành hiện đúng thiết bị đang chạy và ghi chú phát hành; xoá được một bundle cũ; xoá bundle đang chạy thì bị từ chối kèm lý do.
 
 Hai bundle hỏng chỉ dùng cho nghiệm thu, build bằng một tuỳ chọn riêng, không bao giờ nằm trong thư mục bundle sau khi nghiệm thu xong. Ghi lại: kích thước bundle, thời gian tải, thời gian cài, thời gian ngừng ghi thực tế, và RAM/CPU của agent khi đang tải.
 
@@ -231,11 +253,12 @@ Hai bundle hỏng chỉ dùng cho nghiệm thu, build bằng một tuỳ chọn 
 
 Plan P4a sửa `2026-10-14-loopi-design.md`:
 
-- thêm D26–D28 vào bảng quyết định và dòng "Sửa đổi";
+- thêm D26–D29 vào bảng quyết định và dòng "Sửa đổi";
 - §6.3: `rootfs-B` dùng cho OTA; phân vùng boot có `a/`, `b/`;
 - §6.7: trỏ tới tài liệu này;
 - §8: lệnh `update`, `GET /v1/ota/{bundle}`, các trường heartbeat mới;
-- §12: các dòng mới ở §11.
+- §12: các dòng mới ở §11;
+- §10.6: thêm trang "Phiên bản" (D29).
 
 ## 15. Ngoài phạm vi P4a
 
@@ -243,4 +266,6 @@ Plan P4a sửa `2026-10-14-loopi-design.md`:
 - BLE presence (P4c).
 - Cập nhật firmware khởi động bằng OTA.
 - Cập nhật tự động, lịch cập nhật, cập nhật nhiều thiết bị một lúc.
+- Nút "Quay về bản trước" (chuyển sang slot còn lại mà không tải lại) và số phiên bản semver; chủ dự án không chọn (D29). Muốn quay về bản trước thì cài lại bundle của bản đó.
+- Tải bundle lên qua web; bundle chỉ vào thư mục bằng `publish-bundle.sh`.
 - Cập nhật các camera P3c: chúng là container trên PC, cập nhật cùng brain.
