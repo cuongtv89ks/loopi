@@ -20,6 +20,8 @@ pub enum Command {
     Resume,
     TogglePause,
     SetAudio(bool),
+    /// Install an OTA bundle; handled by the OTA task, never changes ControlState.
+    Update(crate::ota::UpdateRequest),
 }
 
 impl ControlState {
@@ -34,6 +36,7 @@ impl ControlState {
             Command::Resume => Self { paused: false, ..self },
             Command::TogglePause => Self { paused: !self.paused, ..self },
             Command::SetAudio(on) => Self { audio_enabled: *on, ..self },
+            Command::Update(_) => self,
         }
     }
 }

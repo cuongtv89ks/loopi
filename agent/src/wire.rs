@@ -49,6 +49,14 @@ pub struct HeartbeatRequest {
     pub last_error: Option<String>,
     pub dropped_items: u32,
     pub acked_command_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os_variant: Option<crate::ota::Variant>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boot_slot: Option<crate::ota::Slot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ota: Option<crate::ota::OtaReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -106,6 +114,10 @@ pub(crate) mod tests {
             last_error: None,
             dropped_items: 1,
             acked_command_ids: vec!["01JA2B3C4D5E6F7G8H9J0KMNPQ".into()],
+            os_version: None,
+            os_variant: None,
+            boot_slot: None,
+            ota: None,
         }
     }
 

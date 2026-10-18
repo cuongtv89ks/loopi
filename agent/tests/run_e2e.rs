@@ -13,7 +13,9 @@ use std::time::Duration;
 use chrono::DateTime;
 use loopi_agent::config::{BrainConfig, CaptureConfig, Config, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
 use loopi_agent::recorder::audio::{AudioSource, AudioSourceFactory};
-use loopi_agent::run::{run, Deps, Timings};
+use loopi_agent::osinfo::OsInfo;
+use loopi_agent::ota::Variant;
+use loopi_agent::run::{run, Deps, Timings, UPDATES_UNSUPPORTED};
 use loopi_agent::sysinfo::NoProbe;
 use loopi_agent::testing::{FixedDisk, RecordingLed, SyncedClock, ToneSource};
 use loopi_agent::transport::HttpTransport;
@@ -24,6 +26,7 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const PAUSE_ID: &str = "01JA2B3C4D5E6F7G8H9J0KMNPQ";
+const UPDATE_ID: &str = "01JA2B3C4D5E6F7G8H9J0KMNPR";
 const AUDIO_SEGMENT: Duration = Duration::from_secs(1);
 const MAX_SEGMENT_SECONDS: i64 = 3600;
 
@@ -217,6 +220,7 @@ async fn records_uploads_and_obeys_a_remote_pause() {
             audio_segment: Some(AUDIO_SEGMENT),
         },
         liveness: liveness.clone(),
+        os: OsInfo::default(),
     };
     let (stop_tx, stop_rx) = watch::channel(false);
     let agent = tokio::spawn(run(deps, stop_rx));
@@ -271,5 +275,95 @@ async fn records_uploads_and_obeys_a_remote_pause() {
     // The tone "microphone" peaks at 8000 (-12 dBFS); the default 20 dB gain drives it into the -1 dBFS limiter.
     assert!(loudest_audio > 20_000, "the configured gain reached the uploaded audio (decoded peak {loudest_audio})");
     assert!(!stray_camera_processes(&camera), "no camera process outlives the agent");
+    assert_eq!(violations.lock().unwrap().clone(), Vec::<String>::new(), "the mock brain saw contract violations");
+}
+
+/// A device whose kernel command line has no `rauc.slot=` (the sd-image era) cannot install a bundle: the update is
+/// refused with a clear reason that reaches the brain, and the command is still acked so it is not re-sent.
+#[tokio::test]
+async fn an_update_on_a_system_without_ota_support_is_reported_failed() {
+    let brain = MockServer::start().await;
+    let violations: Violations = Arc::default();
+    let heartbeat_log = violations.clone();
+    let calls = AtomicUsize::new(0);
+    Mock::given(method("POST"))
+        .and(path("/v1/heartbeat"))
+        .respond_with(move |request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let errors = schema_errors("Heartbeat", &body);
+            if !record(&heartbeat_log, errors.into_iter().map(|e| format!("heartbeat: {e}")).collect()) {
+                return ResponseTemplate::new(422);
+            }
+            let update = json!({"id": UPDATE_ID, "type": "update", "payload": {
+                "bundle": "loopi-dev-2026.10.21-a1b2c3d.raucb", "version": "2026.10.21-a1b2c3d",
+                "variant": "dev", "sha256": "ab".repeat(32), "size": 75_000_000}});
+            let commands = if calls.fetch_add(1, Ordering::SeqCst) == 0 { json!([update]) } else { json!([]) };
+            ResponseTemplate::new(200).set_body_json(json!({ "commands": commands }))
+        })
+        .mount(&brain)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    // Paused: nothing records, so the test needs no camera and no microphone.
+    fs::create_dir_all(data_dir.join("config")).unwrap();
+    fs::write(data_dir.join("config/state.json"), br#"{"paused":true,"audio_enabled":true}"#).unwrap();
+    let config = Config {
+        wifi: None,
+        brain: BrainConfig { url: brain.uri(), pair_token: None, ca_fingerprint: None },
+        capture: CaptureConfig::default(),
+        schedule: ScheduleConfig::default(),
+        led: LedConfig::default(),
+        gpio: GpioConfig::default(),
+        paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
+    };
+    let factory: AudioSourceFactory = Box::new(|| Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>));
+    let (_press_tx, presses) = mpsc::channel(1);
+    let deps = Deps {
+        config,
+        clock: Arc::new(SyncedClock),
+        disk: Arc::new(FixedDisk::new(10.0)),
+        transport: Arc::new(HttpTransport::new(reqwest::Client::new(), &brain.uri())),
+        audio_factory: factory,
+        led: Some(Box::new(RecordingLed::default())),
+        presses,
+        probe: Arc::new(NoProbe),
+        timings: Timings {
+            heartbeat: Duration::from_millis(100),
+            upload_idle: Duration::from_millis(50),
+            video_poll: Duration::from_millis(100),
+            disk_check: Duration::from_millis(200),
+            tick: Duration::from_millis(50),
+            led_frame: Duration::from_millis(20),
+            audio_retry: Duration::from_millis(100),
+            audio_segment: Some(AUDIO_SEGMENT),
+        },
+        liveness: loopi_agent::liveness::Liveness::new(),
+        // A release file but no `rauc.slot=`: the version is known, the boot slot is not.
+        os: OsInfo { version: Some("2026.10.14-0000000".into()), variant: Some(Variant::Dev), slot: None },
+    };
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let agent = tokio::spawn(run(deps, stop_rx));
+
+    let mut sent = Vec::new();
+    for _ in 0..100 {
+        sent = heartbeats(&brain.received_requests().await.unwrap());
+        let acked = sent.iter().any(|hb| hb["acked_command_ids"] == json!([UPDATE_ID]));
+        if acked && sent.iter().any(|hb| hb.get("ota").is_some()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    stop_tx.send(true).unwrap();
+    agent.await.unwrap().unwrap();
+
+    let reported = sent.iter().find(|hb| hb.get("ota").is_some()).expect("a heartbeat carries the ota report")["ota"].clone();
+    assert_eq!(reported["state"], "failed");
+    assert_eq!(reported["error"], json!(UPDATES_UNSUPPORTED));
+    assert_eq!((reported["command_id"].as_str(), reported["version"].as_str()), (Some(UPDATE_ID), Some("2026.10.21-a1b2c3d")));
+    assert!(sent.iter().any(|hb| hb["acked_command_ids"] == json!([UPDATE_ID])), "the refused update is still acked");
+    let first = &sent[0];
+    assert_eq!((first["os_version"].as_str(), first["os_variant"].as_str()), (Some("2026.10.14-0000000"), Some("dev")));
+    assert!(first.get("boot_slot").is_none(), "an unknown slot is left out, not guessed");
     assert_eq!(violations.lock().unwrap().clone(), Vec::<String>::new(), "the mock brain saw contract violations");
 }

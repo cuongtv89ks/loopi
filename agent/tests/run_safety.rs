@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use loopi_agent::config::{BrainConfig, CaptureConfig, Config, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
 use loopi_agent::led::{LedDriver, LED_UNAVAILABLE_ERROR};
+use loopi_agent::osinfo::OsInfo;
 use loopi_agent::recorder::audio::{AudioSource, AudioSourceFactory};
 use loopi_agent::recorder::ogg_opus::FRAME_SAMPLES;
 use loopi_agent::run::{run, Deps, Timings};
@@ -161,6 +162,7 @@ impl Harness {
                 audio_segment: Some(Duration::from_secs(1)),
             },
             liveness: loopi_agent::liveness::Liveness::new(),
+            os: OsInfo::default(),
         };
         let (stop_tx, stop_rx) = watch::channel(false);
         (deps, stop_tx, stop_rx)

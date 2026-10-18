@@ -29,6 +29,8 @@ use crate::uploader::run_uploader;
 
 /// `status.last_error` while the disk guard has stopped recording (cleared when it resumes).
 pub const DISK_FULL_ERROR: &str = "disk full: recording stopped";
+/// `status.ota` for an update on a system that cannot install one (no `rauc.slot=` on the kernel command line).
+pub const UPDATES_UNSUPPORTED: &str = "this system cannot install updates (no A/B boot slots)";
 const STATE_NOT_SAVED_PREFIX: &str = "state not saved: ";
 const COMMAND_CHANNEL_CAPACITY: usize = 32;
 
@@ -94,6 +96,8 @@ pub struct Deps {
     pub timings: Timings,
     /// Beaten on every main-loop iteration; the systemd watchdog pings only while it is fresh.
     pub liveness: Liveness,
+    /// What this device runs (version, variant, boot slot); reported in heartbeats.
+    pub os: crate::osinfo::OsInfo,
 }
 
 /// Where the LED loop is in its life: normal patterns, forced on while recorders wind down, done.
@@ -102,6 +106,17 @@ enum LedPhase {
     Running,
     Draining,
     Done,
+}
+
+fn refuse_update(status: &StatusTx, request: &crate::ota::UpdateRequest, reason: &str) {
+    tracing::warn!(bundle = %request.bundle, reason, "update refused");
+    let report = crate::ota::OtaReport::new(
+        request.command_id.clone(),
+        &request.version,
+        crate::ota::OtaState::Failed,
+        Some(reason.to_string()),
+    );
+    status.send_modify(|s| s.ota = Some(report));
 }
 
 fn set_if_changed(slot: &mut bool, value: bool) -> bool {
@@ -212,7 +227,7 @@ fn initial_led_status(led: Option<&dyn LedDriver>) -> (LedHealth, Option<String>
 }
 
 pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-    let Deps { config, clock, disk, transport, audio_factory, led, mut presses, probe, timings, liveness } = deps;
+    let Deps { config, clock, disk, transport, audio_factory, led, mut presses, probe, timings, liveness, os } = deps;
     let paths = Paths::new(&config.paths.data_dir);
     let segment = Duration::from_secs(config.capture.segment_seconds.into());
 
@@ -255,7 +270,8 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
             command_tx,
             probe,
             timings.heartbeat,
-        ),
+        )
+        .with_os(os.clone()),
         shutdown.clone(),
     ));
     if let Some(led) = led {
@@ -303,7 +319,10 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
         video_gate_tx.send_if_modified(|g| set_if_changed(g, gates.video));
         audio_gate_tx.send_if_modified(|g| set_if_changed(g, gates.audio));
         tokio::select! {
-            Some(command) = command_rx.recv() => apply_command(&control_tx, &paths.state, &status, &command),
+            Some(command) = command_rx.recv() => match command {
+                Command::Update(request) => refuse_update(&status, &request, UPDATES_UNSUPPORTED),
+                command => apply_command(&control_tx, &paths.state, &status, &command),
+            },
             Some(press) = presses.recv() => handle_press(press, &queue, clock.as_ref(), &control_tx, &paths.state, &status),
             _ = tick.tick() => {
                 let (synced, quiet) = (clock.is_synced(), schedule.is_quiet(clock.now()));
@@ -380,6 +399,25 @@ mod tests {
         let good = tmp.path().join("ok").join("state.json");
         apply_command(&control, &good, &status, &Command::Resume);
         assert_eq!(status.borrow().last_error, None, "cleared once a save works");
+    }
+
+    #[test]
+    fn a_refused_update_is_reported_failed_with_its_reason_and_command_id() {
+        use crate::ota::{OtaState, UpdateRequest, Variant};
+        let status = status_channel(AgentStatus::default());
+        let request = UpdateRequest {
+            command_id: Some("01JA2B3C4D5E6F7G8H9J0KMNPQ".into()),
+            bundle: "loopi-dev-1.raucb".into(),
+            version: "1".into(),
+            variant: Variant::Dev,
+            sha256: "ab".repeat(32),
+            size: 10,
+        };
+        refuse_update(&status, &request, UPDATES_UNSUPPORTED);
+        let report = status.borrow().ota.clone().expect("the refusal is reported");
+        assert_eq!(report.command_id.as_deref(), Some("01JA2B3C4D5E6F7G8H9J0KMNPQ"));
+        assert_eq!((report.state, report.version.as_str(), report.error.as_deref()), (OtaState::Failed, "1", Some(UPDATES_UNSUPPORTED)));
+        assert_eq!(status.borrow().last_error, None, "an update refusal does not touch last_error");
     }
 
     #[test]

@@ -29,6 +29,8 @@ pub struct AgentStatus {
     pub led: LedHealth,
     pub last_error: Option<String>,
     pub dropped_since_heartbeat: u32,
+    /// The current or latest update, until the brain has heard its outcome (P4a design §6).
+    pub ota: Option<crate::ota::OtaReport>,
 }
 
 /// Shared sender: every task updates its own fields with `send_modify`; readers `subscribe()`.

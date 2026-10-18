@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::control::{parse_remote_command, Command, ControlState};
 use crate::led::LED_UNAVAILABLE_ERROR;
+use crate::osinfo::OsInfo;
 use crate::queue::Queue;
 use crate::status::{AgentStatus, LedHealth, StatusTx};
 use crate::sysinfo::SysProbe;
@@ -45,6 +46,7 @@ pub fn build_request(
     uptime_s: u64,
     probe: &dyn SysProbe,
     mut acked: Vec<String>,
+    os: &OsInfo,
 ) -> HeartbeatRequest {
     acked.truncate(MAX_ACKED_PER_HEARTBEAT);
     HeartbeatRequest {
@@ -64,6 +66,10 @@ pub fn build_request(
         last_error: status.last_error.as_ref().map(|e| e.chars().take(MAX_ERROR_LEN).collect()),
         dropped_items: status.dropped_since_heartbeat,
         acked_command_ids: acked,
+        os_version: os.version.clone(),
+        os_variant: os.variant,
+        boot_slot: os.slot,
+        ota: status.ota.clone(),
     }
 }
 
@@ -83,7 +89,12 @@ pub struct Translated {
 pub fn translate(remote: Vec<RemoteCommand>) -> Translated {
     let mut out = Translated::default();
     for command in remote {
-        match parse_remote_command(&command.kind, &command.payload) {
+        let parsed = if command.kind == "update" {
+            crate::ota::parse_update(&command.id, &command.payload).map(Command::Update)
+        } else {
+            parse_remote_command(&command.kind, &command.payload)
+        };
+        match parsed {
             Ok(parsed) => {
                 out.commands.push(parsed);
                 out.command_ids.push(command.id.clone());
@@ -109,6 +120,10 @@ pub struct HeartbeatDeps {
     pub interval: Duration,
     /// Last queue depth that could be read; reported when the queue becomes unreadable.
     pub last_queue_depth: AtomicU64,
+    /// What this device runs (version, variant, boot slot); reported in every heartbeat.
+    pub os: OsInfo,
+    /// Counts heartbeats the brain answered with 200; the OTA task waits on it (P4a design §6).
+    pub delivered: Arc<watch::Sender<u64>>,
     memory: Mutex<Memory>,
 }
 
@@ -140,8 +155,20 @@ impl HeartbeatDeps {
             started: Instant::now(),
             interval,
             last_queue_depth: AtomicU64::new(0),
+            os: OsInfo::default(),
+            delivered: Arc::new(watch::channel(0).0),
             memory: Mutex::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_os(self, os: OsInfo) -> Self {
+        Self { os, ..self }
+    }
+
+    #[must_use]
+    pub fn with_delivered(self, delivered: Arc<watch::Sender<u64>>) -> Self {
+        Self { delivered, ..self }
     }
 
     /// Queue depth plus, when the queue cannot be read, a message for `last_error`.
@@ -186,10 +213,11 @@ pub async fn heartbeat_once(deps: &HeartbeatDeps, acked: &mut Vec<String>) -> Re
         status.last_error = (!parts.is_empty()).then(|| parts.join("; "));
         let control = *deps.control.borrow();
         let request =
-            build_request(&status, &control, depth, deps.started.elapsed().as_secs(), deps.probe.as_ref(), acked.clone());
+            build_request(&status, &control, depth, deps.started.elapsed().as_secs(), deps.probe.as_ref(), acked.clone(), &deps.os);
         (request, carried)
     };
     let remote = deps.transport.heartbeat(&request).await?;
+    deps.delivered.send_modify(|count| *count += 1);
     acked.drain(..request.acked_command_ids.len());
     let reported = request.dropped_items;
     deps.status.send_modify(|s| s.dropped_since_heartbeat = s.dropped_since_heartbeat.saturating_sub(reported));
@@ -288,7 +316,7 @@ mod tests {
             ..AgentStatus::default()
         };
         let control = ControlState { paused: false, audio_enabled: true };
-        let request = build_request(&status, &control, 7, 99, &FixedProbe, vec![CMD.into()]);
+        let request = build_request(&status, &control, 7, 99, &FixedProbe, vec![CMD.into()], &OsInfo::default());
         assert_eq!((request.queue_depth, request.uptime_s, request.dropped_items), (7, 99, 4));
         assert_eq!((request.soc_temp_c, request.wifi_rssi_dbm), (Some(47.5), Some(-60)));
         assert_eq!(request.last_error.as_ref().unwrap().chars().count(), 500);
@@ -319,9 +347,79 @@ mod tests {
             started: Instant::now(),
             interval: HEARTBEAT_INTERVAL,
             last_queue_depth: AtomicU64::new(0),
+            os: OsInfo::default(),
+            delivered: Arc::new(watch::channel(0).0),
             memory: Mutex::default(),
         };
         (deps, cmd_rx, tmp)
+    }
+
+    #[test]
+    fn request_carries_os_info_and_the_ota_report_and_matches_contract() {
+        use crate::ota::{OtaReport, OtaState, Slot, Variant};
+        let status = AgentStatus {
+            ota: Some(OtaReport::new(Some(CMD.into()), "2026.10.21-a1b2c3d", OtaState::Trying, None)),
+            ..AgentStatus::default()
+        };
+        let os = OsInfo { version: Some("2026.10.21-a1b2c3d".into()), variant: Some(Variant::Dev), slot: Some(Slot::B) };
+        let control = ControlState { paused: false, audio_enabled: true };
+        let value = serde_json::to_value(build_request(&status, &control, 0, 1, &FixedProbe, vec![], &os)).unwrap();
+        assert_eq!((value["os_version"].as_str(), value["os_variant"].as_str(), value["boot_slot"].as_str()),
+                   (Some("2026.10.21-a1b2c3d"), Some("dev"), Some("B")));
+        assert_eq!(value["ota"]["state"], "trying");
+        assert_matches("Heartbeat", &value);
+        let bare = serde_json::to_value(build_request(&AgentStatus::default(), &control, 0, 1, &FixedProbe, vec![],
+                                                      &OsInfo::default())).unwrap();
+        for key in ["os_version", "os_variant", "boot_slot", "ota"] {
+            assert!(bare.get(key).is_none(), "{key} must be omitted when unknown");
+        }
+    }
+
+    #[test]
+    fn update_commands_translate_with_their_id() {
+        let t = translate(vec![RemoteCommand {
+            id: CMD.into(),
+            kind: "update".into(),
+            payload: json!({"bundle": "loopi-dev-2026.10.21-a1b2c3d.raucb", "version": "2026.10.21-a1b2c3d",
+                            "variant": "dev", "sha256": "ab".repeat(32), "size": 10}),
+        }]);
+        assert!(t.errors.is_empty());
+        match &t.commands[..] {
+            [Command::Update(request)] => assert_eq!(request.command_id.as_deref(), Some(CMD)),
+            other => panic!("{other:?}"),
+        }
+        let bad = translate(vec![remote("update", json!({}))]);
+        assert_eq!((bad.commands.len(), bad.invalid_ids.len()), (0, 1));
+    }
+
+    #[tokio::test]
+    async fn a_delivered_heartbeat_is_counted() {
+        let transport = Arc::new(FakeTransport::default());
+        let (deps, _commands, _tmp) = deps(transport.clone(), status_channel(AgentStatus::default()));
+        let delivered = Arc::new(watch::channel(0u64).0);
+        let deps = deps.with_delivered(delivered.clone());
+        heartbeat_once(&deps, &mut Vec::new()).await.unwrap();
+        assert_eq!(*delivered.borrow(), 1);
+        transport.push_heartbeat(Err(TransportError::Status(500)));
+        assert!(heartbeat_once(&deps, &mut Vec::new()).await.is_err());
+        assert_eq!(*delivered.borrow(), 1, "a failed heartbeat is not counted");
+        heartbeat_once(&deps, &mut Vec::new()).await.unwrap();
+        assert_eq!(*delivered.borrow(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_heartbeat_reports_the_os_it_was_given() {
+        use crate::ota::{Slot, Variant};
+        let transport = Arc::new(FakeTransport::default());
+        let (deps, _commands, _tmp) = deps(transport.clone(), status_channel(AgentStatus::default()));
+        let deps = deps.with_os(OsInfo { version: Some("v1".into()), variant: Some(Variant::Prod), slot: Some(Slot::A) });
+        heartbeat_once(&deps, &mut Vec::new()).await.unwrap();
+        let sent = transport.heartbeats.lock().unwrap();
+        assert_eq!(
+            (sent[0].os_version.as_deref(), sent[0].os_variant, sent[0].boot_slot),
+            (Some("v1"), Some(Variant::Prod), Some(Slot::A))
+        );
+        assert_matches("Heartbeat", &serde_json::to_value(&sent[0]).unwrap());
     }
 
     #[tokio::test]
@@ -379,7 +477,7 @@ mod tests {
 
     #[test]
     fn build_request_caps_acks_at_100() {
-        let request = build_request(&AgentStatus::default(), &ControlState::initial(true), 0, 0, &NoProbe, ids(150));
+        let request = build_request(&AgentStatus::default(), &ControlState::initial(true), 0, 0, &NoProbe, ids(150), &OsInfo::default());
         assert_eq!(request.acked_command_ids.len(), 100);
         assert_matches("Heartbeat", &serde_json::to_value(&request).unwrap());
     }
@@ -390,7 +488,7 @@ mod tests {
             [(f32::NAN, 100.0), (150.0, 100.0), (-5.0, 0.0), (f32::INFINITY, 100.0), (f32::NEG_INFINITY, 100.0)]
         {
             let status = AgentStatus { disk_used_pct: input, ..AgentStatus::default() };
-            let request = build_request(&status, &ControlState::initial(true), 0, 0, &NoProbe, vec![]);
+            let request = build_request(&status, &ControlState::initial(true), 0, 0, &NoProbe, vec![], &OsInfo::default());
             assert_eq!(request.disk_used_pct, expected, "input {input}");
             let value = serde_json::to_value(&request).unwrap();
             assert!(value["disk_used_pct"].is_number());
@@ -400,7 +498,7 @@ mod tests {
 
     #[test]
     fn all_optionals_null_matches_contract_with_strict_types() {
-        let request = build_request(&AgentStatus::default(), &ControlState::initial(false), 0, 0, &NoProbe, vec![]);
+        let request = build_request(&AgentStatus::default(), &ControlState::initial(false), 0, 0, &NoProbe, vec![], &OsInfo::default());
         let value = serde_json::to_value(&request).unwrap();
         assert!(value["soc_temp_c"].is_null() && value["wifi_rssi_dbm"].is_null() && value["last_error"].is_null());
         assert!(value["uptime_s"].is_u64() && value["queue_depth"].is_u64() && value["paused"].is_boolean());
@@ -418,7 +516,7 @@ mod tests {
                 None
             }
         }
-        let request = build_request(&AgentStatus::default(), &ControlState::initial(true), 0, 0, &NanProbe, vec![]);
+        let request = build_request(&AgentStatus::default(), &ControlState::initial(true), 0, 0, &NanProbe, vec![], &OsInfo::default());
         assert_eq!(request.soc_temp_c, None);
         assert_matches("Heartbeat", &serde_json::to_value(&request).unwrap());
     }

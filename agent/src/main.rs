@@ -11,6 +11,7 @@ use loopi_agent::disk::StatvfsUsage;
 use loopi_agent::led::{blink_while, LedDriver};
 use loopi_agent::pairing::{ensure_paired, retry_delay, Identity};
 use loopi_agent::recorder::audio::AudioSourceFactory;
+use loopi_agent::osinfo::{OsInfo, CMDLINE_PATH, RELEASE_PATH};
 use loopi_agent::run::{run, Deps, Timings};
 use loopi_agent::liveness::Liveness;
 use loopi_agent::selftest::{failed_count, format_report, run_selftest};
@@ -243,6 +244,7 @@ async fn agent_main() -> Result<()> {
         probe: Arc::new(LinuxProbe),
         timings: Timings::default(),
         liveness,
+        os: OsInfo::read(Path::new(RELEASE_PATH), Path::new(CMDLINE_PATH)),
         config,
     };
     run(deps, shutdown).await
