@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     database_url: str
     media_root: Path = Path("/srv/loopi/media")
+    # On when the media root is a disk of its own: media are written (and forgotten) only while the root holds the
+    # marker file volume.MARKER, so an unmounted disk never sends recordings to the empty mount point beneath it.
+    media_require_marker: bool = False
     pki_dir: Path = Path("/srv/loopi/pki")
     tz: str = "Asia/Seoul"
     min_free_bytes: int = 2 * 1024**3

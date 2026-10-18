@@ -32,6 +32,25 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
    and log in with `LOOPI_WEB_USER`.
 8. Devices page → "Tạo token ghép cặp" → copy `pair_token` and `ca_fingerprint` into the device's `loopi.toml`.
 
+## Media on their own disk
+
+Recordings grow by about 15 GB a day per camera (the raw H.264 and its MP4 copy). To keep them on a second disk
+(the database stays where it is), mount that disk, here at `/mnt/loopi-media`, and move the media once:
+
+1. Copy while the stack runs: `rsync -a <LOOPI_DATA_DIR>/media/ /mnt/loopi-media/`.
+2. `docker compose stop api worker` (devices keep their recordings queued meanwhile), then copy again with
+   `rsync -a --delete <LOOPI_DATA_DIR>/media/ /mnt/loopi-media/`: `--delete` removes from the copy what a forget
+   removed during the first pass, so nothing forgotten comes back.
+3. `touch /mnt/loopi-media/.loopi-media` (the marker), then in `deploy/.env`: `LOOPI_MEDIA_DIR=/mnt/loopi-media` and
+   `LOOPI_MEDIA_REQUIRE_MARKER=true`.
+4. `docker compose up -d` and `./smoke.sh`. Rename the old directory (`media.ssd-old`) and delete it only once the
+   pages play the old recordings.
+
+With the marker required, a disk that did not mount leaves the empty mount point without the marker: `/healthz`
+answers 503 (the api turns unhealthy), uploads get 507 (devices keep them queued and retry), the worker refuses to
+start and a forget waits, so nothing is written to, or forgotten from, the wrong disk. Mount the disk and run
+`docker compose up -d`. Back out by removing both lines from `deploy/.env`.
+
 ## Pipeline (P2a)
 
 - The "Xử lý" page (`/pipeline`) shows the backlog, the recording → caption/transcript latency of the last 24 h,

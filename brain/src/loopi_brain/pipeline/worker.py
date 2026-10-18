@@ -7,6 +7,7 @@ from collections.abc import Callable
 import anyio
 import httpx
 
+from .. import volume
 from ..config import Settings
 from ..db import make_pool, migrate
 from ..providers.config import load_providers
@@ -25,6 +26,7 @@ async def run_worker(settings: Settings, **options) -> None:
 
     ``options`` go to ``App.run_worker_async`` (tests pass ``wait=False`` to return once no job is left).
     """
+    volume.check(settings.media_root, settings.media_require_marker)  # nothing runs on a missing media disk
     await anyio.to_thread.run_sync(migrate, settings.database_url)
     config = load_providers(settings.providers_file)  # a bad providers.yaml stops the worker here
     http = httpx.AsyncClient(timeout=DEFAULT_TIMEOUT)

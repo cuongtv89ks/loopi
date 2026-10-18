@@ -35,7 +35,7 @@ from psycopg.errors import DeadlockDetected
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from . import devices, media, thumbs
+from . import devices, media, thumbs, volume
 from .config import Settings
 from .days import local_day
 from .evaluation import golden
@@ -258,8 +258,10 @@ async def _delete_rows(
 
 
 async def forget_range(pool: AsyncConnectionPool, settings: Settings, start: dt.datetime, end: dt.datetime) -> ForgetCounts:
-    """Forget [start, end) for good; return what went."""
+    """Forget [start, end) for good; return what went. MediaVolumeMissing, before anything changes, while the media
+    disk is away: its files would count as gone and stay on the disk."""
     check_range(start, end)
+    volume.check(settings.media_root, settings.media_require_marker)
     zone = settings.zone
     async with pool.connection() as conn:  # a first look, only to learn which days to lock
         first = await _targets(conn, start, end, lock=False)

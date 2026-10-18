@@ -19,6 +19,8 @@ services:
     environment:
       LOOPI_DATABASE_URL: postgresql://loopi:${LOOPI_DB_PASSWORD}@db:5432/loopi
       LOOPI_MEDIA_ROOT: /srv/loopi/media
+      # true with LOOPI_MEDIA_DIR: media are written only while that disk is mounted (its .loopi-media marker).
+      LOOPI_MEDIA_REQUIRE_MARKER: ${LOOPI_MEDIA_REQUIRE_MARKER:-false}
       LOOPI_PKI_DIR: /srv/loopi/pki
       LOOPI_TZ: ${LOOPI_TZ:-Asia/Seoul}
       LOOPI_OLLAMA_URL: http://models:11434
@@ -29,6 +31,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - ${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi
+      # Media on a disk of their own (LOOPI_MEDIA_DIR, e.g. a mounted HDD); unset, they stay in the data dir.
+      - ${LOOPI_MEDIA_DIR:-${LOOPI_DATA_DIR:-/srv/loopi}/media}:/srv/loopi/media
       - ./providers.yaml:/etc/loopi/providers.yaml:ro
     healthcheck:
       # Passes only once `serve` has applied migrations and uvicorn is listening.
@@ -49,6 +53,8 @@ services:
     environment:
       LOOPI_DATABASE_URL: postgresql://loopi:${LOOPI_DB_PASSWORD}@db:5432/loopi
       LOOPI_MEDIA_ROOT: /srv/loopi/media
+      # true with LOOPI_MEDIA_DIR: media are written only while that disk is mounted (its .loopi-media marker).
+      LOOPI_MEDIA_REQUIRE_MARKER: ${LOOPI_MEDIA_REQUIRE_MARKER:-false}
       LOOPI_PKI_DIR: /srv/loopi/pki
       LOOPI_TZ: ${LOOPI_TZ:-Asia/Seoul}
       LOOPI_OLLAMA_URL: http://models:11434
@@ -68,6 +74,8 @@ services:
       OPENBLAS_NUM_THREADS: "1"
     volumes:
       - ${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi
+      # Media on a disk of their own (LOOPI_MEDIA_DIR, e.g. a mounted HDD); unset, they stay in the data dir.
+      - ${LOOPI_MEDIA_DIR:-${LOOPI_DATA_DIR:-/srv/loopi}/media}:/srv/loopi/media
       - ./providers.yaml:/etc/loopi/providers.yaml:ro
     healthcheck:
       # A Procrastinate worker heartbeat younger than 60 s (a light command: psycopg only).

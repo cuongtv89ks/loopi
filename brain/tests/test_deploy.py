@@ -11,6 +11,7 @@ DEPLOY = Path(__file__).resolve().parents[2] / "deploy"
 COMPOSE = yaml.safe_load((DEPLOY / "docker-compose.yml").read_text())
 SERVICES = COMPOSE["services"]
 PROVIDERS_MOUNT = "./providers.yaml:/etc/loopi/providers.yaml:ro"
+MEDIA_MOUNT = "${LOOPI_MEDIA_DIR:-${LOOPI_DATA_DIR:-/srv/loopi}/media}:/srv/loopi/media"
 
 
 def test_worker_runs_the_pipeline_with_the_api_image_and_data():
@@ -25,7 +26,7 @@ def test_worker_runs_the_pipeline_with_the_api_image_and_data():
     assert env["LOOPI_PROVIDERS_FILE"] == "/etc/loopi/providers.yaml"
     assert env["LOOPI_MODEL_DIR"] == "/srv/loopi/models" and env["HF_HOME"] == "/srv/loopi/models/hf"
     assert env["LOOPI_ASR_MAX_GAIN_DB"] == "${LOOPI_ASR_MAX_GAIN_DB:-30}"  # the README advertises it
-    assert worker["volumes"] == ["${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi", PROVIDERS_MOUNT]
+    assert worker["volumes"] == ["${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi", MEDIA_MOUNT, PROVIDERS_MOUNT]
     assert worker["healthcheck"]["test"] == ["CMD", "loopi-brain", "worker-health"]
     assert worker["healthcheck"]["interval"] == "30s" and worker["stop_grace_period"] == "2m"
     assert env["OMP_NUM_THREADS"] == env["OPENBLAS_NUM_THREADS"] == "1"
@@ -208,3 +209,17 @@ def test_the_readme_says_how_to_connect_claude_code():
     assert "export NODE_EXTRA_CA_CERTS=/srv/loopi/pki/ca.crt" in section  # the path itself, not an unexported variable
     assert "$LOOPI_DATA_DIR" not in section and "deploy/.env" in section
     assert "loopi-brain mcp-token create" in readme
+
+
+def test_media_may_live_on_their_own_disk_and_are_written_only_while_it_is_mounted():
+    for name in ("api", "worker"):
+        service = SERVICES[name]
+        # after the data dir: the media mount is laid over its media/ (unset, the same directory as before)
+        assert service["volumes"][:2] == ["${LOOPI_DATA_DIR:-/srv/loopi}:/srv/loopi", MEDIA_MOUNT]
+        assert service["environment"]["LOOPI_MEDIA_REQUIRE_MARKER"] == "${LOOPI_MEDIA_REQUIRE_MARKER:-false}"
+    example = (DEPLOY / ".env.example").read_text()
+    assert "# LOOPI_MEDIA_DIR=" in example and "# LOOPI_MEDIA_REQUIRE_MARKER=true" in example
+    readme = (DEPLOY / "README.md").read_text()
+    section = readme.split("## Media on their own disk", 1)[1].split("\n## ", 1)[0]
+    assert "touch /mnt/loopi-media/.loopi-media" in section and "LOOPI_MEDIA_REQUIRE_MARKER=true" in section
+    assert "rsync" in section and "--delete" in section  # the last pass also drops what a forget removed meanwhile

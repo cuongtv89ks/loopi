@@ -16,6 +16,7 @@ import anyio
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from . import volume
 from .config import Settings
 
 KIND_CONTENT_TYPES = {"video": "video/h264", "audio": "audio/ogg", "marker": "application/json"}
@@ -172,6 +173,8 @@ async def store_item(
     if existing is not None:
         return _duplicate_or_conflict(existing, device_id, header)
 
+    if not volume.ready(settings.media_root, settings.media_require_marker):
+        raise _reject("brain storage is not mounted", status=507)  # the agent keeps the item queued and retries
     settings.media_root.mkdir(parents=True, exist_ok=True)
     if shutil.disk_usage(settings.media_root).free < settings.min_free_bytes:
         raise _reject("brain storage is full", status=507)

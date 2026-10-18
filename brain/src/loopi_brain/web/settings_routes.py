@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
-from .. import forget, reprocess, store
+from .. import forget, reprocess, store, volume
 from ..mcp import tokens as mcp_tokens
 from ..pipeline import retention, status
 from ..providers.config import TASKS, ProvidersConfigError, load_providers
@@ -127,10 +127,14 @@ async def forget_now(request: Request, start: str = Form(...), end: str = Form(.
         raise HTTPException(status_code=422, detail="not confirmed")
     state = request.app.state
     first, last = _local_range(start, end, state.settings.zone)
-    counts = await forget.forget_range(state.pool, state.settings, first, last)
+    try:
+        counts = await forget.forget_range(state.pool, state.settings, first, last)
+    except volume.MediaVolumeMissing:
+        return HTMLResponse(f'<p class="err">{MEDIA_MISSING}</p>')
     return TEMPLATES.TemplateResponse(request, "_forgotten.html", {"first": first, "last": last, "c": counts})
 
 
+MEDIA_MISSING = "Ổ media chưa được gắn, nên chưa thể quên. Hãy gắn lại ổ rồi thử lại."
 NAME_REASON = f"Tên token phải có từ 1 tới {mcp_tokens.NAME_MAX} ký tự."
 
 

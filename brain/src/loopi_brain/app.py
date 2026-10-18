@@ -6,10 +6,11 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import AsyncConnectionPool
 
-from . import media
+from . import media, volume
 from .api.device_routes import router as device_router
 from .config import Settings
 from .db import make_pool
@@ -78,8 +79,10 @@ def create_app(
     app.state.llm = llm
 
     @app.get("/healthz", include_in_schema=False)
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok"}
+    async def healthz() -> JSONResponse:
+        if not volume.ready(settings.media_root, settings.media_require_marker):
+            return JSONResponse({"status": "media volume missing"}, status_code=503)
+        return JSONResponse({"status": "ok"})
 
     app.include_router(device_router)
     app.include_router(web_router)
