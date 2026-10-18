@@ -1,5 +1,6 @@
 //! Process-wide orchestration: recorders, uploader, heartbeat, control loop, LED and disk guard.
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use crate::led::{led_pattern, level_at, LedDriver, LedPattern, LedWriter, LED_UN
 use crate::liveness::Liveness;
 use crate::ota::pending::PendingStore;
 use crate::ota::system::{BundleFetcher, Rauc, Rebooter};
-use crate::ota::task::{run_ota, OtaDeps, OtaTimings};
+use crate::ota::task::{ignore_update, run_ota, OtaDeps, OtaTimings, IN_PROGRESS};
 use crate::queue::Queue;
 use crate::recorder::audio::{self, AudioOptions, AudioSourceFactory};
 use crate::recorder::gain;
@@ -34,6 +35,8 @@ use crate::uploader::run_uploader;
 pub const DISK_FULL_ERROR: &str = "disk full: recording stopped";
 /// `status.ota` for an update on a system that cannot install one (no `rauc.slot=` on the kernel command line).
 pub const UPDATES_UNSUPPORTED: &str = "this system cannot install updates (no A/B boot slots)";
+/// `last_error` reason when an update arrives but the OTA task has stopped.
+pub const OTA_UNAVAILABLE: &str = "the update task is not running";
 const STATE_NOT_SAVED_PREFIX: &str = "state not saved: ";
 const COMMAND_CHANNEL_CAPACITY: usize = 32;
 
@@ -130,6 +133,25 @@ fn refuse_update(status: &StatusTx, request: &crate::ota::UpdateRequest, reason:
         Some(reason.to_string()),
     );
     status.send_modify(|s| s.ota = Some(report));
+}
+
+/// Hand an `update` to the OTA task, unless it already owns one (P4a design §6.1: a second update is acked but ignored,
+/// and the running one keeps its report). `busy` is claimed here, before the send, so two updates in one heartbeat
+/// cannot both get through; the task clears it when it is idle again.
+fn forward_update(tx: &mpsc::Sender<crate::ota::UpdateRequest>, busy: &AtomicBool, status: &StatusTx, request: crate::ota::UpdateRequest) {
+    let id = request.command_id.clone();
+    if busy.swap(true, Ordering::SeqCst) {
+        return ignore_update(status, id.as_deref(), IN_PROGRESS);
+    }
+    match tx.try_send(request) {
+        Ok(()) => {}
+        // Cannot happen while `busy` guards the channel; if it does, the queued request keeps the flag set.
+        Err(mpsc::error::TrySendError::Full(_)) => ignore_update(status, id.as_deref(), IN_PROGRESS),
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            busy.store(false, Ordering::SeqCst);
+            ignore_update(status, id.as_deref(), OTA_UNAVAILABLE);
+        }
+    }
 }
 
 fn set_if_changed(slot: &mut bool, value: bool) -> bool {
@@ -290,6 +312,8 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
         .with_delivered(delivered.clone()),
         shutdown.clone(),
     ));
+    // Starts busy: no update is taken before the task has settled what the last boot left behind.
+    let ota_busy = Arc::new(AtomicBool::new(true));
     let ota_tx = match (ota, os.slot) {
         (Some(system), Some(booted)) => {
             let (tx, rx) = mpsc::channel::<crate::ota::UpdateRequest>(4);
@@ -301,6 +325,7 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
                 disk: disk.clone(),
                 status: status.clone(),
                 delivered: delivered.subscribe(),
+                busy: ota_busy.clone(),
                 booted,
                 timings: system.timings,
             };
@@ -356,16 +381,7 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
         tokio::select! {
             Some(command) = command_rx.recv() => match command {
                 Command::Update(request) => match &ota_tx {
-                    Some(tx) => {
-                        if let Err(e) = tx.try_send(request) {
-                            let request = match e {
-                                mpsc::error::TrySendError::Full(r) | mpsc::error::TrySendError::Closed(r) => r,
-                            };
-                            let id = request.command_id.as_deref().unwrap_or("-").to_string();
-                            status.send_modify(|s| s.last_error = Some(format!(
-                                "update {id} ignored: {}", crate::ota::task::IN_PROGRESS)));
-                        }
-                    }
+                    Some(tx) => forward_update(tx, &ota_busy, &status, request),
                     None => refuse_update(&status, &request, UPDATES_UNSUPPORTED),
                 },
                 command => apply_command(&control_tx, &paths.state, &status, &command),
@@ -465,6 +481,52 @@ mod tests {
         assert_eq!(report.command_id.as_deref(), Some("01JA2B3C4D5E6F7G8H9J0KMNPQ"));
         assert_eq!((report.state, report.version.as_str(), report.error.as_deref()), (OtaState::Failed, "1", Some(UPDATES_UNSUPPORTED)));
         assert_eq!(status.borrow().last_error, None, "an update refusal does not touch last_error");
+    }
+
+    fn update_request(id: &str) -> crate::ota::UpdateRequest {
+        crate::ota::UpdateRequest {
+            command_id: Some(id.into()),
+            bundle: "loopi-dev-1.raucb".into(),
+            version: "1".into(),
+            variant: crate::ota::Variant::Dev,
+            sha256: "ab".repeat(32),
+            size: 10,
+        }
+    }
+
+    #[test]
+    fn a_second_update_is_noted_and_not_queued_while_the_task_owns_one() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let (busy, status) = (AtomicBool::new(false), status_channel(AgentStatus::default()));
+        forward_update(&tx, &busy, &status, update_request("FIRST"));
+        assert!(busy.load(Ordering::SeqCst), "claimed on the way in, before the task has even looked");
+        assert_eq!(rx.try_recv().unwrap().command_id.as_deref(), Some("FIRST"));
+        assert_eq!(status.borrow().last_error, None);
+
+        forward_update(&tx, &busy, &status, update_request("SECOND"));
+        assert!(rx.try_recv().is_err(), "the second update is not queued behind the first");
+        assert_eq!(status.borrow().last_error.as_deref(), Some("update SECOND ignored: another update is in progress"));
+        assert!(busy.load(Ordering::SeqCst), "the first update still owns the task");
+        assert_eq!(status.borrow().ota, None, "the running update's report is not replaced");
+
+        busy.store(false, Ordering::SeqCst);
+        forward_update(&tx, &busy, &status, update_request("THIRD"));
+        assert_eq!(rx.try_recv().unwrap().command_id.as_deref(), Some("THIRD"), "accepted once the task is idle again");
+    }
+
+    #[test]
+    fn an_update_for_a_stopped_or_clogged_task_says_so_and_does_not_claim_the_task() {
+        let (tx, rx) = mpsc::channel(1);
+        let (busy, status) = (AtomicBool::new(false), status_channel(AgentStatus::default()));
+        drop(rx);
+        forward_update(&tx, &busy, &status, update_request("GONE"));
+        assert!(!busy.load(Ordering::SeqCst));
+        assert_eq!(status.borrow().last_error.as_deref(), Some("update GONE ignored: the update task is not running"));
+
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(update_request("QUEUED")).unwrap();
+        forward_update(&tx, &busy, &status, update_request("FULL"));
+        assert_eq!(status.borrow().last_error.as_deref(), Some("update FULL ignored: another update is in progress"));
     }
 
     #[test]

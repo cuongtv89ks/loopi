@@ -1,6 +1,7 @@
 //! The OTA task (P4a design §6): finish what the last boot left (confirm a trial, report a rollback or an
 //! interruption), then install the updates the brain sends, one at a time.
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,12 +44,42 @@ pub struct OtaDeps {
     pub status: StatusTx,
     /// Heartbeats the brain answered with 200 since the agent started.
     pub delivered: watch::Receiver<u64>,
+    /// True while the task owns an update (its boot reconciliation, or from taking a request until the outcome is
+    /// delivered). `run` sets it when it hands over a request and refuses further updates while it is set; the task
+    /// clears it when idle again. Without it a second update would wait unread in the channel behind the first.
+    pub busy: Arc<AtomicBool>,
     pub booted: Slot,
     pub timings: OtaTimings,
 }
 
+/// Holds `OtaDeps::busy` for as long as it lives, on every exit path.
+struct BusyGuard(Arc<AtomicBool>);
+
+impl BusyGuard {
+    fn hold(flag: &Arc<AtomicBool>) -> Self {
+        flag.store(true, Ordering::SeqCst);
+        Self(flag.clone())
+    }
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Note in `last_error` that an update was acked but not started (P4a design §6.1); the running one keeps its report.
+pub fn ignore_update(status: &StatusTx, command_id: Option<&str>, reason: &str) {
+    let id = command_id.unwrap_or("-");
+    tracing::warn!(id, reason, "update ignored");
+    status.send_modify(|s| s.last_error = Some(format!("update {id} ignored: {reason}")));
+}
+
 pub async fn run_ota(mut deps: OtaDeps, mut updates: mpsc::Receiver<UpdateRequest>, mut shutdown: watch::Receiver<bool>) {
-    on_boot(&mut deps, &mut shutdown).await;
+    {
+        let _busy = BusyGuard::hold(&deps.busy);
+        on_boot(&mut deps, &mut shutdown).await;
+    }
     loop {
         // Checked before waiting: on_boot() and install() may have used up the shutdown notification (`changed()`
         // fires once per change), and waiting again would then never end.
@@ -57,7 +88,10 @@ pub async fn run_ota(mut deps: OtaDeps, mut updates: mpsc::Receiver<UpdateReques
         }
         tokio::select! {
             update = updates.recv() => match update {
-                Some(request) => install(&mut deps, request, &mut shutdown).await,
+                Some(request) => {
+                    let _busy = BusyGuard::hold(&deps.busy);
+                    install(&mut deps, request, &mut shutdown).await;
+                }
                 None => return,
             },
             changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return },
@@ -199,11 +233,9 @@ async fn download(deps: &OtaDeps, request: &UpdateRequest, part: &Path, shutdown
 
 async fn install(deps: &mut OtaDeps, request: UpdateRequest, shutdown: &mut watch::Receiver<bool>) {
     match deps.store.load() {
+        // Backstop for `busy`: an update still unfinished on disk (waiting for its trial boot) blocks a new one.
         Ok(Some(pending)) if pending.outcome().is_none() => {
-            let id = request.command_id.as_deref().unwrap_or("-");
-            tracing::warn!(id, "update ignored: {IN_PROGRESS}");
-            deps.status.send_modify(|s| s.last_error = Some(format!("update {id} ignored: {IN_PROGRESS}")));
-            return;
+            return ignore_update(&deps.status, request.command_id.as_deref(), IN_PROGRESS);
         }
         Err(e) => tracing::warn!(error = %e, "unreadable update state; starting over"),
         _ => {}
@@ -276,8 +308,9 @@ mod tests {
     use crate::ota::{OtaState, Slot, UpdateRequest, Variant};
     use crate::disk::DiskUsage;
     use crate::status::{status_channel, AgentStatus};
-    use crate::testing::{FakeFetcher, FakeRauc, FakeRebooter, FixedDisk};
+    use crate::testing::{FakeFetcher, FakeRauc, FakeRebooter, FixedDisk, GatedFetcher};
     use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::{mpsc, watch};
@@ -293,6 +326,7 @@ mod tests {
         disk: Arc<FixedDisk>,
         status: StatusTx,
         delivered: Arc<watch::Sender<u64>>,
+        busy: Arc<AtomicBool>,
         shutdown: watch::Sender<bool>,
     }
 
@@ -306,6 +340,7 @@ mod tests {
                 disk: Arc::new(FixedDisk::new(40.0)),
                 status: status_channel(AgentStatus::default()),
                 delivered: Arc::new(watch::channel(0).0),
+                busy: Arc::default(),
                 shutdown: watch::channel(false).0,
             }
         }
@@ -323,6 +358,7 @@ mod tests {
                 disk: self.disk.clone(),
                 status: self.status.clone(),
                 delivered: self.delivered.subscribe(),
+                busy: self.busy.clone(),
                 booted,
                 timings: OtaTimings { retry_first: Duration::from_millis(1), retry_max: Duration::from_millis(2),
                                       attempts: 3, reboot_report_wait: Duration::from_millis(20) },
@@ -336,6 +372,10 @@ mod tests {
 
         fn heartbeat(&self) {
             self.delivered.send_modify(|n| *n += 1);
+        }
+
+        fn busy(&self) -> bool {
+            self.busy.load(Ordering::SeqCst)
         }
 
         fn ota(&self) -> Option<OtaReport> {
@@ -442,7 +482,8 @@ mod tests {
         let rig = Rig::new();
         let (tx, _task) = rig.start(Slot::A);
         tx.send(request(&good_sha())).await.unwrap();
-        // the fake reboot returns: the first update now waits for its trial boot (pending.json says rebooting)
+        // Backstop: the fake reboot returns, so the task is idle while pending.json says rebooting (run() would normally
+        // stop a second update before it got here, see `forward_update`).
         rig.until(|r| *r.rebooter.calls.lock().unwrap() == 1).await;
         tx.send(request(&good_sha())).await.unwrap();
         rig.until(|r| r.status.borrow().last_error.as_deref().is_some_and(|e| e.contains(IN_PROGRESS))).await;
@@ -457,6 +498,7 @@ mod tests {
                                     target_slot: Slot::B, phase: Phase::Rebooting, error: None }).unwrap();
         let (_tx, _task) = rig.start(Slot::B);
         rig.until(|r| r.ota().is_some_and(|o| o.state == OtaState::Trying)).await;
+        assert!(rig.busy(), "a trial waiting for its heartbeat keeps the task busy");
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(rig.rauc.calls.lock().unwrap().is_empty(), "no mark-good before a heartbeat got through");
         rig.heartbeat();
@@ -467,6 +509,7 @@ mod tests {
         rig.heartbeat();
         rig.until(|r| r.ota().is_none()).await;
         assert_eq!(rig.store().load().unwrap(), None);
+        rig.until(|r| !r.busy()).await;
     }
 
     #[tokio::test]
@@ -589,5 +632,34 @@ mod tests {
         task.await.unwrap();
         assert!(rig.rauc.calls.lock().unwrap().is_empty(), "an unconfirmed trial is never marked good");
         assert_eq!(rig.store().load().unwrap().unwrap().phase, Phase::Rebooting);
+    }
+
+    #[tokio::test]
+    async fn the_task_is_busy_from_taking_an_update_until_its_outcome_is_delivered_and_free_after_a_failure() {
+        let rig = Rig::new();
+        let gated = Arc::new(GatedFetcher::new(BODY));
+        let mut deps = rig.deps(Slot::A);
+        deps.fetcher = gated.clone();
+        let (tx, rx) = mpsc::channel(4);
+        let _task = tokio::spawn(run_ota(deps, rx, rig.shutdown.subscribe()));
+        rig.until(|r| !r.busy()).await;
+
+        // The first update is rejected by the checksum, but only after the fetcher is let go.
+        tx.send(request(&"0".repeat(64))).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), gated.entered.notified()).await.unwrap();
+        assert!(rig.busy(), "busy while downloading");
+        gated.release.notify_one();
+        rig.until(|r| r.ota().is_some_and(|o| o.state == OtaState::Failed)).await;
+        assert!(rig.busy(), "the failed outcome still occupies the report until the brain heard it");
+        rig.heartbeat();
+        rig.heartbeat();
+        rig.until(|r| r.ota().is_none() && !r.busy()).await;
+
+        // Free again: the next update is accepted and runs to the trial reboot.
+        gated.release.notify_one();
+        tx.send(request(&good_sha())).await.unwrap();
+        rig.until(|r| *r.rebooter.calls.lock().unwrap() == 1).await;
+        assert_eq!(*gated.inner.calls.lock().unwrap(), 2);
+        rig.until(|r| !r.busy()).await;
     }
 }

@@ -18,7 +18,7 @@ use loopi_agent::ota::task::OtaTimings;
 use loopi_agent::ota::{Slot, Variant};
 use loopi_agent::run::{run, Deps, OtaSystem, Timings, UPDATES_UNSUPPORTED};
 use loopi_agent::sysinfo::NoProbe;
-use loopi_agent::testing::{FakeFetcher, FakeRauc, FakeRebooter, FixedDisk, RecordingLed, SyncedClock, ToneSource};
+use loopi_agent::testing::{FakeFetcher, FakeRauc, FakeRebooter, FixedDisk, GatedFetcher, RecordingLed, SyncedClock, ToneSource};
 use loopi_agent::transport::HttpTransport;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -28,6 +28,7 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const PAUSE_ID: &str = "01JA2B3C4D5E6F7G8H9J0KMNPQ";
 const UPDATE_ID: &str = "01JA2B3C4D5E6F7G8H9J0KMNPR";
+const SECOND_UPDATE_ID: &str = "01JA2B3C4D5E6F7G8H9J0KMNPS";
 const BUNDLE_BODY: &[u8] = b"a signed bundle, as far as the fake RAUC cares";
 const AUDIO_SEGMENT: Duration = Duration::from_secs(1);
 const MAX_SEGMENT_SECONDS: i64 = 3600;
@@ -591,5 +592,141 @@ async fn an_unconfirmed_trial_is_not_marked_good_and_does_not_block_shutdown() {
     assert!(rauc.calls.lock().unwrap().is_empty(), "no heartbeat got through: the new slot is not marked good");
     let pending: Value = serde_json::from_slice(&fs::read(data_dir.join("ota/pending.json")).unwrap()).unwrap();
     assert_eq!(pending["phase"], "rebooting", "the trial is still unconfirmed on disk");
+    assert_eq!(violations.lock().unwrap().clone(), Vec::<String>::new(), "the mock brain saw contract violations");
+}
+
+/// Design §6.1: a second `update` while one runs is acked but ignored; the running update keeps reporting and the
+/// second one is never started, not even after the first has failed or finished.
+#[tokio::test]
+async fn a_second_update_during_a_download_is_acked_noted_and_never_started() {
+    const BUNDLE: &str = "loopi-dev-2026.10.21-a1b2c3d.raucb";
+    let brain = MockServer::start().await;
+    let violations: Violations = Arc::default();
+    let heartbeat_log = violations.clone();
+    let calls = AtomicUsize::new(0);
+    let sha256 = hex::encode(Sha256::digest(BUNDLE_BODY));
+    Mock::given(method("POST"))
+        .and(path("/v1/heartbeat"))
+        .respond_with(move |request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let errors = schema_errors("Heartbeat", &body);
+            if !record(&heartbeat_log, errors.into_iter().map(|e| format!("heartbeat: {e}")).collect()) {
+                return ResponseTemplate::new(422);
+            }
+            let update = |id: &str, version: &str| json!({"id": id, "type": "update", "payload": {
+                "bundle": format!("loopi-dev-{version}.raucb"), "version": version, "variant": "dev",
+                "sha256": sha256, "size": BUNDLE_BODY.len()}});
+            let commands = match calls.fetch_add(1, Ordering::SeqCst) {
+                0 => json!([update(UPDATE_ID, "2026.10.21-a1b2c3d")]),
+                1 => json!([update(SECOND_UPDATE_ID, "2026.10.22-bbbbbbb")]),
+                _ => json!([]),
+            };
+            ResponseTemplate::new(200).set_body_json(json!({ "commands": commands }))
+        })
+        .mount(&brain)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    fs::create_dir_all(data_dir.join("config")).unwrap();
+    fs::write(data_dir.join("config/state.json"), br#"{"paused":true,"audio_enabled":false}"#).unwrap();
+    let config = Config {
+        wifi: None,
+        brain: BrainConfig { url: brain.uri(), pair_token: None, ca_fingerprint: None },
+        capture: CaptureConfig::default(),
+        schedule: ScheduleConfig::default(),
+        led: LedConfig::default(),
+        gpio: GpioConfig::default(),
+        paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
+    };
+    let (rauc, rebooter) = (Arc::new(FakeRauc::default()), Arc::new(FakeRebooter::default()));
+    let fetcher = Arc::new(GatedFetcher::new(BUNDLE_BODY));
+    let factory: AudioSourceFactory = Box::new(|| Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>));
+    let (_press_tx, presses) = mpsc::channel(1);
+    let deps = Deps {
+        config,
+        clock: Arc::new(SyncedClock),
+        disk: Arc::new(FixedDisk::new(10.0)),
+        transport: Arc::new(HttpTransport::new(reqwest::Client::new(), &brain.uri())),
+        audio_factory: factory,
+        led: Some(Box::new(RecordingLed::default())),
+        presses,
+        probe: Arc::new(NoProbe),
+        timings: Timings {
+            heartbeat: Duration::from_millis(100),
+            upload_idle: Duration::from_millis(50),
+            video_poll: Duration::from_millis(100),
+            disk_check: Duration::from_millis(200),
+            tick: Duration::from_millis(50),
+            led_frame: Duration::from_millis(20),
+            audio_retry: Duration::from_millis(100),
+            audio_segment: Some(AUDIO_SEGMENT),
+        },
+        liveness: loopi_agent::liveness::Liveness::new(),
+        os: OsInfo { version: Some("2026.10.14-0000000".into()), variant: Some(Variant::Dev), slot: Some(Slot::A) },
+        ota: Some(OtaSystem {
+            rauc: rauc.clone(),
+            rebooter: rebooter.clone(),
+            fetcher: fetcher.clone(),
+            timings: OtaTimings {
+                retry_first: Duration::from_millis(1),
+                retry_max: Duration::from_millis(2),
+                attempts: 2,
+                reboot_report_wait: Duration::from_millis(10),
+            },
+        }),
+    };
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let agent = tokio::spawn(run(deps, stop_rx));
+
+    // The first update is inside the fetcher, which holds it there; the second one arrives meanwhile.
+    tokio::time::timeout(Duration::from_secs(10), fetcher.entered.notified()).await.expect("the first update is downloading");
+    let noted = |hb: &Value| {
+        hb["last_error"].as_str().is_some_and(|e| e.contains(&format!("update {SECOND_UPDATE_ID} ignored: another update is in progress")))
+    };
+    let mut sent = Vec::new();
+    for _ in 0..100 {
+        sent = heartbeats(&brain.received_requests().await.unwrap());
+        if sent.iter().any(noted) && sent.iter().any(|hb| hb["acked_command_ids"] == json!([SECOND_UPDATE_ID])) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(sent.iter().any(noted), "the ignored update is noted in last_error: {:?}", sent.last());
+    assert!(sent.iter().any(|hb| hb["acked_command_ids"] == json!([SECOND_UPDATE_ID])), "the ignored update is still acked");
+    let during = sent.iter().rev().find_map(|hb| hb.get("ota")).expect("the running update keeps reporting");
+    assert_eq!((during["command_id"].as_str(), during["state"].as_str()), (Some(UPDATE_ID), Some("downloading")));
+    assert_eq!(*fetcher.inner.calls.lock().unwrap(), 0, "nothing was fetched yet: the gate is closed");
+
+    // Let the first update finish; the second must still not start.
+    fetcher.release.notify_one();
+    let rebooting = |hb: &Value| hb["ota"]["state"] == "rebooting";
+    for _ in 0..100 {
+        sent = heartbeats(&brain.received_requests().await.unwrap());
+        if sent.iter().any(rebooting) && *rebooter.calls.lock().unwrap() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let before = sent.len();
+    for _ in 0..100 {
+        sent = heartbeats(&brain.received_requests().await.unwrap());
+        if sent.len() >= before + 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    stop_tx.send(true).unwrap();
+    agent.await.unwrap().unwrap();
+
+    assert!(sent.iter().any(rebooting), "the first update reached its trial reboot");
+    assert_eq!(*rebooter.calls.lock().unwrap(), 1);
+    assert_eq!(*fetcher.inner.calls.lock().unwrap(), 1, "only the first update was ever fetched");
+    assert_eq!(*rauc.calls.lock().unwrap(), vec![format!("install {BUNDLE} exists=true")]);
+    for hb in &sent {
+        if let Some(ota) = hb.get("ota") {
+            assert_eq!(ota["command_id"], UPDATE_ID, "the second update never shows up in the report: {hb}");
+        }
+    }
     assert_eq!(violations.lock().unwrap().clone(), Vec::<String>::new(), "the mock brain saw contract violations");
 }

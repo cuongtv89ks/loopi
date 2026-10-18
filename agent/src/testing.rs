@@ -270,3 +270,26 @@ impl BundleFetcher for FakeFetcher {
         Ok(())
     }
 }
+
+/// A fetcher that waits to be let go: `entered` is signalled when `fetch` starts, `fetch` returns only after `release`.
+/// Both are single-permit `Notify`s, so signalling before the other side waits is not lost.
+pub struct GatedFetcher {
+    pub inner: FakeFetcher,
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+}
+
+impl GatedFetcher {
+    pub fn new(body: &[u8]) -> Self {
+        Self { inner: FakeFetcher::new(body), entered: tokio::sync::Notify::new(), release: tokio::sync::Notify::new() }
+    }
+}
+
+#[async_trait]
+impl BundleFetcher for GatedFetcher {
+    async fn fetch(&self, bundle: &str, dest: &Path, size: u64) -> Result<(), TransportError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        self.inner.fetch(bundle, dest, size).await
+    }
+}
