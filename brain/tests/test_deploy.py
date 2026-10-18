@@ -223,3 +223,6 @@ def test_media_may_live_on_their_own_disk_and_are_written_only_while_it_is_mount
     section = readme.split("## Media on their own disk", 1)[1].split("\n## ", 1)[0]
     assert "touch /mnt/loopi-media/.loopi-media" in section and "LOOPI_MEDIA_REQUIRE_MARKER=true" in section
     assert "rsync" in section and "--delete" in section  # the last pass also drops what a forget removed meanwhile
+    assert "--exclude=/lost+found" in section  # mkfs's root-owned directory exists only on the new disk
+    assert r"After=mnt-loopi\x2dmedia.mount" in section  # a nofail mount is not ordered before Docker by itself
+    assert "docker compose restart api worker" in section  # up -d keeps a running container on the bare mount point
