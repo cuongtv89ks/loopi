@@ -5,7 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
-from .. import bundles, devices, items, media, pki
+from .. import bundles, devices, items, media, ota, pki
 from ..pipeline import dispatch
 from .device_auth import check_agent_version, current_device
 
@@ -159,4 +159,6 @@ async def heartbeat(
     pending = await devices.record_heartbeat(
         request.app.state.pool, device["id"], status, body.acked_command_ids
     )
+    if body.ota is not None:
+        await ota.record_report(request.app.state.pool, device["id"], body.ota.model_dump())
     return HeartbeatResponse(commands=[Command(**row) for row in pending])
