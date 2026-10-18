@@ -163,6 +163,7 @@ impl Harness {
             },
             liveness: loopi_agent::liveness::Liveness::new(),
             os: OsInfo::default(),
+            ota: None,
         };
         let (stop_tx, stop_rx) = watch::channel(false);
         (deps, stop_tx, stop_rx)

@@ -17,6 +17,9 @@ use crate::heartbeat::{run_heartbeat, HeartbeatDeps, HEARTBEAT_INTERVAL};
 use crate::item::ItemKind;
 use crate::led::{led_pattern, level_at, LedDriver, LedPattern, LedWriter, LED_UNAVAILABLE_ERROR};
 use crate::liveness::Liveness;
+use crate::ota::pending::PendingStore;
+use crate::ota::system::{BundleFetcher, Rauc, Rebooter};
+use crate::ota::task::{run_ota, OtaDeps, OtaTimings};
 use crate::queue::Queue;
 use crate::recorder::audio::{self, AudioOptions, AudioSourceFactory};
 use crate::recorder::gain;
@@ -98,6 +101,16 @@ pub struct Deps {
     pub liveness: Liveness,
     /// What this device runs (version, variant, boot slot); reported in heartbeats.
     pub os: crate::osinfo::OsInfo,
+    /// OTA support; the task runs only when this is set and the kernel command line names a boot slot.
+    pub ota: Option<OtaSystem>,
+}
+
+/// What the device needs to install updates; `None` on hosts without RAUC (tests, dev machines).
+pub struct OtaSystem {
+    pub rauc: Arc<dyn Rauc>,
+    pub rebooter: Arc<dyn Rebooter>,
+    pub fetcher: Arc<dyn BundleFetcher>,
+    pub timings: OtaTimings,
 }
 
 /// Where the LED loop is in its life: normal patterns, forced on while recorders wind down, done.
@@ -227,7 +240,7 @@ fn initial_led_status(led: Option<&dyn LedDriver>) -> (LedHealth, Option<String>
 }
 
 pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Result<()> {
-    let Deps { config, clock, disk, transport, audio_factory, led, mut presses, probe, timings, liveness, os } = deps;
+    let Deps { config, clock, disk, transport, audio_factory, led, mut presses, probe, timings, liveness, os, ota } = deps;
     let paths = Paths::new(&config.paths.data_dir);
     let segment = Duration::from_secs(config.capture.segment_seconds.into());
 
@@ -259,6 +272,8 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
     let (led_phase_tx, led_phase_rx) = watch::channel(LedPhase::Running);
     let (command_tx, mut command_rx) = mpsc::channel::<Command>(COMMAND_CHANNEL_CAPACITY);
 
+    // Heartbeats the brain answered; the OTA task waits on it to know an outcome was heard.
+    let delivered = Arc::new(watch::channel(0u64).0);
     let mut tasks = JoinSet::new();
     tasks.spawn(run_uploader(queue.clone(), transport.clone(), status.clone(), shutdown.clone(), timings.upload_idle));
     tasks.spawn(run_heartbeat(
@@ -271,9 +286,29 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
             probe,
             timings.heartbeat,
         )
-        .with_os(os.clone()),
+        .with_os(os.clone())
+        .with_delivered(delivered.clone()),
         shutdown.clone(),
     ));
+    let ota_tx = match (ota, os.slot) {
+        (Some(system), Some(booted)) => {
+            let (tx, rx) = mpsc::channel::<crate::ota::UpdateRequest>(4);
+            let deps = OtaDeps {
+                store: PendingStore::new(&config.paths.data_dir),
+                rauc: system.rauc,
+                rebooter: system.rebooter,
+                fetcher: system.fetcher,
+                disk: disk.clone(),
+                status: status.clone(),
+                delivered: delivered.subscribe(),
+                booted,
+                timings: system.timings,
+            };
+            tasks.spawn(run_ota(deps, rx, shutdown.clone()));
+            Some(tx)
+        }
+        _ => None,
+    };
     if let Some(led) = led {
         tasks.spawn(led_loop(led, status.clone(), control_rx, timings.led_frame, led_phase_rx));
     }
@@ -320,7 +355,19 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
         audio_gate_tx.send_if_modified(|g| set_if_changed(g, gates.audio));
         tokio::select! {
             Some(command) = command_rx.recv() => match command {
-                Command::Update(request) => refuse_update(&status, &request, UPDATES_UNSUPPORTED),
+                Command::Update(request) => match &ota_tx {
+                    Some(tx) => {
+                        if let Err(e) = tx.try_send(request) {
+                            let request = match e {
+                                mpsc::error::TrySendError::Full(r) | mpsc::error::TrySendError::Closed(r) => r,
+                            };
+                            let id = request.command_id.as_deref().unwrap_or("-").to_string();
+                            status.send_modify(|s| s.last_error = Some(format!(
+                                "update {id} ignored: {}", crate::ota::task::IN_PROGRESS)));
+                        }
+                    }
+                    None => refuse_update(&status, &request, UPDATES_UNSUPPORTED),
+                },
                 command => apply_command(&control_tx, &paths.state, &status, &command),
             },
             Some(press) = presses.recv() => handle_press(press, &queue, clock.as_ref(), &control_tx, &paths.state, &status),

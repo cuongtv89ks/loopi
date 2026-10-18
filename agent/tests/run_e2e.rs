@@ -14,10 +14,11 @@ use chrono::DateTime;
 use loopi_agent::config::{BrainConfig, CaptureConfig, Config, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
 use loopi_agent::recorder::audio::{AudioSource, AudioSourceFactory};
 use loopi_agent::osinfo::OsInfo;
-use loopi_agent::ota::Variant;
-use loopi_agent::run::{run, Deps, Timings, UPDATES_UNSUPPORTED};
+use loopi_agent::ota::task::OtaTimings;
+use loopi_agent::ota::{Slot, Variant};
+use loopi_agent::run::{run, Deps, OtaSystem, Timings, UPDATES_UNSUPPORTED};
 use loopi_agent::sysinfo::NoProbe;
-use loopi_agent::testing::{FixedDisk, RecordingLed, SyncedClock, ToneSource};
+use loopi_agent::testing::{FakeFetcher, FakeRauc, FakeRebooter, FixedDisk, RecordingLed, SyncedClock, ToneSource};
 use loopi_agent::transport::HttpTransport;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -27,6 +28,7 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const PAUSE_ID: &str = "01JA2B3C4D5E6F7G8H9J0KMNPQ";
 const UPDATE_ID: &str = "01JA2B3C4D5E6F7G8H9J0KMNPR";
+const BUNDLE_BODY: &[u8] = b"a signed bundle, as far as the fake RAUC cares";
 const AUDIO_SEGMENT: Duration = Duration::from_secs(1);
 const MAX_SEGMENT_SECONDS: i64 = 3600;
 
@@ -221,6 +223,7 @@ async fn records_uploads_and_obeys_a_remote_pause() {
         },
         liveness: liveness.clone(),
         os: OsInfo::default(),
+        ota: None,
     };
     let (stop_tx, stop_rx) = watch::channel(false);
     let agent = tokio::spawn(run(deps, stop_rx));
@@ -341,6 +344,7 @@ async fn an_update_on_a_system_without_ota_support_is_reported_failed() {
         liveness: loopi_agent::liveness::Liveness::new(),
         // A release file but no `rauc.slot=`: the version is known, the boot slot is not.
         os: OsInfo { version: Some("2026.10.14-0000000".into()), variant: Some(Variant::Dev), slot: None },
+        ota: None,
     };
     let (stop_tx, stop_rx) = watch::channel(false);
     let agent = tokio::spawn(run(deps, stop_rx));
@@ -365,5 +369,227 @@ async fn an_update_on_a_system_without_ota_support_is_reported_failed() {
     let first = &sent[0];
     assert_eq!((first["os_version"].as_str(), first["os_variant"].as_str()), (Some("2026.10.14-0000000"), Some("dev")));
     assert!(first.get("boot_slot").is_none(), "an unknown slot is left out, not guessed");
+    assert_eq!(violations.lock().unwrap().clone(), Vec::<String>::new(), "the mock brain saw contract violations");
+}
+
+/// An `update` command on a device that has A/B slots runs the whole install: download, checksum, `rauc install`, the
+/// "rebooting" report reaches the brain, then the trial reboot. A paused device with audio off stays that way (spec
+/// §7.4: an update never touches the privacy state).
+#[tokio::test]
+async fn an_update_is_installed_reported_and_followed_by_a_trial_reboot() {
+    const BUNDLE: &str = "loopi-dev-2026.10.21-a1b2c3d.raucb";
+    let brain = MockServer::start().await;
+    let violations: Violations = Arc::default();
+    let heartbeat_log = violations.clone();
+    let calls = AtomicUsize::new(0);
+    let sha256 = hex::encode(Sha256::digest(BUNDLE_BODY));
+    Mock::given(method("POST"))
+        .and(path("/v1/heartbeat"))
+        .respond_with(move |request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let errors = schema_errors("Heartbeat", &body);
+            if !record(&heartbeat_log, errors.into_iter().map(|e| format!("heartbeat: {e}")).collect()) {
+                return ResponseTemplate::new(422);
+            }
+            let update = json!({"id": UPDATE_ID, "type": "update", "payload": {
+                "bundle": BUNDLE, "version": "2026.10.21-a1b2c3d", "variant": "dev",
+                "sha256": sha256, "size": BUNDLE_BODY.len()}});
+            let commands = if calls.fetch_add(1, Ordering::SeqCst) == 0 { json!([update]) } else { json!([]) };
+            ResponseTemplate::new(200).set_body_json(json!({ "commands": commands }))
+        })
+        .mount(&brain)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    // Paused with audio off: nothing records (no camera or microphone needed) and the update must leave it so.
+    let state_file = data_dir.join("config/state.json");
+    fs::create_dir_all(state_file.parent().unwrap()).unwrap();
+    let saved_state = br#"{"paused":true,"audio_enabled":false}"#;
+    fs::write(&state_file, saved_state).unwrap();
+    let config = Config {
+        wifi: None,
+        brain: BrainConfig { url: brain.uri(), pair_token: None, ca_fingerprint: None },
+        capture: CaptureConfig::default(),
+        schedule: ScheduleConfig::default(),
+        led: LedConfig::default(),
+        gpio: GpioConfig::default(),
+        paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
+    };
+    let (rauc, rebooter) = (Arc::new(FakeRauc::default()), Arc::new(FakeRebooter::default()));
+    let fetcher = Arc::new(FakeFetcher::new(BUNDLE_BODY));
+    let factory: AudioSourceFactory = Box::new(|| Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>));
+    let (_press_tx, presses) = mpsc::channel(1);
+    let deps = Deps {
+        config,
+        clock: Arc::new(SyncedClock),
+        disk: Arc::new(FixedDisk::new(10.0)),
+        transport: Arc::new(HttpTransport::new(reqwest::Client::new(), &brain.uri())),
+        audio_factory: factory,
+        led: Some(Box::new(RecordingLed::default())),
+        presses,
+        probe: Arc::new(NoProbe),
+        timings: Timings {
+            heartbeat: Duration::from_millis(100),
+            upload_idle: Duration::from_millis(50),
+            video_poll: Duration::from_millis(100),
+            disk_check: Duration::from_millis(200),
+            tick: Duration::from_millis(50),
+            led_frame: Duration::from_millis(20),
+            audio_retry: Duration::from_millis(100),
+            audio_segment: Some(AUDIO_SEGMENT),
+        },
+        liveness: loopi_agent::liveness::Liveness::new(),
+        os: OsInfo { version: Some("2026.10.14-0000000".into()), variant: Some(Variant::Dev), slot: Some(Slot::A) },
+        ota: Some(OtaSystem {
+            rauc: rauc.clone(),
+            rebooter: rebooter.clone(),
+            fetcher: fetcher.clone(),
+            timings: OtaTimings {
+                retry_first: Duration::from_millis(1),
+                retry_max: Duration::from_millis(2),
+                attempts: 2,
+                reboot_report_wait: Duration::from_millis(10),
+            },
+        }),
+    };
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let agent = tokio::spawn(run(deps, stop_rx));
+
+    let rebooting = |hb: &Value| hb["ota"]["state"] == "rebooting";
+    let mut sent = Vec::new();
+    for _ in 0..100 {
+        sent = heartbeats(&brain.received_requests().await.unwrap());
+        if sent.iter().any(rebooting) && *rebooter.calls.lock().unwrap() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // One more heartbeat after the trial reboot was requested: the brain keeps hearing "rebooting" until the reboot.
+    let before = sent.len();
+    for _ in 0..100 {
+        sent = heartbeats(&brain.received_requests().await.unwrap());
+        if sent.len() > before {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    stop_tx.send(true).unwrap();
+    agent.await.unwrap().unwrap();
+
+    let report = sent.iter().find(|hb| rebooting(hb)).expect("a heartbeat reports the rebooting state")["ota"].clone();
+    assert_eq!((report["command_id"].as_str(), report["version"].as_str()), (Some(UPDATE_ID), Some("2026.10.21-a1b2c3d")));
+    assert!(report["error"].is_null(), "{report}");
+    assert_eq!(*rebooter.calls.lock().unwrap(), 1, "exactly one trial reboot");
+    assert_eq!(*fetcher.calls.lock().unwrap(), 1);
+    assert_eq!(*rauc.calls.lock().unwrap(), vec![format!("install {BUNDLE} exists=true")]);
+    assert!(sent.iter().any(|hb| hb["acked_command_ids"] == json!([UPDATE_ID])), "the update is acked");
+    assert_eq!(sent[0]["boot_slot"], "A");
+    let pending: Value = serde_json::from_slice(&fs::read(data_dir.join("ota/pending.json")).unwrap()).unwrap();
+    assert_eq!((pending["phase"].as_str(), pending["target_slot"].as_str()), (Some("rebooting"), Some("B")));
+    assert_eq!(files_under(&data_dir.join("ota")), vec![data_dir.join("ota/pending.json")], "no bundle is left on the card");
+
+    // Privacy (spec §7.4): the update did not unpause the device or switch audio back on, before or after it ran.
+    for hb in &sent {
+        assert_eq!((hb["paused"].as_bool(), hb["audio_enabled"].as_bool()), (Some(true), Some(false)), "{hb}");
+        assert_eq!((hb["recording_video"].as_bool(), hb["recording_audio"].as_bool()), (Some(false), Some(false)), "{hb}");
+    }
+    assert_eq!(fs::read(&state_file).unwrap(), saved_state, "the saved pause state is untouched");
+    assert_eq!(violations.lock().unwrap().clone(), Vec::<String>::new(), "the mock brain saw contract violations");
+}
+
+/// A trial boot that cannot reach the brain keeps waiting for its first heartbeat; it is not confirmed (RAUC is never
+/// told the new slot is good) and it must not stop the agent from shutting down.
+#[tokio::test]
+async fn an_unconfirmed_trial_is_not_marked_good_and_does_not_block_shutdown() {
+    let brain = MockServer::start().await;
+    let violations: Violations = Arc::default();
+    let heartbeat_log = violations.clone();
+    Mock::given(method("POST"))
+        .and(path("/v1/heartbeat"))
+        .respond_with(move |request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let errors = schema_errors("Heartbeat", &body);
+            record(&heartbeat_log, errors.into_iter().map(|e| format!("heartbeat: {e}")).collect());
+            ResponseTemplate::new(503)
+        })
+        .mount(&brain)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    fs::create_dir_all(data_dir.join("config")).unwrap();
+    fs::write(data_dir.join("config/state.json"), br#"{"paused":true,"audio_enabled":false}"#).unwrap();
+    // What an install leaves behind just before the trial reboot (the shape migrate-to-ab.sh also writes).
+    fs::create_dir_all(data_dir.join("ota")).unwrap();
+    fs::write(
+        data_dir.join("ota/pending.json"),
+        br#"{"command_id":null,"bundle":null,"version":"2026.10.21-a1b2c3d","target_slot":"B","phase":"rebooting","error":null}"#,
+    )
+    .unwrap();
+    let config = Config {
+        wifi: None,
+        brain: BrainConfig { url: brain.uri(), pair_token: None, ca_fingerprint: None },
+        capture: CaptureConfig::default(),
+        schedule: ScheduleConfig::default(),
+        led: LedConfig::default(),
+        gpio: GpioConfig::default(),
+        paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
+    };
+    let rauc = Arc::new(FakeRauc::default());
+    let factory: AudioSourceFactory = Box::new(|| Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>));
+    let (_press_tx, presses) = mpsc::channel(1);
+    let deps = Deps {
+        config,
+        clock: Arc::new(SyncedClock),
+        disk: Arc::new(FixedDisk::new(10.0)),
+        transport: Arc::new(HttpTransport::new(reqwest::Client::new(), &brain.uri())),
+        audio_factory: factory,
+        led: Some(Box::new(RecordingLed::default())),
+        presses,
+        probe: Arc::new(NoProbe),
+        timings: Timings {
+            heartbeat: Duration::from_millis(100),
+            upload_idle: Duration::from_millis(50),
+            video_poll: Duration::from_millis(100),
+            disk_check: Duration::from_millis(200),
+            tick: Duration::from_millis(50),
+            led_frame: Duration::from_millis(20),
+            audio_retry: Duration::from_millis(100),
+            audio_segment: Some(AUDIO_SEGMENT),
+        },
+        liveness: loopi_agent::liveness::Liveness::new(),
+        os: OsInfo { version: Some("2026.10.21-a1b2c3d".into()), variant: Some(Variant::Dev), slot: Some(Slot::B) },
+        ota: Some(OtaSystem {
+            rauc: rauc.clone(),
+            rebooter: Arc::new(FakeRebooter::default()),
+            fetcher: Arc::new(FakeFetcher::new(b"unused")),
+            timings: OtaTimings::default(),
+        }),
+    };
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let agent = tokio::spawn(run(deps, stop_rx));
+
+    let trying = |hb: &Value| hb["ota"]["state"] == "trying";
+    let mut sent = Vec::new();
+    for _ in 0..100 {
+        sent = heartbeats(&brain.received_requests().await.unwrap());
+        if sent.iter().any(trying) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    stop_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), agent)
+        .await
+        .expect("the agent stops although the trial is still waiting for a heartbeat")
+        .unwrap()
+        .unwrap();
+
+    let report = sent.iter().find(|hb| trying(hb)).expect("the brain is told the trial is running")["ota"].clone();
+    assert_eq!((report["version"].as_str(), report.get("command_id")), (Some("2026.10.21-a1b2c3d"), None));
+    assert!(rauc.calls.lock().unwrap().is_empty(), "no heartbeat got through: the new slot is not marked good");
+    let pending: Value = serde_json::from_slice(&fs::read(data_dir.join("ota/pending.json")).unwrap()).unwrap();
+    assert_eq!(pending["phase"], "rebooting", "the trial is still unconfirmed on disk");
     assert_eq!(violations.lock().unwrap().clone(), Vec::<String>::new(), "the mock brain saw contract violations");
 }

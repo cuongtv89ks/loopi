@@ -245,6 +245,8 @@ async fn agent_main() -> Result<()> {
         timings: Timings::default(),
         liveness,
         os: OsInfo::read(Path::new(RELEASE_PATH), Path::new(CMDLINE_PATH)),
+        // Task 7 wires RAUC, the trial reboot and the bundle download here.
+        ota: None,
         config,
     };
     run(deps, shutdown).await

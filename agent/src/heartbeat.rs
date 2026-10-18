@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, watch};
 use crate::control::{parse_remote_command, Command, ControlState};
 use crate::led::LED_UNAVAILABLE_ERROR;
 use crate::osinfo::OsInfo;
+use crate::ota::{is_valid_version, OtaReport};
 use crate::queue::Queue;
 use crate::status::{AgentStatus, LedHealth, StatusTx};
 use crate::sysinfo::SysProbe;
@@ -37,6 +38,22 @@ fn sanitize_disk_pct(pct: f32) -> f32 {
     } else {
         UNKNOWN_DISK_PCT
     }
+}
+
+/// Contract `Ulid`: `^[0-9A-HJKMNP-TV-Z]{26}$` (Crockford base 32, upper case).
+fn is_ulid(text: &str) -> bool {
+    text.len() == 26 && text.chars().all(|c| c.is_ascii_digit() || (c.is_ascii_uppercase() && !matches!(c, 'I' | 'L' | 'O' | 'U')))
+}
+
+/// The OTA report as the heartbeat may carry it. `/data/ota/pending.json` is shared by two OS slots and can be written
+/// by hand, so a report the contract would refuse is left out (and logged) rather than failing every heartbeat.
+fn contract_ota(status: &AgentStatus) -> Option<OtaReport> {
+    let report = status.ota.as_ref()?;
+    if is_valid_version(&report.version) && report.command_id.as_deref().map_or(true, is_ulid) {
+        return Some(report.clone());
+    }
+    tracing::warn!(version = %report.version, command_id = ?report.command_id, "not reporting an update the protocol cannot carry");
+    None
 }
 
 pub fn build_request(
@@ -69,7 +86,7 @@ pub fn build_request(
         os_version: os.version.clone(),
         os_variant: os.variant,
         boot_slot: os.slot,
-        ota: status.ota.clone(),
+        ota: contract_ota(status),
     }
 }
 
@@ -372,6 +389,38 @@ mod tests {
                                                       &OsInfo::default())).unwrap();
         for key in ["os_version", "os_variant", "boot_slot", "ota"] {
             assert!(bare.get(key).is_none(), "{key} must be omitted when unknown");
+        }
+    }
+
+    #[test]
+    fn an_ota_report_the_contract_would_refuse_is_left_out_of_the_heartbeat() {
+        use crate::ota::{OtaReport, OtaState};
+        let control = ControlState { paused: false, audio_enabled: true };
+        let with = |report: OtaReport| {
+            let status = AgentStatus { ota: Some(report), ..AgentStatus::default() };
+            serde_json::to_value(build_request(&status, &control, 0, 1, &FixedProbe, vec![], &OsInfo::default())).unwrap()
+        };
+        // Kept: a valid version, with a valid ULID or with none (the hand-made first move to A/B slots).
+        for command_id in [Some(CMD.to_string()), None] {
+            let value = with(OtaReport::new(command_id, "2026.10.21-a1b2c3d", OtaState::Trying, None));
+            assert_eq!(value["ota"]["state"], "trying");
+            assert_matches("Heartbeat", &value);
+        }
+        // Dropped: what a hand-written /data/ota/pending.json could hold. The rest of the heartbeat still goes out.
+        let bad = [
+            OtaReport::new(Some(CMD.into()), "has space", OtaState::Rebooting, None),
+            OtaReport::new(Some(CMD.into()), "", OtaState::Rebooting, None),
+            OtaReport::new(Some(CMD.into()), &"x".repeat(65), OtaState::Rebooting, None),
+            OtaReport::new(Some("not-a-ulid".into()), "v1", OtaState::Rebooting, None),
+            OtaReport::new(Some(CMD.to_lowercase()), "v1", OtaState::Rebooting, None),
+            OtaReport::new(Some("01JA2B3C4D5E6F7G8H9J0KMNPU".into()), "v1", OtaState::Rebooting, None),
+            OtaReport::new(Some(String::new()), "v1", OtaState::Rebooting, None),
+        ];
+        for report in bad {
+            let value = with(report.clone());
+            assert!(value.get("ota").is_none(), "{report:?} must not reach the brain");
+            assert_eq!(value["uptime_s"], 1, "the heartbeat itself still goes out");
+            assert_matches("Heartbeat", &value);
         }
     }
 

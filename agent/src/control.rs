@@ -125,6 +125,27 @@ mod tests {
     }
 
     #[test]
+    fn an_update_command_never_changes_pause_or_audio() {
+        use crate::ota::{UpdateRequest, Variant};
+        let update = Command::Update(UpdateRequest {
+            command_id: Some("01JA2B3C4D5E6F7G8H9J0KMNPQ".into()),
+            bundle: "loopi-dev-1.raucb".into(),
+            version: "1".into(),
+            variant: Variant::Dev,
+            sha256: "ab".repeat(32),
+            size: 10,
+        });
+        for state in [
+            ControlState { paused: true, audio_enabled: false },
+            ControlState { paused: false, audio_enabled: true },
+            ControlState { paused: true, audio_enabled: true },
+            ControlState { paused: false, audio_enabled: false },
+        ] {
+            assert_eq!(state.apply(&update), state, "privacy invariant: an update must not unpause or re-enable audio");
+        }
+    }
+
+    #[test]
     fn remote_commands_are_parsed_strictly() {
         assert_eq!(parse_remote_command("pause", &json!({})), Ok(Command::Pause));
         assert_eq!(parse_remote_command("resume", &serde_json::Value::Null), Ok(Command::Resume));

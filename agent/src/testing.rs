@@ -201,3 +201,72 @@ impl AudioSource for ToneSource {
         Ok(())
     }
 }
+
+use crate::ota::system::{BundleFetcher, Rauc, Rebooter};
+
+/// RAUC that records calls; each call pops a scripted result (default Ok).
+#[derive(Default)]
+pub struct FakeRauc {
+    pub calls: Mutex<Vec<String>>,
+    pub results: Mutex<VecDeque<Result<(), String>>>,
+}
+
+impl FakeRauc {
+    fn record(&self, call: String) -> Result<(), String> {
+        self.calls.lock().unwrap().push(call);
+        self.results.lock().unwrap().pop_front().unwrap_or(Ok(()))
+    }
+}
+
+impl Rauc for FakeRauc {
+    fn install(&self, bundle: &Path) -> Result<(), String> {
+        let exists = bundle.exists();
+        self.record(format!("install {} exists={exists}", bundle.file_name().unwrap().to_string_lossy()))
+    }
+
+    fn mark_good(&self) -> Result<(), String> {
+        self.record("mark-good".into())
+    }
+
+    fn mark_bad_other(&self) -> Result<(), String> {
+        self.record("mark-bad other".into())
+    }
+}
+
+#[derive(Default)]
+pub struct FakeRebooter {
+    pub calls: Mutex<u32>,
+    pub result: Mutex<Option<String>>,
+}
+
+impl Rebooter for FakeRebooter {
+    fn reboot_into_trial(&self) -> Result<(), String> {
+        *self.calls.lock().unwrap() += 1;
+        self.result.lock().unwrap().clone().map_or(Ok(()), Err)
+    }
+}
+
+/// Writes `body` to the destination; pops scripted failures first.
+pub struct FakeFetcher {
+    pub body: Vec<u8>,
+    pub failures: Mutex<VecDeque<TransportError>>,
+    pub calls: Mutex<u32>,
+}
+
+impl FakeFetcher {
+    pub fn new(body: &[u8]) -> Self {
+        Self { body: body.to_vec(), failures: Mutex::default(), calls: Mutex::default() }
+    }
+}
+
+#[async_trait]
+impl BundleFetcher for FakeFetcher {
+    async fn fetch(&self, _bundle: &str, dest: &Path, _size: u64) -> Result<(), TransportError> {
+        *self.calls.lock().unwrap() += 1;
+        if let Some(error) = self.failures.lock().unwrap().pop_front() {
+            return Err(error);
+        }
+        fs::write(dest, &self.body)?;
+        Ok(())
+    }
+}
