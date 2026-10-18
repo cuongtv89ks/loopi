@@ -62,6 +62,23 @@ fn schema_errors(schema_name: &str, instance: &Value) -> Vec<String> {
     validator.iter_errors(instance).map(|e| e.to_string()).collect()
 }
 
+/// Largest |sample| of an uploaded Ogg Opus segment, decoded at 16 kHz.
+fn decoded_peak(ogg: &[u8]) -> i32 {
+    let mut reader = ogg::reading::PacketReader::new(std::io::Cursor::new(ogg));
+    let mut decoder = opus::Decoder::new(16_000, opus::Channels::Mono).unwrap();
+    let mut pcm = [0i16; 320];
+    let mut peak = 0;
+    // The first two packets are OpusHead and OpusTags.
+    while let Some(packet) = reader.read_packet().unwrap() {
+        if packet.data.starts_with(b"Opus") {
+            continue;
+        }
+        let samples = decoder.decode(&packet.data, &mut pcm, false).unwrap();
+        peak = pcm[..samples].iter().map(|s| i32::from(*s).abs()).fold(peak, i32::max);
+    }
+    peak
+}
+
 fn header<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
     request.headers.get(name).and_then(|v| v.to_str().ok())
 }
@@ -245,6 +262,14 @@ async fn records_uploads_and_obeys_a_remote_pause() {
         .min()
         .expect("audio was uploaded");
     assert!(shortest_audio < AUDIO_SEGMENT, "the pause cut a partial audio segment ({shortest_audio:?}) that was uploaded");
+    let loudest_audio = final_requests
+        .iter()
+        .filter(|r| r.method.as_str() == "PUT" && header(r, "x-loopi-kind") == Some("audio"))
+        .map(|r| decoded_peak(&r.body))
+        .max()
+        .expect("audio was uploaded");
+    // The tone "microphone" peaks at 8000 (-12 dBFS); the default 20 dB gain drives it into the -1 dBFS limiter.
+    assert!(loudest_audio > 20_000, "the configured gain reached the uploaded audio (decoded peak {loudest_audio})");
     assert!(!stray_camera_processes(&camera), "no camera process outlives the agent");
     assert_eq!(violations.lock().unwrap().clone(), Vec::<String>::new(), "the mock brain saw contract violations");
 }

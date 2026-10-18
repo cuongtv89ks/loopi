@@ -480,4 +480,15 @@ usbmode_fails_closed() {
 }
 check "loopi-usbmode fails closed: /boot not mounted -> error in every mode; unreadable config -> error, not \"host\"" usbmode_fails_closed
 
+# --- Audio level (spec D19): the agent amplifies the USB microphone before encoding (capture.audio_gain_db). The agent is
+# a local Buildroot package, rsynced only on a fresh build: an image made without `loopi-agent-dirclean` silently ships the
+# previous agent, and this check catches that.
+agent_binary_amplifies_the_microphone() {
+  local text; text="$(rootfs_cat usr/bin/loopi-agent | strings -a)" || return 1
+  grep -F 'capture.audio_gain_db must be 0..=' <<<"$text"
+}
+example_sets_the_microphone_gain() { boot_cat loopi.toml.example | grep -E '^audio_gain_db = 20\.0 '; }
+check "the shipped agent amplifies the microphone before encoding (capture.audio_gain_db, spec D19)" agent_binary_amplifies_the_microphone
+check "loopi.toml.example shows the microphone gain (audio_gain_db = 20.0)" example_sets_the_microphone_gain
+
 exit $fail

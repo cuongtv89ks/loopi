@@ -7,6 +7,7 @@ use crate::disk::{DiskUsage, StatvfsUsage, DROP_ABOVE_PCT};
 #[cfg(any(test, target_os = "linux"))]
 use crate::led::{while_solid, LedDriver};
 use crate::pairing::load_identity;
+use crate::recorder::gain::Gain;
 
 const CAMERA_TIMEOUT: Duration = Duration::from_secs(20);
 const SILENCE_DBFS: f32 = -120.0;
@@ -66,6 +67,17 @@ pub fn rms_dbfs(samples: &[i16]) -> f32 {
     (20.0 * (mean_square.sqrt() / 32768.0).log10()) as f32
 }
 
+/// The captured level, and the level the recorder encodes once `gain_db` is applied (spec D19).
+pub fn mic_level_detail(samples: &[i16], gain_db: f32) -> String {
+    let mut amplified = samples.to_vec();
+    Gain::from_db(gain_db).apply(&mut amplified);
+    format!(
+        "1 s captured, level {:.1} dBFS, {:.1} dBFS after the +{gain_db} dB gain",
+        rms_dbfs(samples),
+        rms_dbfs(&amplified)
+    )
+}
+
 async fn camera_check(camera_cmd: &str) -> Check {
     let run = tokio::process::Command::new(camera_cmd).arg("--list-cameras").output();
     match tokio::time::timeout(CAMERA_TIMEOUT, run).await {
@@ -96,11 +108,11 @@ fn mic_check(config: &Config) -> Check {
             return Check::fail("microphone", format!("privacy LED unavailable ({e}): microphone not tested"));
         }
     };
-    with_privacy_led(led.as_mut(), || capture_one_second(&config.capture.audio_device))
+    with_privacy_led(led.as_mut(), || capture_one_second(&config.capture.audio_device, config.capture.audio_gain_db))
 }
 
 #[cfg(target_os = "linux")]
-fn capture_one_second(device: &str) -> Check {
+fn capture_one_second(device: &str, gain_db: f32) -> Check {
     use crate::recorder::audio::alsa_source::factory;
     use crate::recorder::ogg_opus::FRAME_SAMPLES;
 
@@ -116,7 +128,7 @@ fn capture_one_second(device: &str) -> Check {
         }
         samples.extend_from_slice(&frame);
     }
-    Check::pass("microphone", format!("1 s captured, level {:.1} dBFS", rms_dbfs(&samples)))
+    Check::pass("microphone", mic_level_detail(&samples, gain_db))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -172,6 +184,25 @@ mod tests {
         assert!(rms_dbfs(&full_scale) > -0.01);
         let half = vec![16384; 320];
         assert!((rms_dbfs(&half) + 6.02).abs() < 0.1);
+    }
+
+    #[test]
+    fn microphone_level_is_reported_before_and_after_the_gain() {
+        // 58 / 32768 is the -55 dBFS the USB mic gives for speech in a room.
+        assert_eq!(
+            mic_level_detail(&[58; 16_000], 20.0),
+            "1 s captured, level -55.0 dBFS, -35.0 dBFS after the +20 dB gain"
+        );
+        assert_eq!(mic_level_detail(&[58; 16_000], 0.0), "1 s captured, level -55.0 dBFS, -55.0 dBFS after the +0 dB gain");
+        assert_eq!(
+            mic_level_detail(&[0; 16_000], 12.5),
+            "1 s captured, level -120.0 dBFS, -120.0 dBFS after the +12.5 dB gain"
+        );
+        // A clap right at the mic: the limiter holds the amplified level at its -1 dBFS ceiling.
+        assert_eq!(
+            mic_level_detail(&[i16::MAX; 16_000], 20.0),
+            "1 s captured, level -0.0 dBFS, -1.0 dBFS after the +20 dB gain"
+        );
     }
 
     #[test]

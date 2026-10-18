@@ -15,6 +15,7 @@ ca_fingerprint = "paste \"Fingerprint CA của brain\" from the same page"
 [capture]
 video_fps = 2
 audio_enabled = true
+audio_gain_db = 20.0              # microphone gain before encoding, 0-36 dB (the USB mic records speech very quietly)
 
 [schedule]
 timezone = "Asia/Seoul"

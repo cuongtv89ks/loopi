@@ -19,6 +19,7 @@ use crate::led::{led_pattern, level_at, LedDriver, LedPattern, LedWriter, LED_UN
 use crate::liveness::Liveness;
 use crate::queue::Queue;
 use crate::recorder::audio::{self, AudioOptions, AudioSourceFactory};
+use crate::recorder::gain;
 use crate::recorder::video::{self, VideoOptions};
 use crate::schedule::Schedule;
 use crate::status::{status_channel, AgentStatus, LedHealth, StatusTx};
@@ -275,6 +276,8 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
         incoming_dir: paths.audio_incoming.clone(),
         retry: timings.audio_retry,
     };
+    // Every frame is amplified before encoding (spec D19); the raw ALSA level is far too quiet.
+    let audio_factory = gain::with_gain(audio_factory, config.capture.audio_gain_db);
     let audio_thread = {
         let (queue, clock, status, shutdown) = (queue.clone(), clock.clone(), status.clone(), shutdown.clone());
         std::thread::Builder::new()
