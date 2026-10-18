@@ -118,6 +118,39 @@ paths:
         '401': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
         '426': { $ref: '#/components/responses/Error' }
+  /v1/ota/{bundle}:
+    get:
+      operationId: getBundle
+      summary: Download a signed RAUC update bundle the brain offers (P4a, spec D27).
+      description: |
+        Only paired, unrevoked devices (mTLS). The bundle name comes from an update command.
+        A Range request (bytes=<start>-) resumes an interrupted download and is answered with 206.
+      parameters:
+        - name: bundle
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/BundleName' }
+        - name: Range
+          in: header
+          required: false
+          schema: { type: string, pattern: '^bytes=[0-9]+-$' }
+        - { $ref: '#/components/parameters/AgentVersion' }
+      responses:
+        '200':
+          description: The whole bundle.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '206':
+          description: The bundle from the requested byte to its end.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '416':
+          description: The range starts at or past the end of the bundle.
+        '426': { $ref: '#/components/responses/Error' }
 components:
   parameters:
     AgentVersion:
@@ -202,20 +235,27 @@ components:
           type: array
           maxItems: 100
           items: { $ref: '#/components/schemas/Ulid' }
+        os_version: { $ref: '#/components/schemas/OsVersion' }
+        os_variant: { type: string, enum: [dev, prod] }
+        boot_slot: { type: string, enum: [A, B] }
+        ota: { $ref: '#/components/schemas/OtaReport' }
     Command:
       type: object
       description: >-
-        pause and resume carry an empty payload; set_config carries {audio_enabled: boolean}.
+        pause and resume carry an empty payload; set_config carries {audio_enabled: boolean};
+        update carries the bundle to install (P4a).
       oneOf:
         - { $ref: '#/components/schemas/PauseCommand' }
         - { $ref: '#/components/schemas/ResumeCommand' }
         - { $ref: '#/components/schemas/SetConfigCommand' }
+        - { $ref: '#/components/schemas/UpdateCommand' }
       discriminator:
         propertyName: type
         mapping:
           pause: '#/components/schemas/PauseCommand'
           resume: '#/components/schemas/ResumeCommand'
           set_config: '#/components/schemas/SetConfigCommand'
+          update: '#/components/schemas/UpdateCommand'
     PauseCommand:
       type: object
       additionalProperties: false
@@ -245,6 +285,43 @@ components:
           required: [audio_enabled]
           properties:
             audio_enabled: { type: boolean }
+    BundleName:
+      type: string
+      pattern: '^loopi-(dev|prod)-[0-9A-Za-z.+-]{1,64}\.raucb$'
+    OsVersion:
+      type: string
+      pattern: '^[0-9A-Za-z.+-]{1,64}$'
+    UpdateCommand:
+      type: object
+      additionalProperties: false
+      required: [id, type, payload]
+      properties:
+        id: { $ref: '#/components/schemas/Ulid' }
+        type: { const: update }
+        payload:
+          type: object
+          additionalProperties: false
+          required: [bundle, version, variant, sha256, size]
+          properties:
+            bundle: { $ref: '#/components/schemas/BundleName' }
+            version: { $ref: '#/components/schemas/OsVersion' }
+            variant: { type: string, enum: [dev, prod] }
+            sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+            size: { type: integer, minimum: 1, maximum: 268435456 }
+    OtaReport:
+      type: object
+      additionalProperties: false
+      required: [state, version]
+      description: >-
+        The device's current or latest update, until the brain has heard its outcome. command_id
+        is absent for an update the brain did not request (the first move to A/B slots, by hand).
+      properties:
+        command_id: { $ref: '#/components/schemas/Ulid' }
+        state:
+          type: string
+          enum: [downloading, installing, rebooting, trying, succeeded, rolled_back, failed]
+        version: { $ref: '#/components/schemas/OsVersion' }
+        error: { type: [string, 'null'], maxLength: 500 }
     EmptyPayload:
       type: object
       additionalProperties: false

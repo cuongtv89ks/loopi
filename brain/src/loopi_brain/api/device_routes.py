@@ -85,6 +85,19 @@ async def put_item(
 
 ULID_PATTERN = r"^[0-9A-HJKMNP-TV-Z]{26}$"
 Counter = Annotated[StrictInt, Field(ge=0)]
+VERSION_PATTERN = devices.VERSION_RE.pattern
+OtaState = Literal["downloading", "installing", "rebooting", "trying", "succeeded", "rolled_back", "failed"]
+
+
+class OtaReport(BaseModel):
+    """Mirrors the contract's OtaReport (P4a design §7)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command_id: Annotated[str, Field(pattern=ULID_PATTERN)] | None = None
+    state: OtaState
+    version: str = Field(pattern=VERSION_PATTERN)
+    error: str | None = Field(default=None, max_length=500)
 
 
 class Heartbeat(BaseModel):
@@ -108,11 +121,15 @@ class Heartbeat(BaseModel):
     last_error: str | None = Field(default=None, max_length=500)
     dropped_items: Counter = 0
     acked_command_ids: list[Annotated[str, Field(pattern=ULID_PATTERN)]] = Field(max_length=devices.MAX_HEARTBEAT_COMMANDS)
+    os_version: str | None = Field(default=None, pattern=VERSION_PATTERN)
+    os_variant: Literal["dev", "prod"] | None = None
+    boot_slot: Literal["A", "B"] | None = None
+    ota: OtaReport | None = None
 
 
 class Command(BaseModel):
     id: str
-    type: Literal["pause", "resume", "set_config"]
+    type: Literal["pause", "resume", "set_config", "update"]
     payload: dict
 
 

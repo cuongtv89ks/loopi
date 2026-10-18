@@ -2,7 +2,7 @@
 
 - **Ngày:** 2026-10-14
 - **Trạng thái:** Draft, chờ review
-- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18); 2026-10-15: agent khuếch đại âm thanh (có bộ giới hạn đỉnh) trước khi encode, brain chuẩn hoá mức âm thanh trước ASR và khi phát lại (D19); 2026-10-16: brain giữ audio thô 7 ngày như video thay vì xoá ngay sau khi có transcript, số ngày chỉnh được trong trang Cài đặt (D20); 2026-10-16: dữ liệu của bộ đánh giá (golden set) nằm ngoài git, trong thư mục dữ liệu và database của brain, người dùng tự gán nhãn trên trang Đánh giá, repo chỉ giữ code và các con số kết quả (D21); recall@5 trong tiêu chí nghiệm thu P2 là hit@5, quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh (D22); 2026-10-17: tóm tắt chương, recap và chat dùng chung một model chữ `qwen3:8b` (D23); MCP mặc định không gửi ảnh keyframe, có công tắc riêng trong Cài đặt (D24); vlog chỉ tua nhanh những giờ có hoạt động (D25)
+- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18); 2026-10-15: agent khuếch đại âm thanh (có bộ giới hạn đỉnh) trước khi encode, brain chuẩn hoá mức âm thanh trước ASR và khi phát lại (D19); 2026-10-16: brain giữ audio thô 7 ngày như video thay vì xoá ngay sau khi có transcript, số ngày chỉnh được trong trang Cài đặt (D20); 2026-10-16: dữ liệu của bộ đánh giá (golden set) nằm ngoài git, trong thư mục dữ liệu và database của brain, người dùng tự gán nhãn trên trang Đánh giá, repo chỉ giữ code và các con số kết quả (D21); recall@5 trong tiêu chí nghiệm thu P2 là hit@5, quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh (D22); 2026-10-17: tóm tắt chương, recap và chat dùng chung một model chữ `qwen3:8b` (D23); MCP mặc định không gửi ảnh keyframe, có công tắc riêng trong Cài đặt (D24); vlog chỉ tua nhanh những giờ có hoạt động (D25); 2026-10-18: P4a — A/B bằng tryboot của firmware, không dùng U-Boot (D26); chủ dự án bấm Cập nhật cho từng thiết bị, bản mới chỉ được giữ khi agent gửi được heartbeat trong 10 phút (D27); bản dev và prod dùng chung khoá ký, gỡ lỗi prod bằng cách cài bản dev qua OTA (D28); trang Phiên bản và ghi chú phát hành (D29)
 - **Phạm vi tài liệu:** kiến trúc tổng thể và thiết kế cho cả 3 dự án con (`os/`, `agent/`, `brain/`). Mỗi phase sẽ có implementation plan riêng.
 
 ---
@@ -83,6 +83,10 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D23 | Một model chữ | Tóm tắt chương, recap và chat dùng chung một model chữ cục bộ (`qwen3:8b`) thay vì `qwen3:4b` cho tóm tắt chương: đo ngày 2026-10-17, recap nạp `qwen3:8b` (6,7 GB) khi `qwen3:4b` (3,9 GB) vẫn còn trong RAM sau lượt tóm tắt cuối, máy chỉ còn 661 MB trống và swap đầy. Với một model chữ, lúc cao nhất Ollama giữ `qwen3:8b` cùng một model ảnh hoặc embedding (≈ 9,6 GB). Tóm tắt chương chậm hơn khoảng gấp đôi |
 | D24 | Ảnh qua MCP | `get_moment` mặc định chỉ trả chữ (caption, transcript); ảnh keyframe chỉ được gửi khi người dùng bật công tắc "Cho MCP gửi ảnh keyframe" trong Cài đặt (mặc định tắt), và khi đó ảnh được thu nhỏ còn 320 px. Lý do: client MCP (Claude Code) gửi kết quả tool lên model trên cloud, trong khi ảnh và audio không bao giờ lên cloud theo mặc định (mục 9.3, 11). Ảnh của mẫu đánh giá (D21) không bao giờ đi qua MCP |
 | D25 | Vlog tua nhanh giờ có hoạt động | Phần tua nhanh của vlog chỉ lấy những đoạn ghi có khoảnh khắc ở gần (keyframe đổi cảnh, lời nói, marker); bỏ qua quãng tối, đứng yên hoặc đang Pause. Tổng thời lượng 60–90s; ngày ít hoạt động thì ngắn hơn nhưng không dưới 20s; ngày không có hoạt động thì không dựng vlog |
+| D26 | A/B và rollback | Tryboot của firmware Raspberry Pi, không thêm U-Boot. Phân vùng boot có thư mục `a/` và `b/` (kernel, device tree, overlays, cmdline của từng slot); `config.txt` trỏ vào slot tốt bằng `os_prefix=`, `tryboot.txt` trỏ vào slot đang thử và chỉ được đọc ở lần khởi động lại `"0 tryboot"`, nên mọi lần khởi động lại khác đều về slot cũ. Thiết kế: `2026-10-18-p4a-prod-ota-design.md` |
+| D27 | Bắt đầu và chấp nhận một bản cập nhật | Chủ dự án chọn bundle rồi bấm "Cập nhật" cho từng thiết bị; không cập nhật tự động. Bản mới chỉ được giữ khi agent trên slot mới gửi được heartbeat trong 10 phút; nếu không, một bộ hẹn giờ độc lập với agent khởi động lại và thiết bị về slot cũ. Brain bỏ cuộc sau 30 phút không có tin và huỷ lệnh chưa gửi |
+| D28 | Biến thể dev/prod | Bundle dev và prod dùng chung khoá ký và `compatible`, cài qua lại được bằng OTA, kể cả bản cũ hơn. Gỡ lỗi thiết bị prod bằng cách cài bản dev (có lại SSH chỉ bằng key) rồi cài lại prod |
+| D29 | Quản lý phiên bản | Trang "Phiên bản" liệt kê mọi bundle (phiên bản, biến thể, ngày build, kích thước, thiết bị đang chạy) và xoá được bundle cũ; mỗi bundle có ghi chú phát hành sinh từ commit, hiện trước khi bấm Cập nhật. Không có nút "Quay về bản trước", không dùng semver |
 
 ---
 
@@ -154,9 +158,9 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 
 | Phân vùng | FS | Kích thước | Nội dung |
 |---|---|---|---|
-| `boot` | FAT32 | 64MB | Firmware, kernel, DTB, `config.txt`, `cmdline.txt`, file `loopi.toml` để cấu hình lần đầu |
+| `boot` | FAT32 | 64MB | Firmware, `config.txt` (trỏ vào slot tốt), `tryboot.txt` khi đang thử bản mới, thư mục `a/` và `b/` chứa kernel, DTB, overlays, `cmdline.txt` của từng slot (D26), file `loopi.toml` để cấu hình lần đầu |
 | `rootfs-A` | squashfs | 128MB | Rootfs chỉ đọc. `/var` và `/tmp` nằm trên tmpfs |
-| `rootfs-B` | squashfs | 128MB | Để trống cho tới P4 (RAUC) |
+| `rootfs-B` | squashfs | 128MB | Slot B của OTA (RAUC, D26). Trống cho tới lần cập nhật đầu tiên |
 | `data` | ext4 | Phần còn lại | `/data/queue`, `/data/config`, `/data/keys`, `/data/dev` (chỉ có ở dev) |
 
 ### 6.4 `config.txt` (định hướng)
@@ -205,7 +209,7 @@ quiet_hours = ["00:00-07:00"]   # không ghi trong khoảng này
 ```
 
 ### 6.7 OTA (P4)
-RAUC với bundle được ký, chuyển slot A/B. Bản mới phải boot được, agent chạy lên và gửi được heartbeat thì mới tính là thành công; nếu không, hệ thống tự rollback. Bundle do brain host.
+RAUC với bundle được ký, chuyển slot A/B. Bản mới phải boot được, agent chạy lên và gửi được heartbeat thì mới tính là thành công; nếu không, hệ thống tự rollback. Bundle do brain host. Thiết kế chi tiết: `docs/superpowers/specs/2026-10-18-p4a-prod-ota-design.md` (D26–D29).
 
 ---
 
@@ -250,7 +254,8 @@ Nguồn sự thật duy nhất là `docs/protocol/v1.openapi.yaml`, tạo ở P1
 |---|---|---|---|
 | `POST /v1/pair` | Token dùng một lần | `{token, csr_pem, hw_info{model, serial, agent_version}}` | `201 {device_id, cert_pem, ca_cert_pem, ca_fingerprint}`; token sai, đã dùng hoặc hết hạn trả `401`; CSR không hợp lệ trả `422` (token không bị tiêu) |
 | `PUT /v1/items/{ulid}` | mTLS | Header `X-Loopi-Kind: video\|audio\|marker`, `X-Loopi-Start`, `X-Loopi-End` (RFC 3339 UTC), `X-Loopi-Sha256`, `Content-Type`; với video thêm `X-Loopi-Video-Fps`. Body là bytes thô; marker thì body là JSON | `201` đã nhận mới · `200` đã có (cùng sha) · `409` cùng id khác sha · `413` quá lớn · `422` header sai hoặc sha không khớp · `507` brain hết dung lượng |
-| `POST /v1/heartbeat` | mTLS | Trạng thái thiết bị (mục 7.2) và `acked_command_ids[]` | `200 {commands: [{id, type: pause\|resume\|set_config, payload}]}` |
+| `POST /v1/heartbeat` | mTLS | Trạng thái thiết bị (mục 7.2) và `acked_command_ids[]` | `200 {commands: [{id, type: pause\|resume\|set_config\|update, payload}]}` |
+| `GET /v1/ota/{bundle}` | mTLS | Header `Range: bytes=<n>-` (tuỳ chọn, để tải tiếp) | `200`/`206` bundle RAUC đã ký · `404` không có bundle này · `416` range vượt quá cuối file |
 
 - Phiên bản protocol nằm ở path. Mọi request của agent gửi kèm `X-Loopi-Agent-Version`. Nếu major version không được hỗ trợ, brain trả `426`.
 - **Ghép cặp theo kiểu TOFU:** lúc ghép cặp, thiết bị chưa có CA nên tạm chấp nhận server cert, rồi so fingerprint của `ca_cert_pem` nhận về với `ca_fingerprint` trong `loopi.toml` (nếu có cấu hình). Sau khi ghép cặp, mọi kết nối đều xác thực server bằng CA đã lưu.
@@ -385,7 +390,8 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 | Hôm nay / Ngày | Timeline theo chương, keyframe, recap, việc cần làm |
 | Tìm kiếm & Chat | Hỏi đáp có trích nguồn |
 | Vlog | Xem và tải từng ngày |
-| Thiết bị | Trạng thái lấy từ heartbeat, nút Pause/Resume, bật/tắt audio, mã QR ghép cặp, thu hồi thiết bị |
+| Thiết bị | Trạng thái lấy từ heartbeat, nút Pause/Resume, bật/tắt audio, mã QR ghép cặp, thu hồi thiết bị, phiên bản hệ điều hành và slot, nút Cập nhật kèm ghi chú phát hành và lịch sử cập nhật (D27) |
+| Phiên bản | Các bundle OTA brain đang có, thiết bị đang chạy bản nào, ghi chú phát hành, xoá bundle cũ (D29) |
 | Cài đặt | Provider, chính sách lưu trữ, "Quên khoảng thời gian", token MCP, job lỗi và nút xử lý lại |
 | Đánh giá | Gán nhãn bộ đánh giá (audio, caption, câu hỏi), chạy đánh giá và xem kết quả các lần chạy (D21) |
 
@@ -414,6 +420,9 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 | Ollama hoặc cloud lỗi | Job tự thử lại; router chuyển sang fallback; ingest không bị ảnh hưởng |
 | Đổi model | Mỗi kết quả lưu `model_version`; có lệnh xử lý lại theo ngày |
 | Đĩa brain đầy | Ingest trả `507`, thiết bị giữ hàng đợi, UI cảnh báo, job lưu trữ dọn dẹp (nếu đã bật trong Cài đặt) |
+| Bản cập nhật hỏng (agent không gửi được heartbeat, kernel panic) | Tự quay về slot cũ: bộ hẹn giờ 10 phút, `panic=10`, watchdog (D26, D27) |
+| Rớt mạng khi tải bundle | Tải tiếp bằng `Range`; thiết bị vẫn ghi bình thường |
+| Thiết bị không phản hồi lệnh cập nhật trong 30 phút | Brain đánh dấu lỗi và huỷ lệnh chưa gửi |
 
 ---
 

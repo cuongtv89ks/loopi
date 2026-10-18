@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import secrets
 from collections.abc import Callable
 
@@ -13,8 +14,14 @@ from ulid import ULID
 from . import pki
 
 TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-COMMAND_TYPES = frozenset({"pause", "resume", "set_config"})
+COMMAND_TYPES = frozenset({"pause", "resume", "set_config", "update"})
 SET_CONFIG_KEYS: dict[str, type] = {"audio_enabled": bool}
+# Update bundles (P4a design §7; contract BundleName, OsVersion, UpdateCommand).
+BUNDLE_RE = re.compile(r"^loopi-(dev|prod)-[0-9A-Za-z.+-]{1,64}\.raucb$")
+VERSION_RE = re.compile(r"^[0-9A-Za-z.+-]{1,64}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MAX_BUNDLE_BYTES = 256 * 1024**2
+UPDATE_KEYS = ("bundle", "version", "variant", "sha256", "size")
 # One heartbeat returns at most this many commands, and may ack at most this many ids.
 MAX_HEARTBEAT_COMMANDS = 100
 
@@ -93,9 +100,28 @@ async def revoke_device(pool: AsyncConnectionPool, device_id: str) -> bool:
         return await cur.fetchone() is not None
 
 
+def _validate_update(payload: dict) -> None:
+    if sorted(payload) != sorted(UPDATE_KEYS):
+        raise ValueError(f"update needs exactly {', '.join(UPDATE_KEYS)}")
+    bundle, version, variant, sha256, size = (payload[key] for key in UPDATE_KEYS)
+    if not (isinstance(bundle, str) and BUNDLE_RE.fullmatch(bundle)):
+        raise ValueError("update bundle is not a Loopi bundle name")
+    if not (isinstance(version, str) and VERSION_RE.fullmatch(version)):
+        raise ValueError("update version is malformed")
+    if variant not in ("dev", "prod") or bundle != f"loopi-{variant}-{version}.raucb":
+        raise ValueError("update variant and version must match the bundle name")
+    if not (isinstance(sha256, str) and SHA256_RE.fullmatch(sha256)):
+        raise ValueError("update sha256 must be 64 lowercase hex digits")
+    if type(size) is not int or not 1 <= size <= MAX_BUNDLE_BYTES:
+        raise ValueError(f"update size must be an integer from 1 to {MAX_BUNDLE_BYTES}")
+
+
 def validate_command(type_: str, payload: dict) -> None:
     if type_ not in COMMAND_TYPES:
         raise ValueError(f"unknown command type {type_!r}")
+    if type_ == "update":
+        _validate_update(payload)
+        return
     if type_ != "set_config":
         if payload:
             raise ValueError(f"{type_} takes no payload")
