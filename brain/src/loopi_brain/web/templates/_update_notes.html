@@ -1,0 +1,4 @@
+{% if b %}
+<p>Thay đổi{% if b.notes_base %} so với {{ b.notes_base }}{% endif %}:</p>
+{% include "_bundle_notes.html" %}
+{% endif %}

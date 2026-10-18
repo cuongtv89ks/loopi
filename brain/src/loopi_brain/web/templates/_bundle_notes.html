@@ -1,0 +1,8 @@
+{% if b.notes %}
+<ul class="notes">
+  {% for n in b.notes %}<li><code>{{ n.commit[:7] }}</code> {{ n.subject }}</li>{% endfor %}
+</ul>
+{% if b.notes_truncated %}<p>Chỉ hiện 50 thay đổi mới nhất.</p>{% endif %}
+{% else %}
+<p>Không có thay đổi nào ở agent, hệ điều hành hay protocol.</p>
+{% endif %}

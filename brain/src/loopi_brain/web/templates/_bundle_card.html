@@ -1,0 +1,16 @@
+<div class="card" id="bundle-{{ stem }}">
+  {% if b %}
+  <strong>{{ b.version }}</strong> · {{ b.variant }} · build {{ b.built_at.astimezone(zone).strftime("%Y-%m-%d %H:%M") }}
+  · {{ "%.1f" | format(b.size / 1048576) }} MB · commit <code>{{ b.commit[:7] }}</code>
+  {% set names = running.get((b.version, b.variant), []) %}
+  <div>Đang chạy trên: {{ names | join(", ") if names else "không thiết bị nào" }}</div>
+  <details><summary>Ghi chú phát hành{% if b.notes_base %} (thay đổi so với {{ b.notes_base }}){% endif %}</summary>
+    {% include "_bundle_notes.html" %}
+  </details>
+  {% else %}
+  <code>{{ stem }}</code>
+  {% endif %}
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+  <button hx-post="/versions/{{ stem }}/delete" hx-target="#bundle-{{ stem }}" hx-swap="outerHTML"
+          hx-confirm="Xoá {{ stem }}?">Xoá</button>
+</div>

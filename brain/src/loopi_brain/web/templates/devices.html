@@ -8,11 +8,15 @@
 <div id="pair-token"></div>
 {% for d in devices %}
 <div class="card" id="device-{{ d.id }}">
+  {% set history = updates.get(d.id, []) %}
+  {% set busy = history and history[0].finished_at is none %}
   <strong>{{ d.name }}</strong>
   {% if d.revoked %}<span class="err">đã thu hồi</span>
   {% elif d.online %}<span class="online">trực tuyến</span>
   {% else %}<span class="offline">ngoại tuyến</span>{% endif %}
   <ul>
+    <li>Hệ điều hành: {{ d.hb.get("os_version") or "chưa rõ" }} · bản {{ d.hb.get("os_variant") or "—" }}
+        · slot {{ d.hb.get("boot_slot") or "—" }}{% if history %} · cập nhật gần nhất: {{ history[0].state | ota_state }}{% endif %}</li>
     <li>Lần cuối: {{ d.seen_local.strftime("%Y-%m-%d %H:%M:%S") if d.seen_local else "chưa có" }}</li>
     <li>Đang ghi hình: {{ yn(d.hb.get("recording_video")) }} · ghi âm: {{ yn(d.hb.get("recording_audio")) }}
         · tạm dừng: {{ yn(d.hb.get("paused")) }} · audio bật: {{ yn(d.hb.get("audio_enabled")) }}</li>
@@ -30,6 +34,27 @@
     <button hx-post="/devices/{{ d.id }}/revoke" hx-confirm="Thu hồi thiết bị này?">Thu hồi</button>
   </div>
   <div id="result-{{ d.id }}"></div>
+  <form hx-post="/devices/{{ d.id }}/update" hx-target="#update-{{ d.id }}"
+        hx-confirm="Cài bản đã chọn? Thiết bị ngừng ghi khoảng 1 phút lúc khởi động lại.">
+    <select name="bundle" hx-get="/devices/update-notes" hx-trigger="change" hx-target="#notes-{{ d.id }}"
+            {% if busy %}disabled{% endif %}>
+      <option value="">— chọn bản cập nhật —</option>
+      {% for b in bundles %}<option value="{{ b.name }}">{{ b.version }} ({{ b.variant }})</option>{% endfor %}
+    </select>
+    <button {% if busy or not bundles %}disabled{% endif %}>Cập nhật</button>
+  </form>
+  <div id="notes-{{ d.id }}"></div>
+  <div id="update-{{ d.id }}"></div>
+  {% endif %}
+  {% if history %}
+  <details><summary>Cập nhật gần đây</summary>
+    <ul>
+    {% for u in history %}
+      <li>{{ u.requested_at.astimezone(zone).strftime("%Y-%m-%d %H:%M") }} · {{ u.version }} ({{ u.variant }})
+          · {{ u.state | ota_state }}{% if u.error %}: {{ u.error }}{% endif %}</li>
+    {% endfor %}
+    </ul>
+  </details>
   {% endif %}
 </div>
 {% else %}

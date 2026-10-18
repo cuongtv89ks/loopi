@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import audio_level, devices, media, pki
+from .. import audio_level, bundles, devices, media, ota, pki
 from ..days import day_bounds_utc
 from ..pipeline import moments as moment_rules
 from ..pipeline import status
@@ -35,6 +35,18 @@ COMMANDS: dict[str, tuple[str, dict]] = {
     "audio-on": ("set_config", {"audio_enabled": True}),
     "audio-off": ("set_config", {"audio_enabled": False}),
 }
+# OTA update states (P4a design §8), owner-facing.
+OTA_STATE_LABELS = {
+    "requested": "Đã gửi lệnh, chờ thiết bị nhận",
+    "downloading": "Đang tải",
+    "installing": "Đang cài",
+    "rebooting": "Đang khởi động lại",
+    "trying": "Đang thử bản mới",
+    "succeeded": "Đã cập nhật",
+    "rolled_back": "Đã quay về bản cũ",
+    "failed": "Lỗi",
+}
+TEMPLATES.env.filters["ota_state"] = lambda state: OTA_STATE_LABELS.get(state, state)
 
 router = APIRouter()
 
@@ -152,10 +164,13 @@ async def audio_playback(request: Request, item_id: str):
 
 @router.get("/devices", response_class=HTMLResponse)
 async def devices_page(request: Request):
-    zone = request.app.state.settings.zone
+    settings = request.app.state.settings
+    pool = request.app.state.pool
+    zone = settings.zone
     now = dt.datetime.now(dt.UTC)
+    await ota.expire_stale(pool)
     rows = []
-    for row in await devices.list_devices(request.app.state.pool):
+    for row in await devices.list_devices(pool):
         seen = row["last_heartbeat_at"]
         rows.append({
             **row,
@@ -163,8 +178,17 @@ async def devices_page(request: Request):
             "hb": row["last_heartbeat"] or {},
             "seen_local": seen.astimezone(zone) if seen else None,
         })
+    offered, _ = bundles.scan(settings.ota_dir)
     return TEMPLATES.TemplateResponse(
-        request, "devices.html", {"devices": rows, "ca_fingerprint": _ca_fingerprint(request)}
+        request,
+        "devices.html",
+        {
+            "devices": rows,
+            "ca_fingerprint": _ca_fingerprint(request),
+            "bundles": offered,
+            "updates": await ota.recent_updates(pool, [row["id"] for row in rows]),
+            "zone": zone,
+        },
     )
 
 

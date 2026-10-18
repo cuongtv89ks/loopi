@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Phiên bản</h1>
+<p>Các bản cập nhật brain đang có cho thiết bị, mới nhất ở trên. Cài một bản từ trang Thiết bị.</p>
+{% for b in bundles %}
+  {% set stem = b.stem %}{% set error = None %}
+  {% include "_bundle_card.html" %}
+{% else %}
+<p>Chưa có bản cập nhật nào. Phát hành bằng <code>os/scripts/publish-bundle.sh</code>.</p>
+{% endfor %}
+{% if unusable %}
+<h2>Không dùng được</h2>
+{% for u in unusable %}
+<div class="card" id="bundle-{{ u.stem }}">
+  <code>{{ u.file }}</code>: {{ u.reason }}
+  <button hx-post="/versions/{{ u.stem }}/delete" hx-target="#bundle-{{ u.stem }}" hx-swap="outerHTML"
+          hx-confirm="Xoá {{ u.file }}?">Xoá</button>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}
