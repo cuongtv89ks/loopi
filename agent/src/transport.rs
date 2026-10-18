@@ -5,9 +5,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::{header, Client, StatusCode};
+use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 
 use crate::item::{ItemKind, ItemMeta};
+use crate::ota::system::BundleFetcher;
 use crate::wire::{HeartbeatRequest, HeartbeatResponse, PairRequest, PairResponse, RemoteCommand, AGENT_VERSION};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -198,6 +200,59 @@ impl Transport for HttpTransport {
         }
         let body: HeartbeatResponse = response.json().await.map_err(decode)?;
         Ok(body.commands)
+    }
+}
+
+#[async_trait]
+impl BundleFetcher for HttpTransport {
+    /// GET /v1/ota/{bundle} into `dest`, resuming with `Range: bytes=<have>-` (P4a design §6). A 200 answer to a range
+    /// request restarts the file; the body may never grow past `size`.
+    async fn fetch(&self, bundle: &str, dest: &Path, size: u64) -> Result<(), TransportError> {
+        let mut have = match tokio::fs::metadata(dest).await {
+            Ok(meta) => meta.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e.into()),
+        };
+        if have > size {
+            tokio::fs::remove_file(dest).await?;
+            have = 0;
+        }
+        if have == size {
+            return Ok(());
+        }
+        let mut request = self
+            .client
+            .get(format!("{}/v1/ota/{bundle}", self.base_url))
+            .header("X-Loopi-Agent-Version", AGENT_VERSION)
+            .timeout(self.timeouts.upload(size - have));
+        if have > 0 {
+            request = request.header(header::RANGE, format!("bytes={have}-"));
+        }
+        let mut response = request.send().await.map_err(network)?;
+        let mut written = match response.status().as_u16() {
+            206 if have > 0 => have,
+            200 => 0,
+            status => return Err(TransportError::Status(status)),
+        };
+        let mut file = if written == 0 {
+            tokio::fs::File::create(dest).await?
+        } else {
+            tokio::fs::OpenOptions::new().append(true).open(dest).await?
+        };
+        while let Some(chunk) = response.chunk().await.map_err(network)? {
+            written += chunk.len() as u64;
+            if written > size {
+                drop(file);
+                tokio::fs::remove_file(dest).await?;
+                return Err(TransportError::Decode(format!("bundle larger than the {size} bytes announced")));
+            }
+            file.write_all(&chunk).await?;
+        }
+        file.sync_all().await?;
+        if written != size {
+            return Err(TransportError::Decode(format!("bundle ended at {written} of {size} bytes")));
+        }
+        Ok(())
     }
 }
 
@@ -405,5 +460,127 @@ mod tests {
     #[test]
     fn production_client_builds() {
         assert!(build_client(crate::tls::pairing_config(None).unwrap()).is_ok());
+    }
+
+    mod bundles {
+        use super::*;
+        use crate::ota::system::BundleFetcher;
+
+        const NAME: &str = "loopi-dev-2026.10.21-a1b2c3d.raucb";
+        const BODY: &[u8] = b"0123456789abcdef";
+
+        fn transport(server: &MockServer) -> HttpTransport {
+            HttpTransport::new(base_builder().build().unwrap(), &server.uri())
+        }
+
+        #[tokio::test]
+        async fn downloads_a_whole_bundle() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).and(path(format!("/v1/ota/{NAME}")))
+                .and(header("X-Loopi-Agent-Version", AGENT_VERSION))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(BODY))
+                .expect(1).mount(&server).await;
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("b.part");
+            transport(&server).fetch(NAME, &dest, BODY.len() as u64).await.unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), BODY);
+        }
+
+        #[tokio::test]
+        async fn resumes_with_range() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).and(header("Range", "bytes=6-"))
+                .respond_with(ResponseTemplate::new(206).set_body_bytes(&BODY[6..]))
+                .expect(1).mount(&server).await;
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("b.part");
+            std::fs::write(&dest, &BODY[..6]).unwrap();
+            transport(&server).fetch(NAME, &dest, BODY.len() as u64).await.unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), BODY);
+        }
+
+        #[tokio::test]
+        async fn a_server_that_ignores_range_restarts_the_file() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_bytes(BODY)).mount(&server).await;
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("b.part");
+            std::fs::write(&dest, b"zzzzzz").unwrap();
+            transport(&server).fetch(NAME, &dest, BODY.len() as u64).await.unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), BODY);
+        }
+
+        #[tokio::test]
+        async fn a_complete_file_needs_no_request() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(500)).expect(0).mount(&server).await;
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("b.part");
+            std::fs::write(&dest, BODY).unwrap();
+            transport(&server).fetch(NAME, &dest, BODY.len() as u64).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn short_long_and_refused_bodies_are_errors() {
+            let dir = tempfile::tempdir().unwrap();
+            for (status, body, expect) in [(200, &BODY[..4], "ended"), (200, b"0123456789abcdefXX".as_slice(), "larger"),
+                                            (404, b"".as_slice(), "404"), (416, b"".as_slice(), "416")] {
+                let server = MockServer::start().await;
+                Mock::given(method("GET")).respond_with(ResponseTemplate::new(status).set_body_bytes(body)).mount(&server).await;
+                let dest = dir.path().join(format!("{status}-{}.part", body.len()));
+                let err = transport(&server).fetch(NAME, &dest, BODY.len() as u64).await.unwrap_err();
+                assert!(err.to_string().contains(expect), "{err}");
+            }
+        }
+
+        #[tokio::test]
+        async fn an_oversized_partial_file_is_dropped() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_bytes(BODY)).mount(&server).await;
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("b.part");
+            std::fs::write(&dest, b"0123456789abcdef0123").unwrap();
+            transport(&server).fetch(NAME, &dest, BODY.len() as u64).await.unwrap();
+            assert_eq!(std::fs::read(&dest).unwrap(), BODY);
+        }
+
+        #[tokio::test]
+        async fn a_short_body_keeps_the_partial_file_and_a_long_one_drops_it() {
+            let dir = tempfile::tempdir().unwrap();
+            let short = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_bytes(&BODY[..4])).mount(&short).await;
+            let kept = dir.path().join("short.part");
+            transport(&short).fetch(NAME, &kept, BODY.len() as u64).await.unwrap_err();
+            assert_eq!(std::fs::read(&kept).unwrap(), &BODY[..4], "the next attempt resumes from here");
+
+            let long = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_bytes(b"0123456789abcdefXX".as_slice())).mount(&long).await;
+            let dropped = dir.path().join("long.part");
+            transport(&long).fetch(NAME, &dropped, BODY.len() as u64).await.unwrap_err();
+            assert!(!dropped.exists(), "a body past the announced size is poison");
+        }
+
+        #[tokio::test]
+        async fn a_partial_answer_to_a_plain_request_is_refused() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).respond_with(ResponseTemplate::new(206).set_body_bytes(&BODY[6..])).mount(&server).await;
+            let dir = tempfile::tempdir().unwrap();
+            let err = transport(&server).fetch(NAME, &dir.path().join("b.part"), BODY.len() as u64).await.unwrap_err();
+            assert!(matches!(err, TransportError::Status(206)), "{err}");
+        }
+
+        #[tokio::test]
+        async fn a_dead_brain_is_a_network_error_that_keeps_the_partial_file() {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("b.part");
+            std::fs::write(&dest, &BODY[..6]).unwrap();
+            let transport = HttpTransport::new(base_builder().build().unwrap(), &format!("http://127.0.0.1:{port}"));
+            let err = transport.fetch(NAME, &dest, BODY.len() as u64).await.unwrap_err();
+            assert!(matches!(err, TransportError::Network(_)), "{err}");
+            assert_eq!(std::fs::read(&dest).unwrap(), &BODY[..6]);
+        }
     }
 }

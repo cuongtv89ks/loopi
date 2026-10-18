@@ -12,7 +12,9 @@ use loopi_agent::led::{blink_while, LedDriver};
 use loopi_agent::pairing::{ensure_paired, retry_delay, Identity};
 use loopi_agent::recorder::audio::AudioSourceFactory;
 use loopi_agent::osinfo::{OsInfo, CMDLINE_PATH, RELEASE_PATH};
-use loopi_agent::run::{run, Deps, Timings};
+use loopi_agent::ota::system::{BundleFetcher, RaucCli, SystemdReboot};
+use loopi_agent::ota::task::OtaTimings;
+use loopi_agent::run::{run, Deps, OtaSystem, Timings};
 use loopi_agent::liveness::Liveness;
 use loopi_agent::selftest::{failed_count, format_report, run_selftest};
 use loopi_agent::sysinfo::{hw_info, LinuxProbe};
@@ -233,7 +235,11 @@ async fn agent_main() -> Result<()> {
     set_status(if led.is_some() { "running" } else { "privacy LED unavailable: recording disabled" });
 
     let tls = tls::mtls_config(&identity.ca_cert_pem, &identity.cert_pem, &identity.key_pem)?;
-    let transport: Arc<dyn Transport> = Arc::new(HttpTransport::new(build_client(tls)?, &config.brain.url));
+    let http = Arc::new(HttpTransport::new(build_client(tls)?, &config.brain.url));
+    let transport: Arc<dyn Transport> = http.clone();
+    let fetcher: Arc<dyn BundleFetcher> = http;
+    let os = OsInfo::read(Path::new(RELEASE_PATH), Path::new(CMDLINE_PATH));
+    tracing::info!(version = ?os.version, variant = ?os.variant, slot = ?os.slot, "system");
     let deps = Deps {
         clock: Arc::new(SystemClock::new(config.paths.sync_flag.clone())),
         disk: Arc::new(StatvfsUsage::new(&config.paths.data_dir)?),
@@ -244,9 +250,13 @@ async fn agent_main() -> Result<()> {
         probe: Arc::new(LinuxProbe),
         timings: Timings::default(),
         liveness,
-        os: OsInfo::read(Path::new(RELEASE_PATH), Path::new(CMDLINE_PATH)),
-        // Task 7 wires RAUC, the trial reboot and the bundle download here.
-        ota: None,
+        os,
+        ota: Some(OtaSystem {
+            rauc: Arc::new(RaucCli),
+            rebooter: Arc::new(SystemdReboot),
+            fetcher,
+            timings: OtaTimings::default(),
+        }),
         config,
     };
     run(deps, shutdown).await
