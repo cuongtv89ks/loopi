@@ -182,7 +182,13 @@ async fn on_boot(deps: &mut OtaDeps, shutdown: &mut watch::Receiver<bool>) {
             }
             finish(deps, pending, Phase::RolledBack, None, shutdown).await;
         }
-        BootAction::Confirm(pending) => {
+        BootAction::Confirm(mut pending) => {
+            if pending.phase == Phase::Failed {
+                // A record an older agent wrote as failed (error already dropped by reconcile): store it as the pending
+                // trial it is, so a rollback before the confirmation is reported as rolled_back on the next boot.
+                pending.phase = Phase::Rebooting;
+                save(deps, &pending);
+            }
             publish(&deps.status, Some(pending.report(OtaState::Trying)));
             tracing::info!(version = %pending.version, "trial boot: confirming after the first heartbeat");
             if !heartbeats(&mut deps.delivered, 1, shutdown).await {
@@ -629,6 +635,21 @@ mod tests {
         assert_eq!(*rig.rauc.calls.lock().unwrap(), vec!["mark-good".to_string()]);
         let pending = rig.store().load().unwrap().unwrap();
         assert_eq!((pending.phase, pending.error), (Phase::Succeeded, None));
+    }
+
+    #[tokio::test]
+    async fn a_failed_record_for_the_running_slot_is_stored_as_a_pending_trial_before_the_heartbeat() {
+        let rig = Rig::new();
+        rig.store().save(&Pending { command_id: Some("X".into()), bundle: Some(BUNDLE.into()), version: "v".into(),
+                                    target_slot: Slot::B, phase: Phase::Failed,
+                                    error: Some("reboot failed: systemctl reboot failed (signal: 15 (SIGTERM))".into()) }).unwrap();
+        let (_tx, _task) = rig.start(Slot::B);
+        rig.until(|r| r.ota().is_some_and(|o| o.state == OtaState::Trying)).await;
+        let stored = rig.store().load().unwrap().unwrap();
+        assert_eq!((stored.phase, stored.error.as_deref()), (Phase::Rebooting, None));
+        assert!(rig.rauc.calls.lock().unwrap().is_empty(), "no heartbeat yet, so nothing confirmed");
+        // The guard rolls the trial back before it was confirmed: the next boot, on the other slot, reports that.
+        assert!(matches!(reconcile(Some(stored), Slot::A), BootAction::RolledBack(_)));
     }
 
     #[tokio::test]
