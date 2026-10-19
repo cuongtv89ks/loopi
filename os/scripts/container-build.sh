@@ -6,8 +6,14 @@ if [ "$(id -u)" = 0 ]; then
   exec runuser -u builder -- "$0" "$@"
 fi
 BR=/br/buildroot
-OUT=/br/output
 SRC=/br/src
+# One output directory per variant: Buildroot does not rebuild correctly when fragments change under an existing one.
+# Dev keeps /br/output (built since P1).
+case "${VARIANT:-dev}" in
+  dev) OUT=/br/output ;;
+  prod) OUT=/br/output-prod ;;
+  *) echo "unknown VARIANT ${VARIANT}" >&2; exit 2 ;;
+esac
 
 # Copy the repo without host build artefacts (Buildroot rsyncs agent/ for the local package).
 rsync -a --delete --exclude target --exclude .venv --exclude out --exclude .git /src/ "$SRC/"
@@ -34,17 +40,29 @@ fi
 configure() {
   make -C "$BR" O="$OUT" BR2_EXTERNAL="$SRC/os" raspberrypi0w_defconfig
   "$BR/support/kconfig/merge_config.sh" -m -O "$OUT" "$OUT/.config" \
-    "$SRC/os/configs/loopi.fragment" "$SRC/os/configs/dev.fragment"
+    "$SRC/os/configs/loopi.fragment" "$SRC/os/configs/$VARIANT.fragment"
   make -C "$BR" O="$OUT" olddefconfig
-  "$SRC/os/scripts/verify-config.sh" "$OUT/.config" "$SRC/os/configs/loopi.fragment" "$SRC/os/configs/dev.fragment"
+  "$SRC/os/scripts/verify-config.sh" "$OUT/.config" "$SRC/os/configs/loopi.fragment" "$SRC/os/configs/$VARIANT.fragment"
 }
+
+# Buildroot does not notice a changed kernel config fragment: reconfigure the kernel when ours changed since the last
+# successful image build of this output directory.
+LINUX_STAMP="$OUT/.loopi-linux-fragment.sha256"
+linux_fragment_sha() { sha256sum "$SRC/os/board/loopi/linux.fragment" | cut -d' ' -f1; }
 
 case "$TARGET" in
   image)
     configure
+    if ls -d "$OUT"/build/linux-* >/dev/null 2>&1 && [ "$(cat "$LINUX_STAMP" 2>/dev/null)" != "$(linux_fragment_sha)" ]; then
+      make -C "$BR" O="$OUT" linux-reconfigure
+    fi
     make -C "$BR" O="$OUT"
-    cp "$OUT/images/sdcard.img" /out/loopi-dev.img
-    "$SRC/os/tests/check-image.sh" "$OUT/images"
+    linux_fragment_sha > "$LINUX_STAMP"
+    NAME="loopi-$VARIANT-$LOOPI_OS_VERSION"
+    # The deliberately broken acceptance builds (LOOPI_BROKEN) fail the structure checks by design.
+    [ -n "${LOOPI_BROKEN:-}" ] || "$SRC/os/tests/check-image.sh" "$OUT/images"
+    cp "$OUT/images/sdcard.img" "/out/$NAME.img"
+    cp "$OUT/images/rootfs.squashfs" "/out/$NAME.squashfs"
     ;;
   agent)
     make -C "$BR" O="$OUT" loopi-agent-rebuild

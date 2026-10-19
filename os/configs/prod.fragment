@@ -1,0 +1,7 @@
+# Prod variant (spec §6.5, P4a): no SSH, USB always host, no debug tools beyond loopi-selftest, the agent only from the
+# rootfs. Everything else comes from loopi.fragment.
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_LOOPI_PATH)/board/loopi/rootfs-overlay"
+# BR2_PACKAGE_DROPBEAR is not set
+# BR2_PACKAGE_RSYNC is not set
+# BR2_PACKAGE_STRACE is not set
+# BR2_PACKAGE_ALSA_UTILS is not set

@@ -14,6 +14,11 @@ rootfs_has() { unsquashfs -l "$IMAGES/rootfs.squashfs" | grep -E "^squashfs-root
 rootfs_cat() { unsquashfs -cat "$IMAGES/rootfs.squashfs" "$1"; }
 rootfs_file_contains() { rootfs_cat "$1" | grep -E "$2"; }
 rootfs_lacks() { local list; list="$(unsquashfs -l "$IMAGES/rootfs.squashfs")" || return 1; ! grep -E "^squashfs-root$1\$" <<<"$list"; }
+# unit_keys <path in rootfs>: one "[Section] Key=Value" line per setting (a key in the wrong section is ignored by systemd)
+unit_keys() {
+  local keys; keys="$(rootfs_cat "$1")" || return 1
+  awk '/^\[/ { s = $0; next } NF && !/^[#;]/ { print s " " $0 }' <<<"$keys"
+}
 boot_has() { mdir -i "$IMAGES/boot.vfat" "::$1"; }
 boot_cat() { mtype -i "$IMAGES/boot.vfat" "::$1"; }
 # base_dtparam <param>: config.txt in the boot partition sets dtparam=<param> before its first dtoverlay= line (a dtparam=
@@ -53,6 +58,13 @@ usbmode_roundtrip() {  # run the shipped loopi-usbmode against a copy of the shi
     && [ "$(env "$cfg" "$tmp/loopi-usbmode")" = gadget ]
 }
 
+# Variant (spec §6.5): the dev marker /etc/loopi-dev is only in rootfs-overlay-dev. Checks that depend on the dev overlay or
+# on dev.fragment run under is_dev; prod has its own checks at the end.
+variant=dev
+rootfs_has /etc/loopi-dev >/dev/null 2>&1 || variant=prod
+echo "variant: $variant"
+is_dev() { [ "$variant" = dev ]; }
+
 # --- Task 1: bootable base image
 check "sdcard.img exists" test -s "$IMAGES/sdcard.img"
 check "four partitions: boot, rootfs-A, rootfs-B, data" part_count 4
@@ -70,11 +82,15 @@ cmdline_is_one_line_with() { local c="$IMAGES/rpi-firmware/cmdline.txt"; [ "$(gr
 check "cmdline is one line and repairs filesystems at boot (fsck.repair=yes)" cmdline_is_one_line_with '(^| )fsck\.repair=yes( |$)'
 check "boot partition has config.txt" boot_has config.txt
 check "boot partition has loopi.toml.example" boot_has loopi.toml.example
-check "dev image boots in USB gadget mode" grep -qx 'dtoverlay=dwc2,dr_mode=peripheral' "$IMAGES/rpi-firmware/config.txt"
+if is_dev; then
+  check "dev image boots in USB gadget mode" grep -qx 'dtoverlay=dwc2,dr_mode=peripheral' "$IMAGES/rpi-firmware/config.txt"
+fi
 check "dwc2 overlay shipped" boot_has overlays/dwc2.dtbo
 check "gadget kernel modules present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && grep -q dwc2.ko /tmp/rootfs.list && grep -q usb_f_acm.ko /tmp/rootfs.list && grep -q usb_f_ecm.ko /tmp/rootfs.list"
-check "USB gadget service enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-usbgadget.service
-check "loopi-usbmode switches host <-> gadget" usbmode_roundtrip
+if is_dev; then
+  check "USB gadget service enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-usbgadget.service
+  check "loopi-usbmode switches host <-> gadget" usbmode_roundtrip
+fi
 
 # --- Task 2: read-only root, data partition, watchdog
 check "fstab mounts / read-only squashfs" rootfs_file_contains etc/fstab '^/dev/root +/ +squashfs +ro'
@@ -189,14 +205,18 @@ check "wifi enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loop
 check "agent has a systemd watchdog" rootfs_file_contains etc/systemd/system/loopi-agent.service '^WatchdogSec=30'
 check "recorders die with the agent" rootfs_file_contains etc/systemd/system/loopi-agent.service '^KillMode=control-group'
 check "wlan0 uses DHCP" rootfs_file_contains etc/systemd/network/20-wlan0.network '^DHCP=yes'
-check "usb0 serves DHCP to the dev computer" rootfs_file_contains etc/systemd/network/30-usb0.network '^DHCPServer=yes'
-check "usb0 does not take over the computer's default route" rootfs_file_contains etc/systemd/network/30-usb0.network '^EmitRouter=no'
+if is_dev; then
+  check "usb0 serves DHCP to the dev computer" rootfs_file_contains etc/systemd/network/30-usb0.network '^DHCPServer=yes'
+  check "usb0 does not take over the computer's default route" rootfs_file_contains etc/systemd/network/30-usb0.network '^EmitRouter=no'
+fi
 check "WiFi firmware present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q brcmfmac43430"
 check "BlueZ present" rootfs_has /usr/bin/bluetoothctl
 check "timesyncd present" rootfs_has /usr/lib/systemd/systemd-timesyncd
 # Added with the controller rulings and the unit paths (not in the brief's list)
 check "libcamera log noise is capped at WARN for the agent (and rpicam-vid it spawns)" rootfs_file_contains etc/systemd/system/loopi-agent.service '^Environment=LIBCAMERA_LOG_LEVELS=\*:WARN$'
-check "usb0 never holds network-online.target" rootfs_file_contains etc/systemd/network/30-usb0.network '^RequiredForOnline=no$'
+if is_dev; then
+  check "usb0 never holds network-online.target" rootfs_file_contains etc/systemd/network/30-usb0.network '^RequiredForOnline=no$'
+fi
 # merged /usr and merged bin: the unit says /usr/sbin/wpa_supplicant, which is listed as /usr/bin/wpa_supplicant
 check "wpa_supplicant (loopi-wifi ExecStart) is in the image" rootfs_has /usr/bin/wpa_supplicant
 # Provisioning writes `ctrl_interface=` into the wpa_supplicant config. A wpa_supplicant built without
@@ -205,47 +225,47 @@ check "wpa_supplicant (loopi-wifi ExecStart) is in the image" rootfs_has /usr/bi
 check "wpa_supplicant accepts ctrl_interface= (control interface compiled in)" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs' usr/bin/wpa_supplicant | strings -a | grep -x ctrl_interface_group"
 check "stock D-Bus wpa_supplicant.service is not enabled (loopi-wifi owns wlan0)" rootfs_lacks /etc/systemd/system/multi-user.target.wants/wpa_supplicant.service
 check "run-agent wrapper is executable" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -E '^-rwxr-xr-x .* squashfs-root/usr/libexec/loopi/run-agent\$'"
-check "dev image marker present" rootfs_has /etc/loopi-dev
+if is_dev; then
+  check "dev image marker present" rootfs_has /etc/loopi-dev
+fi
 
 # --- Task 4: dev access (key-only SSH, rsync)
-check "dropbear enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/dropbear.service
-check "SSH host keys persist on /data" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -q 'etc/dropbear -> /data/dev/dropbear'"
-check "authorized_keys live on /data" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -q 'root/.ssh -> /data/dev/ssh'"
-check "SSH keys imported from the boot partition" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-devkeys.service
-check "rsync present" rootfs_has /usr/bin/rsync
-check "dev marker present" rootfs_has /etc/loopi-dev
-# Added with controller ruling C5 (spec section 6: SSH is key-only). Without it key-only rests on dropbear
-# refusing root's empty password, which stops being true the day a root password is set.
-dropbear_is_key_only() {
-  rootfs_file_contains etc/default/dropbear '^DROPBEAR_ARGS="([^"]* )?-s( [^"]*)?"$' \
-    && rootfs_file_contains usr/lib/systemd/system/dropbear.service '^EnvironmentFile=-?/etc/default/dropbear$' \
-    && rootfs_file_contains usr/lib/systemd/system/dropbear.service '^ExecStart=.* \$DROPBEAR_ARGS( |$)'
-}
-check "dropbear refuses password logins (-s from /etc/default/dropbear reaches its command line)" dropbear_is_key_only
-# tmpfiles.d is only best effort for /data. A nofail mount is not ordered before local-fs.target (systemd.mount(5)),
-# so systemd-tmpfiles-setup.service normally runs before /data is mounted and acts on the squashfs mount point,
-# not on the ext4 that is mounted over it. What guarantees the SSH state directories is the drop-in below
-# (dropbear) and loopi-devkeys.service (authorized_keys), both of which run after /data is mounted.
-tmpfiles_make_ssh_dirs() {
-  rootfs_file_contains etc/tmpfiles.d/loopi.conf '^d /data/dev/dropbear +0700 root root' \
-    && rootfs_file_contains etc/tmpfiles.d/loopi.conf '^d /data/dev/ssh +0700 root root'
-}
-check "tmpfiles.d declares the SSH state directories (best effort: runs before the nofail /data mount)" tmpfiles_make_ssh_dirs
-# Fix round 1 (ruling C26). `dropbear -R` creates its host key with open(O_CREAT|O_EXCL): without /data/dev/dropbear
-# it fails with ENOENT ("Couldn't read or generate hostkey") and every SSH connection dies. So dropbear.service must
-# wait for /data (RequiresMountsFor, as every unit that needs /data) and create the directory itself.
-unit_keys() {  # unit_keys <path in rootfs>: one "[Section] Key=Value" line per setting (a key in the wrong section is ignored by systemd)
-  local keys; keys="$(rootfs_cat "$1")" || return 1
-  awk '/^\[/ { s = $0; next } NF && !/^[#;]/ { print s " " $0 }' <<<"$keys"
-}
-dropbear_hostkey_dir_after_mount() {
-  local keys; keys="$(unit_keys etc/systemd/system/dropbear.service.d/10-loopi.conf)" || return 1
-  grep -Fx '[Unit] RequiresMountsFor=/data' <<<"$keys" \
-    && grep -Fx '[Service] ExecStartPre=/bin/mkdir -p -m 0700 /data/dev/dropbear' <<<"$keys"
-}
-check "dropbear waits for /data and creates /data/dev/dropbear itself (drop-in)" dropbear_hostkey_dir_after_mount
-# /bin -> usr/bin and mkdir is a busybox applet link there; the drop-in's ExecStartPre needs it
-check "mkdir for the dropbear drop-in is in the image" rootfs_has /usr/bin/mkdir
+if is_dev; then
+  check "dropbear enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/dropbear.service
+  check "SSH host keys persist on /data" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -q 'etc/dropbear -> /data/dev/dropbear'"
+  check "authorized_keys live on /data" bash -c "unsquashfs -ll '$IMAGES/rootfs.squashfs' | grep -q 'root/.ssh -> /data/dev/ssh'"
+  check "SSH keys imported from the boot partition" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-devkeys.service
+  check "rsync present" rootfs_has /usr/bin/rsync
+  check "dev marker present" rootfs_has /etc/loopi-dev
+  # Added with controller ruling C5 (spec section 6: SSH is key-only). Without it key-only rests on dropbear
+  # refusing root's empty password, which stops being true the day a root password is set.
+  dropbear_is_key_only() {
+    rootfs_file_contains etc/default/dropbear '^DROPBEAR_ARGS="([^"]* )?-s( [^"]*)?"$' \
+      && rootfs_file_contains usr/lib/systemd/system/dropbear.service '^EnvironmentFile=-?/etc/default/dropbear$' \
+      && rootfs_file_contains usr/lib/systemd/system/dropbear.service '^ExecStart=.* \$DROPBEAR_ARGS( |$)'
+  }
+  check "dropbear refuses password logins (-s from /etc/default/dropbear reaches its command line)" dropbear_is_key_only
+  # tmpfiles.d is only best effort for /data. A nofail mount is not ordered before local-fs.target (systemd.mount(5)),
+  # so systemd-tmpfiles-setup.service normally runs before /data is mounted and acts on the squashfs mount point,
+  # not on the ext4 that is mounted over it. What guarantees the SSH state directories is the drop-in below
+  # (dropbear) and loopi-devkeys.service (authorized_keys), both of which run after /data is mounted.
+  tmpfiles_make_ssh_dirs() {
+    rootfs_file_contains etc/tmpfiles.d/loopi.conf '^d /data/dev/dropbear +0700 root root' \
+      && rootfs_file_contains etc/tmpfiles.d/loopi.conf '^d /data/dev/ssh +0700 root root'
+  }
+  check "tmpfiles.d declares the SSH state directories (best effort: runs before the nofail /data mount)" tmpfiles_make_ssh_dirs
+  # Fix round 1 (ruling C26). `dropbear -R` creates its host key with open(O_CREAT|O_EXCL): without /data/dev/dropbear
+  # it fails with ENOENT ("Couldn't read or generate hostkey") and every SSH connection dies. So dropbear.service must
+  # wait for /data (RequiresMountsFor, as every unit that needs /data) and create the directory itself.
+  dropbear_hostkey_dir_after_mount() {
+    local keys; keys="$(unit_keys etc/systemd/system/dropbear.service.d/10-loopi.conf)" || return 1
+    grep -Fx '[Unit] RequiresMountsFor=/data' <<<"$keys" \
+      && grep -Fx '[Service] ExecStartPre=/bin/mkdir -p -m 0700 /data/dev/dropbear' <<<"$keys"
+  }
+  check "dropbear waits for /data and creates /data/dev/dropbear itself (drop-in)" dropbear_hostkey_dir_after_mount
+  # /bin -> usr/bin and mkdir is a busybox applet link there; the drop-in's ExecStartPre needs it
+  check "mkdir for the dropbear drop-in is in the image" rootfs_has /usr/bin/mkdir
+fi
 
 # --- Task 5: camera and USB microphone
 check "rpicam-vid present" rootfs_has /usr/bin/rpicam-vid
@@ -255,7 +275,9 @@ check "camera auto-detect enabled" grep -qx 'camera_auto_detect=1' "$IMAGES/rpi-
 check "onboard audio disabled" grep -qx 'dtparam=audio=off' "$IMAGES/rpi-firmware/config.txt"
 check "KMS overlay shipped" boot_has overlays/vc4-kms-v3d.dtbo
 check "OV5647 overlay shipped" boot_has overlays/ov5647.dtbo
-check "arecord present (dev)" rootfs_has /usr/bin/arecord
+if is_dev; then
+  check "arecord present (dev)" rootfs_has /usr/bin/arecord
+fi
 
 # --- Fix C1 (ruling C28): rpicam-apps v1.7.0 replaces Request::controls() with its own ControlList, which upstream
 # libcamera >= 0.7 refuses at queueRequest ("Overwriting Request::controls() is not allowed"), so rpicam-vid aborts with
@@ -321,62 +343,64 @@ provision_opens_and_closes_boot_window() {
     && grep -Fx '[Service] Type=oneshot' <<<"$keys"
 }
 check "loopi-provision.service opens /boot read-write only around the provisioning (ro again on success and on failure)" provision_opens_and_closes_boot_window
-# loopi-devkeys.service only reads /boot (install -m 0600 /boot/loopi-authorized_keys /data/...): it must stay without a
-# remount, i.e. nothing may open /boot for writing for a read.
-devkeys_only_reads_boot() {
-  rootfs_file_contains etc/systemd/system/loopi-devkeys.service "install -m 0600 /boot/loopi-authorized_keys /data/dev/ssh/authorized_keys" \
-    && ! rootfs_cat etc/systemd/system/loopi-devkeys.service | grep -E 'remount'
-}
-check "loopi-devkeys.service only reads /boot (copies the key out, no remount)" devkeys_only_reads_boot
-# The shipped loopi-usbmode against a fake boot mount point: stub `mountpoint` (true for the fake /boot only) and `mount`
-# (logs its arguments and whether the dwc2 line was active at that moment, can be told to fail). The real mount is never
-# called, so this is safe on the build host; usbmode_roundtrip above still runs the script without any stub.
-usbmode_boot_window() {
-  local tmp rc=0; tmp="$(mktemp -d)" || return 1
-  mkdir "$tmp/bin" "$tmp/boot" "$tmp/plain"
-  rootfs_cat usr/bin/loopi-usbmode > "$tmp/loopi-usbmode" && chmod +x "$tmp/loopi-usbmode" || { rm -rf "$tmp"; return 1; }
-  printf '#!/bin/sh\n[ "$1" = -q ] && [ "$2" = "%s" ]\n' "$tmp/boot" > "$tmp/bin/mountpoint"
-  printf '#!/bin/sh\necho "$* [active=$(grep -c "^dtoverlay=dwc2" "%s/boot/config.txt" 2>/dev/null)]" >> "%s/mount.log"\ncase "$*" in *"${MOCK_FAIL:-NONE}"*) exit 32 ;; esac\n' \
-    "$tmp" "$tmp" > "$tmp/bin/mount"
-  chmod +x "$tmp/bin/mountpoint" "$tmp/bin/mount"
-  local line='dtoverlay=dwc2,dr_mode=peripheral'
-  um() { env PATH="$tmp/bin:$PATH" "$@"; }
-  reset() { rm -f "$tmp/mount.log"; printf 'camera_auto_detect=1\n%s\n' "$1" > "$tmp/boot/config.txt"; cp "$tmp/boot/config.txt" "$tmp/plain/config.txt"; }
-  # 1. the switch: rw first, the edit inside the window (line still active at rw, gone at ro), ro last
-  reset "$line"
-  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 \
-    && [ "$(cat "$tmp/mount.log")" = "$(printf -- '-o remount,rw %s/boot [active=1]\n-o remount,ro %s/boot [active=0]' "$tmp" "$tmp")" ] \
-    && grep -qx "# $line" "$tmp/boot/config.txt" || rc=1
-  # 1b. and back: the edit again lies between the two remounts (line commented at rw, active at ro)
-  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" gadget >/dev/null 2>&1 \
-    && [ "$(tail -n 2 "$tmp/mount.log")" = "$(printf -- '-o remount,rw %s/boot [active=0]\n-o remount,ro %s/boot [active=1]' "$tmp" "$tmp")" ] \
-    && grep -qx "$line" "$tmp/boot/config.txt" || rc=1
-  # 2. a failing edit still ends with the window closed and a non-zero exit: (a) no line to enable, (b) sed itself fails
-  # (config.txt missing), which stops the script inside the window, so only the EXIT trap can close it
-  reset "# something else"
-  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" gadget >/dev/null 2>&1 && rc=1
-  [ "$(tail -n 1 "$tmp/mount.log" 2>/dev/null)" = "-o remount,ro $tmp/boot [active=0]" ] || rc=1
-  reset "$line"; rm -f "$tmp/boot/config.txt"
-  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 && rc=1
-  [ "$(sed -n '1p;$p' "$tmp/mount.log" 2>/dev/null)" = "$(printf -- '-o remount,rw %s/boot [active=]\n-o remount,ro %s/boot [active=]' "$tmp" "$tmp")" ] || rc=1
-  # 3. cannot open the window: nothing is edited, non-zero exit
-  reset "$line"
-  um MOCK_FAIL=remount,rw LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 && rc=1
-  cmp -s "$tmp/boot/config.txt" "$tmp/plain/config.txt" || rc=1
-  # 4. cannot close it again: the switch is done and reported, the warning is printed
-  reset "$line"
-  um MOCK_FAIL=remount,ro LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>"$tmp/err" \
-    && grep -q 'read-only' "$tmp/err" && grep -qx "# $line" "$tmp/boot/config.txt" || rc=1
-  # 5. reading the mode and a config that is not on a mount point never call mount
-  reset "$line"
-  um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" >/dev/null 2>&1 || rc=1
-  um LOOPI_BOOT_CONFIG="$tmp/plain/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 || rc=1
-  um LOOPI_BOOT_CONFIG="$tmp/plain/config.txt" "$tmp/loopi-usbmode" bogus >/dev/null 2>&1 && rc=1
-  [ ! -e "$tmp/mount.log" ] || rc=1
-  grep -qx "# $line" "$tmp/plain/config.txt" || rc=1
-  rm -rf "$tmp"; return $rc
-}
-check "loopi-usbmode opens its mount point read-write only for the edit, closes it also on error, never mounts off /boot" usbmode_boot_window
+if is_dev; then
+  # loopi-devkeys.service only reads /boot (install -m 0600 /boot/loopi-authorized_keys /data/...): it must stay without a
+  # remount, i.e. nothing may open /boot for writing for a read.
+  devkeys_only_reads_boot() {
+    rootfs_file_contains etc/systemd/system/loopi-devkeys.service "install -m 0600 /boot/loopi-authorized_keys /data/dev/ssh/authorized_keys" \
+      && ! rootfs_cat etc/systemd/system/loopi-devkeys.service | grep -E 'remount'
+  }
+  check "loopi-devkeys.service only reads /boot (copies the key out, no remount)" devkeys_only_reads_boot
+  # The shipped loopi-usbmode against a fake boot mount point: stub `mountpoint` (true for the fake /boot only) and `mount`
+  # (logs its arguments and whether the dwc2 line was active at that moment, can be told to fail). The real mount is never
+  # called, so this is safe on the build host; usbmode_roundtrip above still runs the script without any stub.
+  usbmode_boot_window() {
+    local tmp rc=0; tmp="$(mktemp -d)" || return 1
+    mkdir "$tmp/bin" "$tmp/boot" "$tmp/plain"
+    rootfs_cat usr/bin/loopi-usbmode > "$tmp/loopi-usbmode" && chmod +x "$tmp/loopi-usbmode" || { rm -rf "$tmp"; return 1; }
+    printf '#!/bin/sh\n[ "$1" = -q ] && [ "$2" = "%s" ]\n' "$tmp/boot" > "$tmp/bin/mountpoint"
+    printf '#!/bin/sh\necho "$* [active=$(grep -c "^dtoverlay=dwc2" "%s/boot/config.txt" 2>/dev/null)]" >> "%s/mount.log"\ncase "$*" in *"${MOCK_FAIL:-NONE}"*) exit 32 ;; esac\n' \
+      "$tmp" "$tmp" > "$tmp/bin/mount"
+    chmod +x "$tmp/bin/mountpoint" "$tmp/bin/mount"
+    local line='dtoverlay=dwc2,dr_mode=peripheral'
+    um() { env PATH="$tmp/bin:$PATH" "$@"; }
+    reset() { rm -f "$tmp/mount.log"; printf 'camera_auto_detect=1\n%s\n' "$1" > "$tmp/boot/config.txt"; cp "$tmp/boot/config.txt" "$tmp/plain/config.txt"; }
+    # 1. the switch: rw first, the edit inside the window (line still active at rw, gone at ro), ro last
+    reset "$line"
+    um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 \
+      && [ "$(cat "$tmp/mount.log")" = "$(printf -- '-o remount,rw %s/boot [active=1]\n-o remount,ro %s/boot [active=0]' "$tmp" "$tmp")" ] \
+      && grep -qx "# $line" "$tmp/boot/config.txt" || rc=1
+    # 1b. and back: the edit again lies between the two remounts (line commented at rw, active at ro)
+    um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" gadget >/dev/null 2>&1 \
+      && [ "$(tail -n 2 "$tmp/mount.log")" = "$(printf -- '-o remount,rw %s/boot [active=0]\n-o remount,ro %s/boot [active=1]' "$tmp" "$tmp")" ] \
+      && grep -qx "$line" "$tmp/boot/config.txt" || rc=1
+    # 2. a failing edit still ends with the window closed and a non-zero exit: (a) no line to enable, (b) sed itself fails
+    # (config.txt missing), which stops the script inside the window, so only the EXIT trap can close it
+    reset "# something else"
+    um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" gadget >/dev/null 2>&1 && rc=1
+    [ "$(tail -n 1 "$tmp/mount.log" 2>/dev/null)" = "-o remount,ro $tmp/boot [active=0]" ] || rc=1
+    reset "$line"; rm -f "$tmp/boot/config.txt"
+    um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 && rc=1
+    [ "$(sed -n '1p;$p' "$tmp/mount.log" 2>/dev/null)" = "$(printf -- '-o remount,rw %s/boot [active=]\n-o remount,ro %s/boot [active=]' "$tmp" "$tmp")" ] || rc=1
+    # 3. cannot open the window: nothing is edited, non-zero exit
+    reset "$line"
+    um MOCK_FAIL=remount,rw LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 && rc=1
+    cmp -s "$tmp/boot/config.txt" "$tmp/plain/config.txt" || rc=1
+    # 4. cannot close it again: the switch is done and reported, the warning is printed
+    reset "$line"
+    um MOCK_FAIL=remount,ro LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>"$tmp/err" \
+      && grep -q 'read-only' "$tmp/err" && grep -qx "# $line" "$tmp/boot/config.txt" || rc=1
+    # 5. reading the mode and a config that is not on a mount point never call mount
+    reset "$line"
+    um LOOPI_BOOT_CONFIG="$tmp/boot/config.txt" "$tmp/loopi-usbmode" >/dev/null 2>&1 || rc=1
+    um LOOPI_BOOT_CONFIG="$tmp/plain/config.txt" "$tmp/loopi-usbmode" host >/dev/null 2>&1 || rc=1
+    um LOOPI_BOOT_CONFIG="$tmp/plain/config.txt" "$tmp/loopi-usbmode" bogus >/dev/null 2>&1 && rc=1
+    [ ! -e "$tmp/mount.log" ] || rc=1
+    grep -qx "# $line" "$tmp/plain/config.txt" || rc=1
+    rm -rf "$tmp"; return $rc
+  }
+  check "loopi-usbmode opens its mount point read-write only for the edit, closes it also on error, never mounts off /boot" usbmode_boot_window
+fi
 
 # --- Final fix C-1: the Raspberry Pi kernel keeps a released GPIO's output level (pinctrl-bcm2835 persist_gpio_outputs;
 # dmesg "GPIO_OUT persistence: yes"), so an LED on a GPIO stayed lit after the agent was killed (SIGKILL, abort, watchdog).
@@ -441,11 +465,13 @@ agent_unit_lifecycle() {
     && grep -Ex '\[Unit\] After=(.* )?loopi-provision\.service( .*)?' <<<"$keys"
 }
 check "agent unit: Type=notify, Restart=always, RequiresMountsFor=/data, after loopi-provision" agent_unit_lifecycle
-usb0_emits_no_dns() {
-  local keys; keys="$(unit_keys etc/systemd/network/30-usb0.network)" || return 1
-  grep -Fx '[DHCPServer] EmitDNS=no' <<<"$keys"
-}
-check "usb0 DHCP server hands out no DNS server (the computer keeps its own)" usb0_emits_no_dns
+if is_dev; then
+  usb0_emits_no_dns() {
+    local keys; keys="$(unit_keys etc/systemd/network/30-usb0.network)" || return 1
+    grep -Fx '[DHCPServer] EmitDNS=no' <<<"$keys"
+  }
+  check "usb0 DHCP server hands out no DNS server (the computer keeps its own)" usb0_emits_no_dns
+fi
 fstab_data_is_checked() {
   rootfs_cat etc/fstab | awk '$1 !~ /^#/ && $2 == "/data" { found = 1; ok = ($1 == "/dev/mmcblk0p4" && $6 == 2) }
                              END { exit !(found && ok) }'
@@ -458,27 +484,29 @@ provision_window_is_bounded() {
   grep -Fx '[Service] TimeoutStartSec=60' <<<"$keys"
 }
 check "loopi-provision gives up after 60 s (it holds the /boot write window)" provision_window_is_bounded
-# loopi-usbmode without LOOPI_BOOT_CONFIG while /boot is not mounted (nofail leaves an unrepairable FAT unmounted): every
-# mode fails with a pointer to the fsck log and touches nothing; a config that cannot be read is an error, never "host".
-# `mountpoint` is stubbed to say no for every path and `mount` only logs, so the build host's /boot is never touched.
-usbmode_fails_closed() {
-  local tmp rc=0 out mode; tmp="$(mktemp -d)" || return 1
-  mkdir "$tmp/bin"
-  rootfs_cat usr/bin/loopi-usbmode > "$tmp/loopi-usbmode" && chmod +x "$tmp/loopi-usbmode" || { rm -rf "$tmp"; return 1; }
-  printf '#!/bin/sh\nexit 1\n' > "$tmp/bin/mountpoint"
-  printf '#!/bin/sh\necho "$*" >> "%s/mount.log"\n' "$tmp" > "$tmp/bin/mount"
-  chmod +x "$tmp/bin/mountpoint" "$tmp/bin/mount"
-  for mode in "" host gadget; do
-    out="$(env -u LOOPI_BOOT_CONFIG PATH="$tmp/bin:$PATH" "$tmp/loopi-usbmode" ${mode:+"$mode"} 2>"$tmp/err")" && rc=1
-    [ -z "$out" ] && grep -qF '/boot is not mounted' "$tmp/err" \
-      && grep -qF 'journalctl -u systemd-fsck@dev-mmcblk0p1' "$tmp/err" || rc=1
-  done
-  [ ! -e "$tmp/mount.log" ] || rc=1
-  out="$(env PATH="$tmp/bin:$PATH" LOOPI_BOOT_CONFIG="$tmp/missing/config.txt" "$tmp/loopi-usbmode" 2>"$tmp/err")" && rc=1
-  [ -z "$out" ] && grep -qF "cannot read $tmp/missing/config.txt" "$tmp/err" || rc=1
-  rm -rf "$tmp"; return $rc
-}
-check "loopi-usbmode fails closed: /boot not mounted -> error in every mode; unreadable config -> error, not \"host\"" usbmode_fails_closed
+if is_dev; then
+  # loopi-usbmode without LOOPI_BOOT_CONFIG while /boot is not mounted (nofail leaves an unrepairable FAT unmounted): every
+  # mode fails with a pointer to the fsck log and touches nothing; a config that cannot be read is an error, never "host".
+  # `mountpoint` is stubbed to say no for every path and `mount` only logs, so the build host's /boot is never touched.
+  usbmode_fails_closed() {
+    local tmp rc=0 out mode; tmp="$(mktemp -d)" || return 1
+    mkdir "$tmp/bin"
+    rootfs_cat usr/bin/loopi-usbmode > "$tmp/loopi-usbmode" && chmod +x "$tmp/loopi-usbmode" || { rm -rf "$tmp"; return 1; }
+    printf '#!/bin/sh\nexit 1\n' > "$tmp/bin/mountpoint"
+    printf '#!/bin/sh\necho "$*" >> "%s/mount.log"\n' "$tmp" > "$tmp/bin/mount"
+    chmod +x "$tmp/bin/mountpoint" "$tmp/bin/mount"
+    for mode in "" host gadget; do
+      out="$(env -u LOOPI_BOOT_CONFIG PATH="$tmp/bin:$PATH" "$tmp/loopi-usbmode" ${mode:+"$mode"} 2>"$tmp/err")" && rc=1
+      [ -z "$out" ] && grep -qF '/boot is not mounted' "$tmp/err" \
+        && grep -qF 'journalctl -u systemd-fsck@dev-mmcblk0p1' "$tmp/err" || rc=1
+    done
+    [ ! -e "$tmp/mount.log" ] || rc=1
+    out="$(env PATH="$tmp/bin:$PATH" LOOPI_BOOT_CONFIG="$tmp/missing/config.txt" "$tmp/loopi-usbmode" 2>"$tmp/err")" && rc=1
+    [ -z "$out" ] && grep -qF "cannot read $tmp/missing/config.txt" "$tmp/err" || rc=1
+    rm -rf "$tmp"; return $rc
+  }
+  check "loopi-usbmode fails closed: /boot not mounted -> error in every mode; unreadable config -> error, not \"host\"" usbmode_fails_closed
+fi
 
 # --- Audio level (spec D19): the agent amplifies the USB microphone before encoding (capture.audio_gain_db). The agent is
 # a local Buildroot package, rsynced only on a fresh build: an image made without `loopi-agent-dirclean` silently ships the
@@ -490,5 +518,14 @@ agent_binary_amplifies_the_microphone() {
 example_sets_the_microphone_gain() { boot_cat loopi.toml.example | grep -E '^audio_gain_db = 20\.0 '; }
 check "the shipped agent amplifies the microphone before encoding (capture.audio_gain_db, spec D19)" agent_binary_amplifies_the_microphone
 check "loopi.toml.example shows the microphone gain (audio_gain_db = 20.0)" example_sets_the_microphone_gain
+
+# --- P4a: version stamp and the prod variant (spec §6.5)
+check "/etc/loopi-release names this build" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs' etc/loopi-release | grep -qx 'LOOPI_OS_VERSION=${LOOPI_OS_VERSION}' && unsquashfs -cat '$IMAGES/rootfs.squashfs' etc/loopi-release | grep -qx 'LOOPI_OS_VARIANT=$variant'"
+if ! is_dev; then
+  check "prod: no SSH server" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq '/(dropbear|sshd)$' /tmp/rootfs.list"
+  check "prod: no dev marker, gadget unit or usbmode" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq 'etc/loopi-dev$|loopi-usbgadget\.service$|usr/bin/loopi-usbmode$|loopi-devkeys\.service$' /tmp/rootfs.list"
+  check "prod: no debug tools" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq '/(strace|rsync|arecord|aplay)$' /tmp/rootfs.list"
+  check "prod: agent wrapper never runs /data/dev" bash -c "! unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'etc/loopi-dev$'"
+fi
 
 exit $fail

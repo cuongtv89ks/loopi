@@ -1,3 +1,5 @@
+# Dev variant: the common overlay plus SSH, USB gadget bring-up and the /data/dev agent override (spec §6.5)
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_LOOPI_PATH)/board/loopi/rootfs-overlay $(BR2_EXTERNAL_LOOPI_PATH)/board/loopi/rootfs-overlay-dev"
 # Dev variant: SSH (key-only via /data/dev/ssh), file sync, tracing
 BR2_PACKAGE_DROPBEAR=y
 BR2_PACKAGE_RSYNC=y

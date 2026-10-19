@@ -1,10 +1,31 @@
 # Loopi OS (Buildroot, Raspberry Pi Zero W)
 
 ## Build
-`./os/build.sh image` → `os/out/loopi-dev.img` (needs Docker; first build 1–3 h, later builds minutes).
+`VARIANT=dev|prod os/build.sh image` (default `dev`) → `os/out/loopi-<variant>-<version>.img` and
+`os/out/loopi-<variant>-<version>.squashfs` (needs Docker; first build 1–3 h, later builds minutes).
+
+- **Two variants** (spec §6.5). `dev` keeps SSH (key-only), the USB gadget console, `loopi-usbmode`, rsync, strace,
+  the ALSA tools and the `/data/dev/loopi-agent` override; its extra files live in
+  `board/loopi/rootfs-overlay-dev/` and `configs/dev.fragment`. `prod` has none of them: no SSH server, the USB port is
+  always host, no debug tools beyond `loopi-agent selftest`, and `run-agent` only ever starts `/usr/bin/loopi-agent`
+  (`configs/prod.fragment`). Everything else is shared (`configs/loopi.fragment`, `board/loopi/rootfs-overlay/`).
+  `check-image.sh` detects the variant from `/etc/loopi-dev` and runs the dev-only checks on dev images only.
+- **Two output directories**, one per variant, in the `loopi-buildroot` volume: `/br/output` (dev, built since P1) and
+  `/br/output-prod`. Buildroot does not rebuild correctly when the fragments change under an existing output
+  directory, so a variant never reuses the other's. The first prod build starts from scratch (the download cache is
+  shared). `post-build.sh` stops the build if the variant and the `/etc/loopi-dev` marker disagree.
+- **Version stamp**: every build is `<UTC date>-<7-char commit>` (e.g. `2026.10.19-f1cb4c9`), with `-dirty` appended when
+  the git tree has uncommitted changes (`publish-bundle.sh` refuses those, so a bundle always names a real commit).
+  It is written to `/etc/loopi-release` (`LOOPI_OS_VERSION=`, `LOOPI_OS_VARIANT=`), which the agent reports in every
+  heartbeat. `LOOPI_BROKEN=agent|kernel` makes the deliberately broken builds for the OTA acceptance test; they are
+  versioned `...-broken-<what>` and skip the image checks.
+- **OTA signing keys**: `os/build.sh image` refuses to run unless `~/.config/loopi/rauc/` holds `ca.cert.pem`,
+  `signing.cert.pem` and `signing.key.pem` (create them once with `os/scripts/rauc-keys.sh`; `LOOPI_RAUC_KEYS=<dir>`
+  points elsewhere). The images carry the CA certificate and the bundles are signed with the signing key. The keys are
+  never in git.
 
 ## Flash and configure
-1. `sudo dd if=os/out/loopi-dev.img of=/dev/sdX bs=4M conv=fsync status=progress`
+1. `sudo dd if=os/out/loopi-<variant>-<version>.img of=/dev/sdX bs=4M conv=fsync status=progress`
    (or Raspberry Pi Imager → "Use custom").
 2. On the `boot` partition: copy `loopi.toml.example` to `loopi.toml` and fill in WiFi, the brain URL,
    `pair_token` and `ca_fingerprint` (brain web → Thiết bị → "Tạo token ghép cặp"; the fingerprint is on the same
@@ -12,9 +33,10 @@
 3. Dev images: put your SSH public key in `boot/loopi-authorized_keys`. `loopi-devkeys` copies it over
    `/data/dev/ssh/authorized_keys` at every boot, so edit the boot copy (a key added only on the device is gone after
    the next boot) and delete the file to keep the device's own list.
-4. Insert the card and connect the Pi's `USB` port (not `PWR`) to your computer with a micro-USB data
-   cable. Dev images start in USB gadget mode: the cable powers the Pi and gives a console and network
-   (`ssh root@10.55.0.1`). The console is `/dev/ttyACM0` on Linux (`screen /dev/ttyACM0 115200`) and
+4. Prod images: put the microphone in `USB` (OTG adapter if needed), power the Pi from `PWR` and let it join WiFi from
+   `loopi.toml`; there is no SSH and no USB console. Dev images: insert the card and connect the Pi's `USB` port (not
+   `PWR`) to your computer with a micro-USB data cable. Dev images start in USB gadget mode: the cable powers the Pi
+   and gives a console and network (`ssh root@10.55.0.1`). The console is `/dev/ttyACM0` on Linux (`screen /dev/ttyACM0 115200`) and
    `/dev/cu.usbmodem*` on macOS. On Linux, ModemManager may grab the port for a few seconds after it appears; keep it
    away with a udev rule, e.g. in `/etc/udev/rules.d/99-loopi.rules`, then `sudo udevadm control --reload`:
    `SUBSYSTEM=="tty", ATTRS{idVendor}=="1d6b", ATTRS{idProduct}=="0104", ENV{ID_MM_DEVICE_IGNORE}="1"`
@@ -51,6 +73,7 @@ outside 0-36 or a misspelt key makes the agent refuse to start (nothing is recor
 `journalctl -u loopi-agent -n 20` afterwards.
 
 ## USB port modes (one per boot)
+Dev images only; a prod image has no `loopi-usbmode` and the USB port is always host (microphone in `USB`, charger in `PWR`).
 - `gadget` (default on dev images): console + network to your computer; no microphone.
 - `host`: the microphone goes into `USB` (OTG adapter if needed) and the charger into `PWR`; reach the
   device over WiFi (`ssh root@<wifi-ip>`).
@@ -72,11 +95,18 @@ reflash the card. To change a file in `/boot` by hand: `mount -o remount,rw /boo
 `mount -o remount,ro /boot`.
 
 ## Develop the agent without reflashing
-`os/scripts/deploy-agent.sh <device-ip>` rebuilds the ARMv6 binary and runs it from `/data/dev/`.
+Dev images only. `os/scripts/deploy-agent.sh <device-ip>` rebuilds the ARMv6 binary and runs it from `/data/dev/`.
 Remove `/data/dev/loopi-agent` on the device to go back to the packaged binary.
 
+## Debugging a prod device
+A prod image has no SSH, no `loopi-usbmode` and no tools besides `loopi-agent selftest`. To debug one, install a dev
+bundle over OTA from the brain web (dev and prod bundles share the signing key and `compatible`, so either can be
+installed over the other, spec D28): SSH is back, key-only, for keys already in `/data/dev/ssh`. Install a prod bundle
+again when done.
+
 ## Useful commands on the device
-`loopi-usbmode` · `journalctl -u loopi-agent -f` · `systemctl --failed` · `rpicam-vid --list-cameras` · `arecord -l`
+`journalctl -u loopi-agent -f` · `systemctl --failed` · `rpicam-vid --list-cameras` · `cat /etc/loopi-release`
+Dev images also have `loopi-usbmode` and `arecord -l`.
 
 `loopi-agent selftest` needs the agent stopped (only one process can open the microphone):
 `systemctl stop loopi-agent && loopi-agent selftest; systemctl start loopi-agent`. Start the agent again afterwards:
