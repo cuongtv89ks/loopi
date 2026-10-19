@@ -95,7 +95,7 @@ bootname=B
 
 - `rauc-boot` là script cài vào rootfs, trả lời các câu hỏi của RAUC:
   - `get-primary`: đọc `os_prefix` trong `config.txt`. `config.txt` không có `os_prefix` (bố cục cũ trước P4a, kernel nằm ở gốc `/boot`) được coi là slot A.
-  - `set-primary <slot>`: viết `tryboot.txt` trỏ vào slot đó. Script **không** sửa `config.txt`, vì slot mới chưa được thử.
+  - `set-primary <slot>`: viết `tryboot.txt` trỏ vào slot đó. Script **không** sửa `config.txt`, vì slot mới chưa được thử. RAUC 1.15 gọi `set-primary` **trước** `rauc-post-install`, nên lần cài đầu vào một slot chưa có file boot thì script không viết `tryboot.txt` (xoá bản cũ nếu có) và vẫn trả về thành công; `rauc-post-install` viết `tryboot.txt` sau khi chép file. `tryboot.txt` không bao giờ trỏ vào slot chưa có kernel.
   - `get-state <slot>` / `set-state <slot> good|bad`: lưu trong `/data/rauc/boot-state`. Khi đặt `good` cho slot đang chạy, `config.txt` được thay bằng `tryboot.txt`, rồi `tryboot.txt` bị xoá.
   - `get-current`: lấy từ tham số `rauc.slot=` trong `/proc/cmdline`.
 - `rauc-post-install` chạy sau khi RAUC ghi xong rootfs vào slot mới. Script mount slot đó chỉ đọc, chép `/usr/share/loopi/boot/` sang `/boot/<a|b>/`, rồi viết `tryboot.txt` từ mẫu `config.txt` của slot mới (giữ chế độ USB như §4).
@@ -107,7 +107,7 @@ Trạng thái agent báo lên brain: `downloading` → `installing` → `rebooti
 
 1. **Nhận lệnh.** Heartbeat trả về lệnh `update` (§7). Agent ack lệnh, ghi `/data/ota/pending.json` (id lệnh, bundle, phiên bản, sha256, slot đang chạy) rồi bắt đầu tải. Nếu đã có một lần cập nhật đang chạy, lệnh mới vẫn được ack nhưng bị bỏ qua: agent ghi lý do vào `last_error` và tiếp tục báo lần cập nhật đang chạy trong trường `ota`.
 2. **Tải.** Agent tải `GET /v1/ota/{bundle}` qua mTLS vào `/data/ota/<bundle>.part`. Khi mạng rớt, agent tải tiếp bằng header `Range`, thời gian chờ tăng dần như uploader. Tải xong thì kiểm sha256 và kích thước, rồi đổi tên thành `<bundle>`. Sai sha256 thì xoá file và báo `failed`. Thẻ đã dùng quá 80 % thì từ chối ngay từ đầu.
-3. **Cài.** `rauc install /data/ota/<bundle>`. RAUC kiểm chữ ký và `compatible`, ghi rootfs vào slot không chạy, chạy `rauc-post-install`, rồi gọi `set-primary`. Nếu `rauc install` lỗi, agent báo `failed` kèm thông báo của RAUC; slot đang chạy không bị đụng tới.
+3. **Cài.** `rauc install /data/ota/<bundle>`. RAUC kiểm chữ ký và `compatible`, đánh dấu slot đích `bad`, ghi rootfs vào slot không chạy, gọi `set-primary`, rồi chạy `rauc-post-install` (chép file boot và viết `tryboot.txt`). Nếu `rauc install` lỗi, agent báo `failed` kèm thông báo của RAUC; slot đang chạy không bị đụng tới.
 4. **Khởi động lại để thử.** Agent xoá file bundle, ghi trạng thái `rebooting` vào `pending.json`, rồi chạy `systemctl reboot --reboot-argument="0 tryboot"`. Trong lúc tải và cài, thiết bị vẫn ghi bình thường; chỉ ngừng ghi lúc khởi động lại.
 5. **Lần boot thử.** Agent đọc `/proc/device-tree/chosen/bootloader/tryboot` (= 1) và thấy slot đang chạy là slot mới trong `pending.json`. Agent chạy bình thường, ghi hình như mọi khi, và báo `trying`. Ngay khi một heartbeat nhận `200`, agent chạy `rauc status mark-good`: `config.txt` chuyển sang slot mới. Sau đó agent báo `succeeded` và xoá `pending.json`.
 6. **Bộ hẹn giờ độc lập với agent.** `loopi-tryboot-guard.timer` chạy 10 phút sau khi boot. Nếu lúc đó vẫn là boot thử (`tryboot` = 1) mà slot đang chạy chưa được đánh dấu tốt, nó chạy `systemctl reboot` bình thường. Vì cờ thử chỉ dùng một lần, máy về slot cũ. Bộ hẹn giờ này lo cả trường hợp agent không khởi động được.
