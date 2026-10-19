@@ -11,6 +11,8 @@ check() {  # check <description> <command...>
 # No "grep -q" below: it exits at the first match, unsquashfs then dies of SIGPIPE and pipefail
 # turns a present file into a failure. Plain grep drains the pipe; check() discards the output.
 rootfs_has() { unsquashfs -l "$IMAGES/rootfs.squashfs" | grep -E "^squashfs-root$1\$"; }
+# rootfs_executable <path>: a regular file with mode 755 (the same pattern the run-agent check uses)
+rootfs_executable() { unsquashfs -ll "$IMAGES/rootfs.squashfs" | grep -E "^-rwxr-xr-x .* squashfs-root$1\$"; }
 rootfs_cat() { unsquashfs -cat "$IMAGES/rootfs.squashfs" "$1"; }
 rootfs_file_contains() { rootfs_cat "$1" | grep -E "$2"; }
 rootfs_lacks() { local list; list="$(unsquashfs -l "$IMAGES/rootfs.squashfs")" || return 1; ! grep -E "^squashfs-root$1\$" <<<"$list"; }
@@ -546,6 +548,12 @@ check "rauc config: custom bootloader, run-time mount prefix" bash -c "unsquashf
 check "keyring is the OTA CA" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs' etc/rauc/keyring.pem | cmp -s - '${LOOPI_RAUC_KEYS:-/keys}/ca.cert.pem'"
 check "no private key in the rootfs" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -q 'key\.pem\$' /tmp/rootfs.list"
 check "boot control and post-install handler" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && grep -qx 'squashfs-root/usr/libexec/loopi/loopi-boot' /tmp/rootfs.list && grep -qx 'squashfs-root/usr/libexec/loopi/rauc-post-install' /tmp/rootfs.list"
+# RAUC and the agent run these directly: a mode without x would fail the first update (and the guard) on the device.
+check "loopi-boot is executable" rootfs_executable /usr/libexec/loopi/loopi-boot
+check "rauc-post-install is executable" rootfs_executable /usr/libexec/loopi/rauc-post-install
+# loopi-boot's in_trial compares the firmware's tryboot flag with cmp against a mktemp file; BusyBox provides both as applets.
+check "cmp is in the image" rootfs_has /usr/bin/cmp
+check "mktemp is in the image" rootfs_has /usr/bin/mktemp
 check "trial guard timer enabled" rootfs_has /etc/systemd/system/timers.target.wants/loopi-tryboot-guard.timer
 # RAUC is a CLI only (BR2_PACKAGE_RAUC_DBUS is not set): rauc-mark-good.service would confirm every trial boot by itself (it runs
 # when rauc.slot= is on the command line) and rauc.service would take the agent's rauc calls over D-Bus.

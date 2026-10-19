@@ -25,10 +25,11 @@ VERSION="$(date -u +%Y.%m.%d)-$(git -C "$REPO" rev-parse --short=7 HEAD)"
 KEYS="${LOOPI_RAUC_KEYS:-$HOME/.config/loopi/rauc}"
 key_mount=()
 if [ "$TARGET" = image ]; then
+  # Only the three files the build uses go into the container: ca.key.pem (the CA's private key) never does.
   for f in ca.cert.pem signing.cert.pem signing.key.pem; do
     [ -f "$KEYS/$f" ] || { echo "missing $KEYS/$f: create the OTA signing keys with os/scripts/rauc-keys.sh" >&2; exit 2; }
+    key_mount+=(-v "$KEYS/$f:/keys/$f:ro")
   done
-  key_mount=(-v "$KEYS:/keys:ro")
 fi
 
 docker build -q -t "$BUILDER_IMAGE" "$HERE/docker" >/dev/null
