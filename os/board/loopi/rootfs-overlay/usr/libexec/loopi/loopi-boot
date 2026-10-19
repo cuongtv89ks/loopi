@@ -170,8 +170,9 @@ set-primary)
 		write_tryboot "$1"
 	else
 		# RAUC activates the target before its post-install handler has copied the boot files (install-files), so a slot
-		# without them is not an error here. tryboot.txt must never point at a slot without a kernel, so none is written
-		# (an existing one can only be stale); install-files writes it once the files are there.
+		# without them is not an error here. tryboot.txt never names a slot without a kernel (install-files keeps that true
+		# while it replaces files), so none is written (an existing one can only be stale); install-files writes it once
+		# the files are there.
 		boot_rw
 		rm -f "$BOOT/tryboot.txt"
 		echo "loopi-boot: note: the boot files of slot $1 are not complete in $BOOT/$dir yet (missing: $missing); no tryboot.txt written, install-files writes it once they are there" >&2
@@ -212,6 +213,11 @@ install-files)
 	cp -r "$2/$SHARE" "$BOOT/$dir.new"
 	sed -e "s|@ROOT@|$(slot_root "$1")|g" -e "s|@SLOT@|$1|g" "$2/$SHARE/cmdline.txt" > "$BOOT/$dir.new/cmdline.txt"
 	sync
+	# set-primary may have written tryboot.txt for the files about to go; drop it so it never names a slot without a kernel
+	if [ "$(prefix_of "$BOOT/tryboot.txt")" = "$dir" ]; then
+		rm -f "$BOOT/tryboot.txt"
+		sync
+	fi
 	rm -rf "$BOOT/$dir"
 	mv "$BOOT/$dir.new" "$BOOT/$dir"
 	sync

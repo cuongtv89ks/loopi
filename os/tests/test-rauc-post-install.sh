@@ -93,6 +93,27 @@ check "RAUC order: b/ has its kernel" test -f "$T/boot/b/zImage"
 check "RAUC order: config.txt still boots a/" grep -qx 'os_prefix=a/' "$T/boot/config.txt"
 check "RAUC order: mount point removed" mount_point_gone
 
+# a LATER install into a slot that already has its (older) boot files, in RAUC's order: set-primary writes tryboot.txt from the
+# old files, the handler then replaces them and tryboot.txt must come from the new template
+setup
+echo '# template v1' >> "$R/loopi-config.txt"
+pi "${slot_b[@]}"
+check "later install: the first install puts v1 in b/" grep -qx '# template v1' "$T/boot/b/loopi-config.txt"
+sed -i 's/^# template v1$/# template v2/' "$R/loopi-config.txt"; echo kernel2 > "$R/zImage"
+OUT="$(lb_env set-state B bad 2>&1)"; RC=$?
+check "later install, RAUC order: set-state B bad succeeds" test "$RC" = 0
+OUT="$(lb_env set-primary B 2>&1)"; RC=$?
+check "later install, RAUC order: set-primary B (b/ has v1) succeeds" test "$RC" = 0
+check "later install, RAUC order: set-primary wrote tryboot.txt from the v1 template" grep -qx '# template v1' "$T/boot/tryboot.txt"
+pi "${slot_b[@]}"
+check "later install, RAUC order: the handler then succeeds" test "$RC" = 0
+check "later install, RAUC order: b/ has the v2 kernel" grep -qx kernel2 "$T/boot/b/zImage"
+check "later install, RAUC order: tryboot.txt is rendered from the v2 template" grep -qx '# template v2' "$T/boot/tryboot.txt"
+check "later install, RAUC order: no v1 line left in tryboot.txt" bash -c "! grep -q 'template v1' '$T/boot/tryboot.txt'"
+check "later install, RAUC order: tryboot.txt boots b/" grep -qx 'os_prefix=b/' "$T/boot/tryboot.txt"
+check "later install, RAUC order: config.txt still boots a/" grep -qx 'os_prefix=a/' "$T/boot/config.txt"
+check "later install, RAUC order: mount point removed" mount_point_gone
+
 # a target list with a slot that has no boot name (not a rootfs slot) is skipped, the rootfs slot is still installed
 setup
 pi RAUC_TARGET_SLOTS="1 2" RAUC_SLOT_DEVICE_1=/dev/other RAUC_SLOT_DEVICE_2=/dev/fake RAUC_SLOT_BOOTNAME_2=B

@@ -8,8 +8,9 @@ use async_trait::async_trait;
 use crate::transport::TransportError;
 
 pub trait Rauc: Send + Sync {
-    /// `rauc install <bundle>`: verify the signature, write the other slot, copy its boot files (post-install handler)
-    /// and write tryboot.txt for it (the custom bootloader backend).
+    /// `rauc install <bundle>`: verify the signature, write the other slot, mark it primary (the custom bootloader
+    /// backend writes tryboot.txt only for a slot that already has boot files) and run the post-install handler, which
+    /// copies the boot files and writes tryboot.txt.
     fn install(&self, bundle: &Path) -> Result<(), String>;
     /// `rauc status mark-good`: the booted slot becomes the one config.txt boots.
     fn mark_good(&self) -> Result<(), String>;

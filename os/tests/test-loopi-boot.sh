@@ -67,12 +67,13 @@ check "no trial pending once confirmed" bash -c "! (T='$T'; $(declare -f lb); T=
 check "guard leaves a confirmed slot alone" bash -c "$(declare -f lb); T='$T' SCRIPT='$SCRIPT' SHELL_UNDER_TEST='$SHELL_UNDER_TEST' lb guard && test ! -e '$T/rebooted'"
 check "legacy root files kept while slot A has no files yet" test -f "$T/boot/zImage"
 
-# next update: slot A, from a running B
+# next update: slot A, from a running B, in RAUC's order (set-state bad, set-primary, then the post-install handler)
 printf '\000\000\000\000' > "$T/flag"
 check "refuses to overwrite the running slot's files" bash -c "! (T='$T'; $(declare -f lb); T='$T' SCRIPT='$SCRIPT' SHELL_UNDER_TEST='$SHELL_UNDER_TEST' lb install-files B '$T/root')"
 check "set-state A bad before writing it" lb set-state A bad
+check "set-primary A (no a/ yet) writes no tryboot.txt" bash -c "$(declare -f lb); T='$T' SCRIPT='$SCRIPT' SHELL_UNDER_TEST='$SHELL_UNDER_TEST' lb set-primary A && test ! -e '$T/boot/tryboot.txt'"
 check "installs slot A" lb install-files A "$T/root"
-check "set-primary A writes tryboot.txt for a/" bash -c "$(declare -f lb); T='$T' SCRIPT='$SCRIPT' SHELL_UNDER_TEST='$SHELL_UNDER_TEST' lb set-primary A && grep -qx os_prefix=a/ '$T/boot/tryboot.txt'"
+check "install-files A writes tryboot.txt for a/" grep -qx os_prefix=a/ "$T/boot/tryboot.txt"
 echo "root=/dev/mmcblk0p2 rauc.slot=A panic=10" > "$T/cmdline"; printf '\000\000\000\001' > "$T/flag"
 check "confirming A promotes it" lb set-state A good
 check "config.txt boots a/" grep -qx 'os_prefix=a/' "$T/boot/config.txt"
@@ -258,6 +259,63 @@ lb set-primary A >/dev/null 2>&1
 cp -r "$T/root" "$T/root-no-readme"; rm "$T/root-no-readme/usr/share/loopi/boot/overlays/README"
 check "RAUC order, post-install fails: install-files A is refused" refused install-files A "$T/root-no-readme"
 check "RAUC order, post-install fails: no tryboot.txt, no a/" test ! -e "$T/boot/tryboot.txt" -a ! -e "$T/boot/a" -a ! -e "$T/boot/a.new"
+
+# P4a invariant: tryboot.txt never names a slot without a complete kernel, also on a LATER install into a slot that already
+# has (older) boot files. There set-primary writes tryboot.txt from the old files, and install-files then replaces them.
+# v1 is what a/ holds, v2 the new bundle's root: its template carries a marker line and its kernel is different.
+# lb_swap_fails <args>: loopi-boot as lb runs it, sourced after a function that makes the rename into the slot directory
+# (a write error on the boot partition between removing the old files and putting the new ones) fail; any other mv works.
+# A function and not a fake on PATH: a BusyBox sh built with standalone applets runs its own mv before it looks at PATH.
+lb_swap_fails() {
+  FAIL_MV_DEST="$T/boot/a" LOOPI_BOOT_DIR="$T/boot" LOOPI_STATE_DIR="$T/state" LOOPI_CMDLINE="$T/cmdline" \
+    LOOPI_TRYBOOT_FLAG="$T/flag" LOOPI_REMOUNT=0 LOOPI_REBOOT_CMD="touch $T/rebooted" \
+    $SHELL_UNDER_TEST -c 'mv() { for last in "$@"; do :; done; [ "$last" != "$FAIL_MV_DEST" ] || return 1; command mv "$@"; }; . "$0"' "$SCRIPT" "$@"
+}
+swap_refused() { ! lb_swap_fails "$@"; }
+no_tryboot_for_a() { ! grep -qx 'os_prefix=a/' "$T/boot/tryboot.txt" 2> /dev/null; }
+later_install_setup() {  # booted, confirmed B; a/ holds v1 from an earlier OTA; $T/root2 is the new bundle's root
+  setup b B 0
+  echo '# template v1' >> "$T/root/usr/share/loopi/boot/loopi-config.txt"
+  lb install-files A "$T/root" >/dev/null 2>&1
+  rm -f "$T/boot/tryboot.txt"
+  cp -r "$T/root" "$T/root2"
+  B2="$T/root2/usr/share/loopi/boot"
+  sed -i 's/^# template v1$/# template v2/' "$B2/loopi-config.txt"; echo kernel2 > "$B2/zImage"
+  cp "$T/boot/config.txt" "$T/config.before"
+}
+later_install_setup
+check "later install: a/ holds v1" grep -qx kernel "$T/boot/a/zImage"
+check "later install, RAUC order: set-state A bad" lb set-state A bad
+check "later install, RAUC order: set-primary A (a/ has v1) succeeds" lb set-primary A
+check "later install, RAUC order: set-primary wrote tryboot.txt for a/ from the v1 template" grep -qx '# template v1' "$T/boot/tryboot.txt"
+check "later install, RAUC order: tryboot.txt boots a/" grep -qx 'os_prefix=a/' "$T/boot/tryboot.txt"
+check "later install, RAUC order: install-files A with the v2 root (the post-install)" lb install-files A "$T/root2"
+check "later install, RAUC order: a/ has the v2 kernel" grep -qx kernel2 "$T/boot/a/zImage"
+check "later install, RAUC order: a/ has the v2 template" grep -qx '# template v2' "$T/boot/a/loopi-config.txt"
+check "later install, RAUC order: tryboot.txt is rendered from the v2 template" grep -qx '# template v2' "$T/boot/tryboot.txt"
+check "later install, RAUC order: no v1 line left in tryboot.txt" bash -c "! grep -q 'template v1' '$T/boot/tryboot.txt'"
+check "later install, RAUC order: tryboot.txt boots a/" grep -qx 'os_prefix=a/' "$T/boot/tryboot.txt"
+check "later install, RAUC order: tryboot.txt has one os_prefix" test "$(grep -c '^os_prefix=' "$T/boot/tryboot.txt")" = 1
+check "later install, RAUC order: config.txt byte-identical (still boots b/)" cmp -s "$T/config.before" "$T/boot/config.txt"
+check "later install, RAUC order: nothing half-copied left" test ! -e "$T/boot/a.new" -a ! -e "$T/boot/tryboot.txt.new"
+# the swap fails after the old files are gone: the install is reported as failed and no tryboot.txt names the slot
+later_install_setup
+lb set-state A bad >/dev/null 2>&1
+lb set-primary A >/dev/null 2>&1
+check "later install, failing swap: tryboot.txt names a/ before the post-install" grep -qx 'os_prefix=a/' "$T/boot/tryboot.txt"
+check "later install, failing swap: install-files A is refused" swap_refused install-files A "$T/root2"
+check "later install, failing swap: a/ has no kernel (the old files are gone)" test ! -e "$T/boot/a/zImage"
+check "later install, failing swap: no tryboot.txt names a/" no_tryboot_for_a
+check "later install, failing swap: no tryboot.txt at all" test ! -e "$T/boot/tryboot.txt" -a ! -e "$T/boot/tryboot.txt.new"
+check "later install, failing swap: config.txt byte-identical" cmp -s "$T/config.before" "$T/boot/config.txt"
+check "later install, failing swap: a retry succeeds" lb install-files A "$T/root2"
+check "later install, failing swap: the retry writes tryboot.txt from the v2 template" grep -qx '# template v2' "$T/boot/tryboot.txt"
+check "later install, failing swap: the retry leaves a/ with the v2 kernel" grep -qx kernel2 "$T/boot/a/zImage"
+# a tryboot.txt that names the other slot is not this slot's to remove
+later_install_setup
+printf 'kernel=zImage\n# Loopi slot\n[all]\nos_prefix=b/\n' > "$T/boot/tryboot.txt"
+check "failing swap of a/ with a tryboot.txt that names b/: install-files A is refused" swap_refused install-files A "$T/root2"
+check "failing swap of a/ with a tryboot.txt that names b/: that tryboot.txt is left alone" grep -qx 'os_prefix=b/' "$T/boot/tryboot.txt"
 
 # Final review, Minor 2: a trial boot without rauc.slot= (the firmware fell back to the legacy root kernel) is unconfirmed
 setup a none 1
