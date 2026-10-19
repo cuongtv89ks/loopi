@@ -107,7 +107,28 @@ its idle rootfs slot, boots it once as a trial and keeps it only when the agent 
 - **Bundles**: every `os/build.sh image` signs one, `os/out/loopi-<variant>-<version>.raucb`, and writes
   `os/out/loopi-<variant>-<version>.json` (`bundle`, `version`, `variant`, `sha256`, `size`, `built_at`, `commit`), the
   description the brain lists the bundle by. The bundle holds the same `rootfs.squashfs` as the image (`compatible=loopi-rpi0w`,
-  verity format). Publish one to the brain with `os/scripts/publish-bundle.sh`.
+  verity format). Publish one to the brain with `os/scripts/publish-bundle.sh` (next bullet).
+- **Publishing**: `os/scripts/publish-bundle.sh [--acceptance] os/out/loopi-<variant>-<version>.json /home/<you>/loopi-data/ota`
+  (the brain's `LOOPI_DATA_DIR/ota`). It checks that the bundle is the
+  one its description names (size, SHA-256, a commit this repository knows), adds the release notes, copies the bundle
+  and then the description (the brain lists a bundle only once its description is there) and refuses to publish a
+  version twice. The notes (spec D29) are the subjects of the commits that touched `agent/`, `os/` or
+  `docs/protocol/` since the newest bundle already in the directory, of either variant (both are built from the same
+  code), at most 50, the newest kept and `notes_truncated` set when more were dropped. With no such bundle, or when its
+  commit is not an ancestor of this one, they are the last 20. Builds from a dirty tree (`-dirty` in the version) are
+  refused; the deliberately broken acceptance builds (`-broken-agent`, `-broken-kernel`) need `--acceptance`.
+- **The one-time move to A/B**: a device flashed before P4a has no slot B and no RAUC, so it cannot be updated from the
+  web the first time. `os/scripts/migrate-to-ab.sh <device-ip> os/out/loopi-dev-<version>.json <backup dir>` does that
+  first update by hand over SSH, without taking the card out: it copies `/data/keys` and `/data/config` to
+  `<backup dir>/data-keys-config.tar` (mode 600, never committed: the way back after a re-flash), writes the
+  `.squashfs` to the empty third partition and checks it by reading it back, lets the new system's own `loopi-boot`
+  put slot B's boot files and `tryboot.txt` on `/boot`, leaves the state `/data/ota/pending.json` for the new agent
+  and reboots once into the trial (`0 tryboot`). It then waits for the new agent to confirm slot B. If the trial
+  fails (the new system hangs, panics or never confirms), the firmware goes back to `config.txt`, which was not
+  touched: the device is on the old system again and the script can simply be run again. A dev agent in
+  `/data/dev/loopi-agent` is renamed to `loopi-agent.pre-ab` just before the reboot (it predates OTA and would never
+  confirm the trial); after a failed trial rename it back if you want it. Afterwards the device boots slot B and the
+  first web update writes slot A.
 - **RAUC is a command-line tool only** (`BR2_PACKAGE_RAUC_DBUS` is not set): the image has no `rauc.service` and no
   `rauc-mark-good.service`. The latter would confirm every trial boot by itself and so defeat the rollback;
   `check-image.sh` fails the build if either appears. It also checks the kernel config (loop, device-mapper, dm-verity,
