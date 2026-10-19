@@ -159,8 +159,8 @@ page with release notes. D30–D36 (P3c design, on `feat/p3c`).
 - `feat/p3c`: the P3c design (worktree `/home/soul/loopi-p3`).
 - `feat/p4`: P4a (worktree `/home/soul/loopi-p4`); `feat/phase2` is at its e0045ee, the rest are agent/OS/docs commits.
 
-**Not pushed yet:** `feat/phase2`, `feat/p2c`, `feat/p3b`, `feat/media-volume`, `feat/p3c`, `feat/p4`. Pushing is
-outward-facing, so ask the owner first.
+`feat/p4` is pushed, with PR #2 into `feat/phase2` (2026-10-19). **Not pushed yet:** `feat/phase2`, `feat/p2c`,
+`feat/p3b`, `feat/media-volume`, `feat/p3c`. Pushing is outward-facing, so ask the owner first.
 
 ## 6. Next
 
