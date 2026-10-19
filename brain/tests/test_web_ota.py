@@ -1,4 +1,6 @@
 """Thiết bị's update controls and the Phiên bản page (P4a design §8, §8.1; spec D27, D29)."""
+import re
+
 import pytest
 
 from helpers import fetch_all, paired_device, write_bundle
@@ -10,10 +12,28 @@ STEM = "loopi-dev-2026.10.21-a1b2c3d"
 NOTES = [{"commit": "d" * 40, "subject": "feat(agent): resume bundle downloads"}]
 
 
+NO_SLOT_REASON = "Thiết bị này chưa có slot A/B nên chưa cập nhật qua mạng được."
+SLOT_HB = {"os_version": "2026.10.20-aaaaaaa", "os_variant": "dev", "boot_slot": "A"}
+
+
 @pytest.fixture
 def ota_dir(pki_settings):
     write_bundle(pki_settings.ota_dir, notes=NOTES, notes_base="2026.10.20-aaaaaaa")
     return pki_settings.ota_dir
+
+
+def update_form(html):
+    """The update form of the only device on the page."""
+    return html[html.index("<form hx-post"):html.index("</form>")]
+
+
+def tag(html, name):
+    """The opening tag <name ...> (attributes included) of the first <name> in html."""
+    return re.search(rf"<{name}\b[^>]*>", html).group(0)
+
+
+def is_disabled(opening_tag):
+    return re.search(r"\bdisabled\b", opening_tag) is not None
 
 
 async def test_devices_page_shows_os_and_update_controls(client, pool, pki_settings, ota_dir):
@@ -56,12 +76,39 @@ async def test_update_for_an_unknown_device_is_404(client, ota_dir):
 
 async def test_a_busy_device_shows_a_disabled_button_and_its_history(client, pool, pki_settings, ota_dir):
     dev = await paired_device(pool, pki_settings)
+    await devices.record_heartbeat(pool, dev["device_id"], SLOT_HB, [])
     command_id = await ota.request_update(pool, ota_dir, dev["device_id"], NAME)
     await ota.record_report(pool, dev["device_id"], {"command_id": command_id, "state": "trying", "version": "v",
                                                      "error": None})
     r = await client.get("/devices")
     assert "Đang thử bản mới" in r.text
-    assert "disabled" in r.text
+    form = update_form(r.text)
+    assert is_disabled(tag(form, "select")) and is_disabled(tag(form, "button"))
+    assert NO_SLOT_REASON not in form  # busy is the only reason here
+
+
+async def test_a_device_with_a_slot_can_be_updated_when_idle(client, pool, pki_settings, ota_dir):
+    dev = await paired_device(pool, pki_settings)
+    await devices.record_heartbeat(pool, dev["device_id"], SLOT_HB, [])
+    form = update_form((await client.get("/devices")).text)
+    assert not is_disabled(tag(form, "select")) and not is_disabled(tag(form, "button"))
+    assert NO_SLOT_REASON not in form
+
+
+async def test_a_device_without_a_slot_cannot_be_updated_and_says_why(client, pool, pki_settings, ota_dir):
+    # A pre-P4a agent reports no boot_slot: the device has no slot A/B, so an update could never install.
+    dev = await paired_device(pool, pki_settings)
+    await devices.record_heartbeat(pool, dev["device_id"], {"os_version": "2026.10.20-aaaaaaa", "os_variant": "dev"}, [])
+    form = update_form((await client.get("/devices")).text)
+    assert is_disabled(tag(form, "select")) and is_disabled(tag(form, "button"))
+    assert NO_SLOT_REASON in form
+
+
+async def test_a_device_that_never_sent_a_heartbeat_cannot_be_updated(client, pool, pki_settings, ota_dir):
+    await paired_device(pool, pki_settings)
+    form = update_form((await client.get("/devices")).text)
+    assert is_disabled(tag(form, "select")) and is_disabled(tag(form, "button"))
+    assert NO_SLOT_REASON in form
 
 
 async def test_failed_updates_show_their_error(client, pool, pki_settings, ota_dir):
@@ -71,6 +118,38 @@ async def test_failed_updates_show_their_error(client, pool, pki_settings, ota_d
                                                      "error": "install failed: signature"})
     r = await client.get("/devices")
     assert "Lỗi" in r.text and "install failed: signature" in r.text
+
+
+def summary_line(html):
+    """The "Hệ điều hành" line of the only device on the page."""
+    start = html.index("<li>Hệ điều hành")
+    return html[start:html.index("</li>", start)]
+
+
+async def test_the_summary_line_shows_why_the_latest_update_failed(client, pool, pki_settings, ota_dir):
+    dev = await paired_device(pool, pki_settings)
+    await devices.record_heartbeat(pool, dev["device_id"], SLOT_HB, [])
+    command_id = await ota.request_update(pool, ota_dir, dev["device_id"], NAME)
+    await ota.record_report(pool, dev["device_id"], {"command_id": command_id, "state": "failed", "version": "v",
+                                                     "error": "install failed: signature"})
+    line = summary_line((await client.get("/devices")).text)
+    assert "cập nhật gần nhất: Lỗi: install failed: signature" in line
+
+
+async def test_the_error_in_the_summary_line_is_escaped(client, pool, pki_settings, ota_dir):
+    dev = await paired_device(pool, pki_settings)
+    command_id = await ota.request_update(pool, ota_dir, dev["device_id"], NAME)
+    await ota.record_report(pool, dev["device_id"], {"command_id": command_id, "state": "failed", "version": "v",
+                                                     "error": "<script>alert(1)</script>"})
+    line = summary_line((await client.get("/devices")).text)
+    assert "<script>" not in line and "&lt;script&gt;alert(1)&lt;/script&gt;" in line
+
+
+async def test_the_summary_line_of_a_running_update_has_no_error_suffix(client, pool, pki_settings, ota_dir):
+    dev = await paired_device(pool, pki_settings)
+    await ota.request_update(pool, ota_dir, dev["device_id"], NAME)
+    line = summary_line((await client.get("/devices")).text)
+    assert line.rstrip().endswith("cập nhật gần nhất: Đã gửi lệnh, chờ thiết bị nhận")
 
 
 async def test_update_notes_fragment(client, ota_dir):
