@@ -147,7 +147,8 @@ model (`qwen3:8b`). D21/D22 are on `feat/p2c`; D23 is on `feat/p2b`/`feat/phase2
 Later: D24–D25 (P3: MCP pictures off by default, vlog of active hours only). D26–D29 (P4a, on `feat/p4`): A/B through
 the firmware's tryboot with automatic rollback; an update is started by the owner per device and kept only after the
 new system reaches the brain; dev and prod bundles share the signing key and install over each other; the Phiên bản
-page with release notes. D30–D36 (P3c design, on `feat/p3c`).
+page with release notes. D30–D36 (P3c design, on `feat/p3c`). D37 (2026-10-19, on `feat/p4`): P4 ends with the prod
+image and OTA; WiFi by QR with a captive portal and BLE presence move to the backlog.
 
 ## 5. Branches
 
@@ -164,10 +165,11 @@ page with release notes. D30–D36 (P3c design, on `feat/p3c`).
 
 ## 6. Next
 
-1. **P4b: WiFi by QR** with a captive-portal fallback (spec §14), then **P4c: BLE presence** that stops audio within
-   60 s, with an on/off setting (a new D in P4c). Each: brainstorm, spec, plan, then SDD. P4a (prod image + OTA) is done.
-   Open for the owner from P4a: keep or drop the rpicam demo programs in prod; keep or close the prod UART root
-   console; back up the signing keys.
+1. **P3c plans (multi-camera):** P4 is complete. On 2026-10-19 the owner moved WiFi by QR (P4b) and BLE presence
+   (P4c) to the backlog (D37): WiFi stays on `loopi.toml`, and audio is not limited by phones nearby. Write plans
+   P3c-1 … P3c-4 from `specs/2026-10-19-p3c-multicam-design.md` (branch `feat/p3c`). Still open for the owner from
+   P4a: keep or drop the rpicam demo programs in prod; keep or close the prod UART root console; back up the signing
+   keys.
 2. **P3b acceptance:** the vlogs of 10-19 and 10-20 appear by themselves; the owner watches one.
 3. **Storage decision by ≈ 10-25** (§3, Storage).
 4. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
@@ -177,11 +179,10 @@ page with release notes. D30–D36 (P3c design, on `feat/p3c`).
    - a final run with no overrides;
    - a fresh 24 h CPU window;
    - the acceptance report, numbers only.
-5. **P3c (multi-camera)** after P4: write plans P3c-1 … P3c-4 from `specs/2026-10-19-p3c-multicam-design.md`.
 
 ## 7. How to resume with Claude Code
 
 ```
-Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P4b brainstorm, unless a P4b spec or plan already exists
-under docs/superpowers/; then resume from its ledger.
+Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P3c plans, unless a P3c plan already exists under
+docs/superpowers/; then resume from its ledger.
 ```

@@ -2,7 +2,7 @@
 
 - **Ngày:** 2026-10-14
 - **Trạng thái:** Draft, chờ review
-- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18); 2026-10-15: agent khuếch đại âm thanh (có bộ giới hạn đỉnh) trước khi encode, brain chuẩn hoá mức âm thanh trước ASR và khi phát lại (D19); 2026-10-16: brain giữ audio thô 7 ngày như video thay vì xoá ngay sau khi có transcript, số ngày chỉnh được trong trang Cài đặt (D20); 2026-10-16: dữ liệu của bộ đánh giá (golden set) nằm ngoài git, trong thư mục dữ liệu và database của brain, người dùng tự gán nhãn trên trang Đánh giá, repo chỉ giữ code và các con số kết quả (D21); recall@5 trong tiêu chí nghiệm thu P2 là hit@5, quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh (D22); 2026-10-17: tóm tắt chương, recap và chat dùng chung một model chữ `qwen3:8b` (D23); MCP mặc định không gửi ảnh keyframe, có công tắc riêng trong Cài đặt (D24); vlog chỉ tua nhanh những giờ có hoạt động (D25); 2026-10-18: P4a — A/B bằng tryboot của firmware, không dùng U-Boot (D26); chủ dự án bấm Cập nhật cho từng thiết bị, bản mới chỉ được giữ khi agent gửi được heartbeat trong 10 phút (D27); bản dev và prod dùng chung khoá ký, gỡ lỗi prod bằng cách cài bản dev qua OTA (D28); trang Phiên bản và ghi chú phát hành (D29)
+- **Sửa đổi:** 2026-10-14: đổi sang camera CSI đi kèm kit và USB mic qua OTG (D16); image dev có chế độ USB gadget để bring-up qua cáp USB thay cho cáp serial (D17); đèn báo ghi hình là LED ACT có sẵn trên board thay cho LED đỏ gắn ngoài (D18); 2026-10-15: agent khuếch đại âm thanh (có bộ giới hạn đỉnh) trước khi encode, brain chuẩn hoá mức âm thanh trước ASR và khi phát lại (D19); 2026-10-16: brain giữ audio thô 7 ngày như video thay vì xoá ngay sau khi có transcript, số ngày chỉnh được trong trang Cài đặt (D20); 2026-10-16: dữ liệu của bộ đánh giá (golden set) nằm ngoài git, trong thư mục dữ liệu và database của brain, người dùng tự gán nhãn trên trang Đánh giá, repo chỉ giữ code và các con số kết quả (D21); recall@5 trong tiêu chí nghiệm thu P2 là hit@5, quy tắc 30% dùng CER cho tiếng Hàn và WER cho tiếng Việt, tiếng Anh (D22); 2026-10-17: tóm tắt chương, recap và chat dùng chung một model chữ `qwen3:8b` (D23); MCP mặc định không gửi ảnh keyframe, có công tắc riêng trong Cài đặt (D24); vlog chỉ tua nhanh những giờ có hoạt động (D25); 2026-10-18: P4a — A/B bằng tryboot của firmware, không dùng U-Boot (D26); chủ dự án bấm Cập nhật cho từng thiết bị, bản mới chỉ được giữ khi agent gửi được heartbeat trong 10 phút (D27); bản dev và prod dùng chung khoá ký, gỡ lỗi prod bằng cách cài bản dev qua OTA (D28); trang Phiên bản và ghi chú phát hành (D29); 2026-10-19: P4 dừng ở image prod và OTA, cấp WiFi bằng QR và BLE presence chuyển vào backlog (D37)
 - **Phạm vi tài liệu:** kiến trúc tổng thể và thiết kế cho cả 3 dự án con (`os/`, `agent/`, `brain/`). Mỗi phase sẽ có implementation plan riêng.
 
 ---
@@ -69,7 +69,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D9 | Ngôn ngữ hội thoại | Tiếng Việt, tiếng Hàn, tiếng Anh, có thể trộn lẫn |
 | D10 | Kiến trúc thiết bị | Buildroot + agent viết bằng Rust |
 | D11 | Lộ trình | Không có phase spike riêng. Làm image Buildroot ngay từ P1. Các ẩn số được đo trong tiêu chí nghiệm thu |
-| D12 | Bluetooth | Image kèm BlueZ. Agent có event bus để mở rộng. BLE presence để giới hạn ghi âm làm ở P4 |
+| D12 | Bluetooth | Image kèm BlueZ. Agent có event bus để mở rộng. BLE presence để giới hạn ghi âm làm ở P4 (D37: chuyển vào backlog) |
 | D13 | Web UI | FastAPI + Jinja + HTMX, toàn bộ là một codebase Python |
 | D14 | Embedding MVP | Chỉ embed text (caption, transcript, summary) |
 | D15 | Vlog MVP | Kiểu timelapse, vì video gốc chỉ có 2fps |
@@ -87,6 +87,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 | D27 | Bắt đầu và chấp nhận một bản cập nhật | Chủ dự án chọn bundle rồi bấm "Cập nhật" cho từng thiết bị; không cập nhật tự động. Bản mới chỉ được giữ khi agent trên slot mới gửi được heartbeat trong 10 phút; nếu không, một bộ hẹn giờ độc lập với agent khởi động lại và thiết bị về slot cũ. Brain bỏ cuộc sau 30 phút không có tin và huỷ lệnh chưa gửi |
 | D28 | Biến thể dev/prod | Bundle dev và prod dùng chung khoá ký và `compatible`, cài qua lại được bằng OTA, kể cả bản cũ hơn. Gỡ lỗi thiết bị prod bằng cách cài bản dev (có lại SSH chỉ bằng key) rồi cài lại prod |
 | D29 | Quản lý phiên bản | Trang "Phiên bản" liệt kê mọi bundle (phiên bản, biến thể, ngày build, kích thước, thiết bị đang chạy) và xoá được bundle cũ; mỗi bundle có ghi chú phát hành sinh từ commit, hiện trước khi bấm Cập nhật. Không có nút "Quay về bản trước", không dùng semver |
+| D37 | Phạm vi P4 | P4 dừng ở image prod và OTA (P4a, D26–D29). Cấp WiFi bằng QR kèm captive portal và BLE presence để giới hạn ghi âm chuyển vào backlog (mục 16): chủ dự án không cần giới hạn ghi âm theo điện thoại ở gần, còn cấp WiFi vẫn qua `loopi.toml` (§6.6). Quyết định này thay phần P4 của D12, §5, §6.6, §10.6, §11 và §14 |
 
 ---
 
@@ -137,7 +138,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 **Không dùng:** pin, mạch sạc/boost, chip đo pin, RTC, mic I2S. Thời gian lấy qua NTP; agent chỉ ghi khi đồng hồ đã đồng bộ.
 
 **Hệ quả của phần cứng kit:**
-- **Khi chạy thật, cổng OTG bị USB mic chiếm ở chế độ host**, nên người dùng cuối không cấu hình được qua USB gadget (Ethernet-over-USB). Cấp WiFi vẫn đi theo `loopi.toml` ở P1 và QR, captive portal hoặc Improv BLE ở P4. Chế độ gadget chỉ dùng khi phát triển, lúc chưa cắm mic (D17).
+- **Khi chạy thật, cổng OTG bị USB mic chiếm ở chế độ host**, nên người dùng cuối không cấu hình được qua USB gadget (Ethernet-over-USB). Cấp WiFi đi theo `loopi.toml` (P1); QR, captive portal hoặc Improv BLE nằm trong backlog (D37). Chế độ gadget chỉ dùng khi phát triển, lúc chưa cắm mic (D17).
 - **Chất lượng hình phụ thuộc camera kit.** Với ống kính tiêu chuẩn, góc nhìn ngang chỉ khoảng 54–62°, chụp thiếu sáng kém và không có autofocus. Nên đặt máy ở góc bao quát được khu vực chính và đủ sáng. Nếu sau này cần nâng cấp, chỉ cần thay module CSI (ví dụ Camera Module 3 Wide).
 
 **Băng thông và dung lượng ước tính:** H.264 1080p@2fps khoảng 0,5–1,5Mbps, tuỳ cảnh thay đổi nhiều hay ít. Video thô khoảng 5–10GB/ngày, cộng audio Opus khoảng 260MB/ngày nếu ghi 24h ở 24kbps. Các con số này đo thật ở P1.
@@ -183,7 +184,7 @@ Loopi là một **"second brain" cá nhân, local-first**, lấy cảm hứng t�
 
 ### 6.6 Cấu hình lần đầu
 - **P1:** người dùng sửa `boot/loopi.toml` trên máy tính. Lần boot đầu, agent chép file vào `/data/config/`, ghép cặp với brain, rồi **xoá mật khẩu WiFi và token khỏi `boot`**.
-- **P4:** camera quét mã QR do web brain sinh ra (chứa WiFi, URL brain và token). Nếu không quét được thì thiết bị phát một access point có captive portal. Có thể thêm Improv BLE.
+- **Backlog (D37), không làm ở P4:** camera quét mã QR do web brain sinh ra (chứa WiFi, URL brain và token). Nếu không quét được thì thiết bị phát một access point có captive portal. Có thể thêm Improv BLE.
 
 ```toml
 # boot/loopi.toml (ví dụ)
@@ -390,7 +391,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 | Hôm nay / Ngày | Timeline theo chương, keyframe, recap, việc cần làm |
 | Tìm kiếm & Chat | Hỏi đáp có trích nguồn |
 | Vlog | Xem và tải từng ngày |
-| Thiết bị | Trạng thái lấy từ heartbeat, nút Pause/Resume, bật/tắt audio, mã QR ghép cặp, thu hồi thiết bị, phiên bản hệ điều hành và slot, nút Cập nhật kèm ghi chú phát hành và lịch sử cập nhật (D27) |
+| Thiết bị | Trạng thái lấy từ heartbeat, nút Pause/Resume, bật/tắt audio, token ghép cặp (mã QR: backlog, D37), thu hồi thiết bị, phiên bản hệ điều hành và slot, nút Cập nhật kèm ghi chú phát hành và lịch sử cập nhật (D27) |
 | Phiên bản | Các bundle OTA brain đang có, thiết bị đang chạy bản nào, ghi chú phát hành, xoá bundle cũ (D29) |
 | Cài đặt | Provider, chính sách lưu trữ, "Quên khoảng thời gian", token MCP, job lỗi và nút xử lý lại |
 | Đánh giá | Gán nhãn bộ đánh giá (audio, caption, câu hỏi), chạy đánh giá và xem kết quả các lần chạy (D21) |
@@ -400,7 +401,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 ## 11. Quyền riêng tư và pháp lý
 - LED báo ghi hình luôn sáng khi đang ghi (bất biến ở mục 7.4). Có nút Pause trên thiết bị và trên web, có giờ yên lặng, và có công tắc audio.
 - Cloud chỉ nhận text theo mặc định (mục 9.3). Có chức năng "Quên khoảng thời gian".
-- **Ghi âm khi vắng nhà:** ở Hàn Quốc, 통신비밀보호법 cấm ghi âm cuộc trò chuyện giữa người khác mà mình không tham gia. Trước P4, rủi ro này được kiểm soát bằng lịch, nút Pause và công tắc audio. Ở P4, **chỉ ghi âm khi điện thoại của người dùng ở gần (BLE presence)**. Nên thông báo cho người trong nhà biết về thiết bị. *(Đây là lưu ý thiết kế, không phải tư vấn pháp lý.)*
+- **Ghi âm khi vắng nhà:** ở Hàn Quốc, 통신비밀보호법 cấm ghi âm cuộc trò chuyện giữa người khác mà mình không tham gia. Trước P4, rủi ro này được kiểm soát bằng lịch, nút Pause và công tắc audio. BLE presence (chỉ ghi âm khi điện thoại của người dùng ở gần) đã được tính cho P4 nhưng chuyển vào backlog theo quyết định của chủ dự án (D37), nên lịch, nút Pause và công tắc audio vẫn là các biện pháp kiểm soát. Nên thông báo cho người trong nhà biết về thiết bị. *(Đây là lưu ý thiết kế, không phải tư vấn pháp lý.)*
 
 ---
 
@@ -447,7 +448,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 | **P1** | Image dev, agent v0 (video, audio, hàng đợi, uploader, nút, LED, heartbeat, pairing qua `loopi.toml`), protocol v1, brain ingest, timeline video thô, pause/resume từ web | Flash, sửa `loopi.toml`, boot lên là tự ghép cặp. Đoạn ghi hiện trên timeline trong vòng 2 phút. Chạy 24h không crash. Ngắt WiFi 1h, có mạng lại thì hàng đợi đẩy hết, không mất gì. Rút điện 10 lần vẫn boot bình thường. Kill agent thì việc ghi dừng và LED tắt. **Có số đo** CPU%, RAM, bitrate thực tế và dung lượng mỗi ngày |
 | **P2** | Pipeline AI: lọc keyframe, caption, ASR, moment, embedding, chương, recap, việc cần làm, tìm kiếm và hỏi đáp, provider router | Độ trễ trung bình từ lúc ghi tới khi có caption/transcript **≤ 15 phút** trong khung 08:00–22:00. Recap tự sinh mỗi tối. Có baseline WER/CER cho vi/ko/en; lỗi trên 30% (WER cho vi/en, CER cho ko, D22) thì đổi model hoặc cấu hình. Recall@5 ≥ 70% (hit@5, D22). Có số đo thời gian CPU mỗi ngày |
 | **P3** | MCP server, vlog timelapse | Gọi được 5 tool từ Claude Code. Vlog tự sinh mỗi tối |
-| **P4** | Image prod, cấp WiFi bằng QR (kèm captive portal dự phòng), OTA qua RAUC, BLE presence để giới hạn ghi âm | Cấp WiFi không phải sửa file. OTA thành công, boot lỗi thì tự rollback. Image prod không có SSH. Điện thoại ra khỏi tầm thì audio dừng trong vòng 60s |
+| **P4** | Image prod, OTA qua RAUC (cấp WiFi bằng QR và BLE presence chuyển vào backlog, D37) | OTA thành công, boot lỗi thì tự rollback. Image prod không có SSH |
 
 ---
 
@@ -468,7 +469,7 @@ Việc cần làm được lưu vào bảng `commitment` để theo dõi trạng
 ---
 
 ## 16. Backlog (sau v1)
-Truyện tranh (sinh ảnh qua cloud) · Burst 30fps khi bấm Mark · Tìm kiếm bằng hình (Qwen3-VL-Embedding/Reranker) · Phân biệt người nói · Remote BLE · Cảm biến BLE · Live view · Chế độ đeo người kèm pin
+Truyện tranh (sinh ảnh qua cloud) · Burst 30fps khi bấm Mark · Tìm kiếm bằng hình (Qwen3-VL-Embedding/Reranker) · Phân biệt người nói · Remote BLE · Cảm biến BLE · Live view · Chế độ đeo người kèm pin · Cấp WiFi bằng QR kèm captive portal (D37) · BLE presence giới hạn ghi âm, mặc định tắt (D37)
 
 ---
 
