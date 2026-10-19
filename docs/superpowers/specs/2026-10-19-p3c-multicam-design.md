@@ -1,7 +1,7 @@
 # Loopi P3c — nhiều camera (thiết kế)
 
 - **Ngày:** 2026-10-19
-- **Trạng thái:** chờ chủ dự án duyệt
+- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết sau khi P4 kết thúc
 - **Spec gốc (bắt buộc):** `docs/superpowers/specs/2026-10-14-loopi-design.md`. Tài liệu này thay cho các quyết định tạm ngày 2026-10-18 trong `2026-10-18-p3c-multicam-decisions.md` ở những điểm nó sửa (cầu nối, lưu trữ). Nếu có chỗ mâu thuẫn, spec gốc thắng, trừ các quyết định mới D30–D36 dưới đây; các plan P3c sửa spec gốc cho khớp.
 - **Mục tiêu:** thêm được **camera bất kỳ trong LAN** vào brain — camera IP, điện thoại (iPhone, Android) chạy app phát luồng, bo ESP32 có camera — và **mọi camera đã thêm đều đi qua cùng luồng phân tích như Pi**: keyframe, caption, chép lời (khi camera có âm thanh), moment, chương, recap, tìm kiếm, hỏi đáp, MCP và vlog. Bộ camera đầu tiên của chủ dự án: 1 camera IP Imou và 2 iPhone cũ; sau đó có thể thêm điện thoại Android và ESP32.
 
