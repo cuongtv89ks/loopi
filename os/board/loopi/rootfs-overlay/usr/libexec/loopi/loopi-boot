@@ -81,6 +81,14 @@ write_tryboot() {
 	fi
 }
 
+# slot_files_present <a|b>: the firmware boots a slot only when its directory holds all of these; the first one that is
+# not there is left in $missing.
+slot_files_present() {
+	for f in zImage bcm2708-rpi-zero-w.dtb cmdline.txt overlays/README; do
+		if [ ! -f "$BOOT/$1/$f" ]; then missing="$1/$f"; return 1; fi
+	done
+}
+
 state_get() {
 	[ -f "$STATE_DIR/boot-state" ] || return 0
 	awk -v s="$1" '$1 == s && ($2 == "good" || $2 == "bad") { v = $2 } END { if (v != "") print v }' "$STATE_DIR/boot-state"
@@ -122,11 +130,12 @@ refuse_fallback() {
 }
 
 # A trial is unconfirmed while the firmware booted from tryboot.txt and the running slot is not the one config.txt boots.
-# With no config.txt (the nofail /boot did not mount) nothing can be confirmed, so that counts as unconfirmed as well.
+# With no config.txt (the nofail /boot did not mount) nothing can be confirmed, so that counts as unconfirmed as well, and
+# so does a trial boot that has no rauc.slot=: the firmware fell back to the legacy root kernel, no slot is running.
 trial_unconfirmed() {
-	c="$(current)"
-	[ -n "$c" ] || return 1
 	in_trial || return 1
+	c="$(current)"
+	[ -n "$c" ] || return 0
 	[ -f "$BOOT/config.txt" ] || return 0
 	[ "$c" != "$(primary)" ]
 }
@@ -153,11 +162,12 @@ get-state)
 	;;
 set-primary)
 	[ $# = 1 ] || die "usage: set-primary <A|B>"
-	slot_dir "$1" > /dev/null
+	dir="$(slot_dir "$1")"
 	if [ "$1" = "$(primary)" ]; then
 		boot_rw
 		rm -f "$BOOT/tryboot.txt"
 	else
+		slot_files_present "$dir" || die "the boot files of slot $1 are not complete in $BOOT/$dir (missing: $missing); tryboot.txt is unchanged"
 		write_tryboot "$1"
 	fi
 	;;
@@ -172,7 +182,8 @@ set-state)
 		sync
 		mv -f "$BOOT/tryboot.txt" "$BOOT/config.txt"
 		sync
-		cleanup_legacy
+		# The trial is confirmed once config.txt names the slot; a legacy file that cannot be removed only leaves clutter.
+		cleanup_legacy || echo "loopi-boot: warning: could not remove the legacy root kernel files" >&2
 	else
 		[ "$2" != bad ] || refuse_fallback "$1"
 		state_set "$1" "$2"

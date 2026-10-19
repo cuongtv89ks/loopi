@@ -1,15 +1,26 @@
 #!/bin/sh
 # RAUC system post-install handler (P4a design §5): put each freshly written rootfs slot's kernel files on the boot
 # partition and point tryboot.txt at it. RAUC passes the slots in RAUC_TARGET_SLOTS and their details per number.
+# A run that installed nothing (no target slot with a boot name) is a failure, never a silent success.
+# LOOPI_BOOT_BIN and LOOPI_RUN_DIR are test hooks.
 set -eu
-for i in $RAUC_TARGET_SLOTS; do
+BOOT_BIN="${LOOPI_BOOT_BIN:-/usr/libexec/loopi/loopi-boot}"
+RUN_DIR="${LOOPI_RUN_DIR:-/run}"
+installed=0
+for i in ${RAUC_TARGET_SLOTS:-}; do
 	eval "device=\${RAUC_SLOT_DEVICE_$i:-} bootname=\${RAUC_SLOT_BOOTNAME_$i:-}"
 	[ -n "$bootname" ] || continue
-	mnt="$(mktemp -d /run/loopi-slot.XXXXXX)"
-	mount -t squashfs -o ro "$device" "$mnt"
+	mnt="$(mktemp -d "$RUN_DIR/loopi-slot.XXXXXX")"
+	if ! mount -t squashfs -o ro "$device" "$mnt"; then
+		rmdir "$mnt"
+		echo "rauc-post-install: could not mount $device" >&2
+		exit 1
+	fi
 	rc=0
-	/usr/libexec/loopi/loopi-boot install-files "$bootname" "$mnt" || rc=$?
+	"$BOOT_BIN" install-files "$bootname" "$mnt" || rc=$?
 	umount "$mnt"
 	rmdir "$mnt"
 	[ "$rc" = 0 ] || exit "$rc"
+	installed=$((installed + 1))
 done
+[ "$installed" -gt 0 ] || { echo "rauc-post-install: no target slot had a boot name; nothing installed" >&2; exit 1; }

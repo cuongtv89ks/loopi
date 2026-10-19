@@ -31,6 +31,7 @@ lb() {
 out_is() { [ "$(lb "${@:2}")" = "$1" ]; }
 refused() { ! lb "$@"; }                                   # the command must exit non-zero
 msg_has() { local m; m="$(lb "${@:2}" 2>&1)"; case "$m" in *"$1"*) return 0 ;; esac; return 1; }   # its output must contain $1
+out_says() { case "$OUT" in *"$1"*) return 0 ;; esac; return 1; }   # the output captured in $OUT must contain $1
 state_last_is() { [ "$(tail -n 1 "$T/state/boot-state")" = "$1" ]; }
 guard_reboots() { rm -f "$T/rebooted"; lb guard && test -e "$T/rebooted"; }
 guard_idles() { rm -f "$T/rebooted"; lb guard && test ! -e "$T/rebooted"; }
@@ -184,6 +185,61 @@ check "trial without config.txt counts as pending" lb trial-pending
 check "guard reboots a trial that has no config.txt" guard_reboots
 printf '\000\000\000\000' > "$T/flag"
 check "guard leaves a boot that is not a trial alone (no config.txt)" guard_idles
+# Final review, Minor 1: set-primary never writes a tryboot.txt for a slot whose boot files are not all there
+setup a A 0
+check "set-primary of a slot with no boot directory is refused" refused set-primary B
+check "the refusal says what is missing" msg_has "missing: b/zImage" set-primary B
+check "nothing written for it" test ! -e "$T/boot/tryboot.txt" -a ! -e "$T/boot/tryboot.txt.new" -a ! -e "$T/boot/b"
+for f in zImage bcm2708-rpi-zero-w.dtb cmdline.txt overlays/README; do
+  setup a A 0
+  lb install-files B "$T/root" >/dev/null 2>&1
+  cp "$T/boot/tryboot.txt" "$T/tryboot.before"
+  rm "$T/boot/b/$f"
+  check "b/$f missing: set-primary B is refused" refused set-primary B
+  check "b/$f missing: the previous tryboot.txt is kept" cmp -s "$T/tryboot.before" "$T/boot/tryboot.txt"
+  rm -f "$T/boot/tryboot.txt"
+  check "b/$f missing, no tryboot.txt yet: still refused" refused set-primary B
+  check "b/$f missing: no tryboot.txt made from nothing" test ! -e "$T/boot/tryboot.txt" -a ! -e "$T/boot/tryboot.txt.new"
+done
+setup a A 0
+lb install-files B "$T/root" >/dev/null 2>&1
+rm -f "$T/boot/tryboot.txt"
+check "set-primary B with all of b/'s files writes tryboot.txt" lb set-primary B
+check "set-primary B: tryboot.txt boots b/" grep -qx 'os_prefix=b/' "$T/boot/tryboot.txt"
+setup a A 0
+lb install-files B "$T/root" >/dev/null 2>&1
+check "set-primary of the primary needs no boot files of its own (no a/ here) and drops tryboot.txt" bash -c "$(declare -f lb); T='$T' SCRIPT='$SCRIPT' SHELL_UNDER_TEST='$SHELL_UNDER_TEST' lb set-primary A && test ! -e '$T/boot/tryboot.txt'"
+
+# Final review, Minor 2: a trial boot without rauc.slot= (the firmware fell back to the legacy root kernel) is unconfirmed
+setup a none 1
+lb install-files B "$T/root" >/dev/null 2>&1
+check "trial flag set but no rauc.slot=: trial pending" lb trial-pending
+check "trial flag set but no rauc.slot=: the guard reboots" guard_reboots
+setup a none 0
+lb install-files B "$T/root" >/dev/null 2>&1
+check "no rauc.slot= and no trial flag: no trial pending" refused trial-pending
+check "no rauc.slot= and no trial flag: the guard leaves it alone" guard_idles
+setup legacy none 1
+check "trial flag set, legacy layout, no rauc.slot=: the guard reboots" guard_reboots
+
+# Final review, Minor 3: a legacy file that cannot be removed does not turn a done confirmation into a failure
+setup legacy none 0
+lb install-files A "$T/root" >/dev/null 2>&1 && mv "$T/boot/tryboot.txt" "$T/boot/config.txt"
+lb install-files B "$T/root" >/dev/null 2>&1
+mkdir -p "$T/boot/overlays/sub"; echo x > "$T/boot/overlays/sub/file"; chmod 555 "$T/boot/overlays/sub"
+echo "root=/dev/mmcblk0p3 rauc.slot=B panic=10" > "$T/cmdline"; printf '\000\000\000\001' > "$T/flag"
+if [ -w "$T/boot/overlays/sub" ] && echo y > "$T/boot/overlays/sub/probe" 2> /dev/null; then
+  echo "[SKIP] undeletable legacy file (running as root: a read-only directory does not stop rm)"
+else
+  OUT="$(lb set-state B good 2>&1)"; RC=$?
+  check "confirm succeeds although a legacy file cannot be removed" test "$RC" = 0
+  check "the warning names the legacy root kernel files" out_says "warning: could not remove the legacy root kernel files"
+  check "config.txt boots b/ all the same" grep -qx 'os_prefix=b/' "$T/boot/config.txt"
+  check "tryboot.txt consumed all the same" test ! -e "$T/boot/tryboot.txt"
+  check "B recorded good all the same" out_is good get-state B
+  check "the trial counts as confirmed" refused trial-pending
+fi
+chmod 755 "$T/boot/overlays/sub"
 UNIT="$HERE/../board/loopi/rootfs-overlay/etc/systemd/system/loopi-tryboot-guard.service"
 check "guard service is ordered after boot.mount" grep -qx 'After=boot.mount' "$UNIT"
 check "guard service does not depend on /boot (it is nofail)" bash -c "! grep -qE '^(Requires|BindsTo|Wants|RequiresMountsFor)=' '$UNIT'"
