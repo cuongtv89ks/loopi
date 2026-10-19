@@ -21,6 +21,8 @@ unit_keys() {
 }
 boot_has() { mdir -i "$IMAGES/boot.vfat" "::$1"; }
 boot_cat() { mtype -i "$IMAGES/boot.vfat" "::$1"; }
+# boot_cfg_has <line>: config.txt in the boot partition has exactly this line (plain grep, see the note above)
+boot_cfg_has() { boot_cat config.txt | grep -x -- "$1"; }
 # base_dtparam <param>: config.txt in the boot partition sets dtparam=<param> before its first dtoverlay= line (a dtparam=
 # after an overlay is looked up in that overlay first, so a base DT parameter belongs above them)
 base_dtparam() {
@@ -29,7 +31,7 @@ base_dtparam() {
 }
 dtb_dts() {  # the Zero W DTB in the boot partition, decompiled
   local tmp rc=1; tmp="$(mktemp -d)" || return 1
-  mcopy -n -i "$IMAGES/boot.vfat" ::bcm2708-rpi-zero-w.dtb "$tmp/zero-w.dtb" \
+  mcopy -n -i "$IMAGES/boot.vfat" ::a/bcm2708-rpi-zero-w.dtb "$tmp/zero-w.dtb" \
     && "$IMAGES/../host/bin/dtc" -q -I dtb -O dts "$tmp/zero-w.dtb" && rc=0
   rm -rf "$tmp"; return $rc
 }
@@ -48,7 +50,7 @@ boot_is_fat32() { file -s "$IMAGES/boot.vfat" | grep -E 'FAT \(32 bit\)'; }
 usbmode_roundtrip() {  # run the shipped loopi-usbmode against a copy of the shipped config.txt
   local tmp; tmp="$(mktemp -d)"
   rootfs_cat usr/bin/loopi-usbmode > "$tmp/loopi-usbmode" && chmod +x "$tmp/loopi-usbmode"
-  cp "$IMAGES/rpi-firmware/config.txt" "$tmp/config.txt"
+  boot_cat config.txt > "$tmp/config.txt"
   local cfg="LOOPI_BOOT_CONFIG=$tmp/config.txt"
   env "$cfg" "$tmp/loopi-usbmode" host \
     && grep -qx '# dtoverlay=dwc2,dr_mode=peripheral' "$tmp/config.txt" \
@@ -75,17 +77,18 @@ check "p2 is Linux" part_type 2 83
 check "p4 is Linux" part_type 4 83
 check "kernel image present" test -s "$IMAGES/zImage"
 check "systemd is the init" rootfs_has /usr/lib/systemd/systemd
-check "cmdline mounts squashfs read-only" grep -q "root=/dev/mmcblk0p2 rootfstype=squashfs ro rootwait" "$IMAGES/rpi-firmware/cmdline.txt"
+# P4a: the kernel command line of slot A is a/cmdline.txt, rendered from the template by loopi-boot install-files
+check "cmdline mounts squashfs read-only" bash -c "mtype -i '$IMAGES/boot.vfat' ::a/cmdline.txt | grep -q 'root=/dev/mmcblk0p2 rootfstype=squashfs ro rootwait'"
 # fsck.repair=yes (ruling I-3, owner decision): systemd-fsck answers "yes" to every question at boot instead of only
 # preening, so /data and /boot damaged by a power cut get repaired, even when that deletes already-damaged files.
-cmdline_is_one_line_with() { local c="$IMAGES/rpi-firmware/cmdline.txt"; [ "$(grep -c '' "$c")" = 1 ] && grep -E "$1" "$c"; }
+cmdline_is_one_line_with() { [ "$(boot_cat a/cmdline.txt | grep -c '')" = 1 ] && boot_cat a/cmdline.txt | grep -E "$1"; }
 check "cmdline is one line and repairs filesystems at boot (fsck.repair=yes)" cmdline_is_one_line_with '(^| )fsck\.repair=yes( |$)'
 check "boot partition has config.txt" boot_has config.txt
 check "boot partition has loopi.toml.example" boot_has loopi.toml.example
 if is_dev; then
-  check "dev image boots in USB gadget mode" grep -qx 'dtoverlay=dwc2,dr_mode=peripheral' "$IMAGES/rpi-firmware/config.txt"
+  check "dev image boots in USB gadget mode" boot_cfg_has 'dtoverlay=dwc2,dr_mode=peripheral'
 fi
-check "dwc2 overlay shipped" boot_has overlays/dwc2.dtbo
+check "dwc2 overlay shipped" boot_has a/overlays/dwc2.dtbo
 check "gadget kernel modules present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && grep -q dwc2.ko /tmp/rootfs.list && grep -q usb_f_acm.ko /tmp/rootfs.list && grep -q usb_f_ecm.ko /tmp/rootfs.list"
 if is_dev; then
   check "USB gadget service enabled" rootfs_has /etc/systemd/system/multi-user.target.wants/loopi-usbgadget.service
@@ -271,10 +274,10 @@ fi
 check "rpicam-vid present" rootfs_has /usr/bin/rpicam-vid
 check "libcamera Raspberry Pi IPA present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'ipa_rpi_vc4'"
 check "USB audio driver present" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'snd-usb-audio.ko'"
-check "camera auto-detect enabled" grep -qx 'camera_auto_detect=1' "$IMAGES/rpi-firmware/config.txt"
-check "onboard audio disabled" grep -qx 'dtparam=audio=off' "$IMAGES/rpi-firmware/config.txt"
-check "KMS overlay shipped" boot_has overlays/vc4-kms-v3d.dtbo
-check "OV5647 overlay shipped" boot_has overlays/ov5647.dtbo
+check "camera auto-detect enabled" boot_cfg_has 'camera_auto_detect=1'
+check "onboard audio disabled" boot_cfg_has 'dtparam=audio=off'
+check "KMS overlay shipped" boot_has a/overlays/vc4-kms-v3d.dtbo
+check "OV5647 overlay shipped" boot_has a/overlays/ov5647.dtbo
 if is_dev; then
   check "arecord present (dev)" rootfs_has /usr/bin/arecord
 fi
@@ -531,5 +534,33 @@ if ! is_dev; then
   check "prod: no debug tools" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq '/(strace|rsync|arecord|aplay)$' /tmp/rootfs.list"
 fi
 check "agent wrapper runs /data/dev only when /etc/loopi-dev exists" run_agent_guards_data_dev
+
+# --- P4a: A/B slots (spec D26) and signed bundles
+check "config.txt boots slot A" boot_cfg_has 'os_prefix=a/'
+check "no tryboot.txt in a fresh image" bash -c "! mdir -i '$IMAGES/boot.vfat' ::tryboot.txt"
+check "slot A has kernel, DTB, overlays (and the README the firmware needs to use them), cmdline and template" bash -c "for f in zImage bcm2708-rpi-zero-w.dtb overlays/README overlays/dwc2.dtbo cmdline.txt loopi-config.txt; do mdir -i '$IMAGES/boot.vfat' ::a/\$f || exit 1; done"
+check "slot A cmdline: p2, rauc.slot=A, panic=10" bash -c "mtype -i '$IMAGES/boot.vfat' ::a/cmdline.txt | grep -Eq '^root=/dev/mmcblk0p2 .* rauc\.slot=A panic=10\s*$'"
+check "slot B directory exists" bash -c "mdir -i '$IMAGES/boot.vfat' ::b"
+check "rauc on the device" rootfs_has /usr/bin/rauc
+check "rauc config: custom bootloader, run-time mount prefix" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs' etc/rauc/system.conf > /tmp/rauc-system.conf && grep -qx 'bootloader=custom' /tmp/rauc-system.conf && grep -qx 'mountprefix=/run/rauc' /tmp/rauc-system.conf && grep -qx 'compatible=loopi-rpi0w' /tmp/rauc-system.conf"
+check "keyring is the OTA CA" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs' etc/rauc/keyring.pem | cmp -s - '${LOOPI_RAUC_KEYS:-/keys}/ca.cert.pem'"
+check "no private key in the rootfs" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -q 'key\.pem\$' /tmp/rootfs.list"
+check "boot control and post-install handler" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && grep -qx 'squashfs-root/usr/libexec/loopi/loopi-boot' /tmp/rootfs.list && grep -qx 'squashfs-root/usr/libexec/loopi/rauc-post-install' /tmp/rootfs.list"
+check "trial guard timer enabled" rootfs_has /etc/systemd/system/timers.target.wants/loopi-tryboot-guard.timer
+check "slot boot files staged in the rootfs" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && for f in zImage bcm2708-rpi-zero-w.dtb cmdline.txt loopi-config.txt overlays/README overlays/dwc2.dtbo; do grep -qx \"squashfs-root/usr/share/loopi/boot/\$f\" /tmp/rootfs.list || exit 1; done"
+NAME="loopi-$variant-${LOOPI_OS_VERSION}"
+check "bundle verifies against the CA" "$IMAGES/../host/bin/rauc" info --keyring="${LOOPI_RAUC_KEYS:-/keys}/ca.cert.pem" "$IMAGES/$NAME.raucb"
+check "bundle description matches the bundle" python3 -c "
+import hashlib, json, os, sys
+d = json.load(open('$IMAGES/$NAME.json'))
+b = '$IMAGES/' + d['bundle']
+assert d['bundle'] == '$NAME.raucb' and d['variant'] == '$variant' and d['version'] == '${LOOPI_OS_VERSION}'
+assert d['size'] == os.path.getsize(b) and d['sha256'] == hashlib.sha256(open(b, 'rb').read()).hexdigest()
+assert len(d['commit']) == 40"
+if is_dev; then
+  check "dev: template keeps the gadget overlay" bash -c "mtype -i '$IMAGES/boot.vfat' ::a/loopi-config.txt | grep -qx 'dtoverlay=dwc2,dr_mode=peripheral'"
+else
+  check "prod: no gadget overlay anywhere in boot config" bash -c "! mtype -i '$IMAGES/boot.vfat' ::config.txt | grep -q dwc2 && ! mtype -i '$IMAGES/boot.vfat' ::a/loopi-config.txt | grep -q dwc2"
+fi
 
 exit $fail

@@ -2,7 +2,8 @@
 # Runs after the target tree is assembled, before the root filesystem image is made.
 # The root filesystem is read-only, so units are enabled here rather than at runtime.
 set -eu
-: "${LOOPI_OS_VERSION:?set by os/build.sh}" "${LOOPI_VARIANT:?set by os/build.sh}"
+BOARD_DIR="$(cd "$(dirname "$0")" && pwd)"
+: "${LOOPI_OS_VERSION:?set by os/build.sh}" "${LOOPI_VARIANT:?set by os/build.sh}" "${LOOPI_RAUC_KEYS:?set by os/build.sh}"
 dev=no
 [ -e "${TARGET_DIR}/etc/loopi-dev" ] && dev=yes
 case "$LOOPI_VARIANT/$dev" in
@@ -49,3 +50,34 @@ fi
 
 # P4a: which system this is; the agent reports it in every heartbeat (contract OsVersion).
 printf 'LOOPI_OS_VERSION=%s\nLOOPI_OS_VARIANT=%s\n' "$LOOPI_OS_VERSION" "$LOOPI_VARIANT" > "${TARGET_DIR}/etc/loopi-release"
+
+# P4a: OTA. The trial-boot guard, the RAUC keyring (the CA certificate only, never a key) and this slot's boot files,
+# which loopi-boot install-files copies to /boot/a/ or /boot/b/ (P4a design §4).
+TIMERS="${TARGET_DIR}/etc/systemd/system/timers.target.wants"
+mkdir -p "$TIMERS"
+ln -sf ../loopi-tryboot-guard.timer "$TIMERS/loopi-tryboot-guard.timer"
+install -D -m 0644 "$LOOPI_RAUC_KEYS/ca.cert.pem" "${TARGET_DIR}/etc/rauc/keyring.pem"
+SHARE="${TARGET_DIR}/usr/share/loopi/boot"
+rm -rf "$SHARE"
+mkdir -p "$SHARE"
+cp "${BINARIES_DIR}/zImage" "${BINARIES_DIR}/bcm2708-rpi-zero-w.dtb" "$SHARE/"
+cp -r "${BINARIES_DIR}/rpi-firmware/overlays" "$SHARE/overlays"
+# The firmware loads ${os_prefix}overlays/ only when that directory holds a README (Buildroot's rpi-firmware package
+# installs it next to the overlays); without it the slot would boot with no overlays at all, so stop here.
+if [ ! -f "$SHARE/overlays/README" ]; then
+	echo "post-build: ${BINARIES_DIR}/rpi-firmware/overlays/README is missing; the firmware would ignore a/overlays and b/overlays" >&2
+	exit 1
+fi
+cp "${BOARD_DIR}/config.txt" "$SHARE/loopi-config.txt"
+if [ "$dev" = yes ]; then cat "${BOARD_DIR}/config-dev.txt" >> "$SHARE/loopi-config.txt"; fi
+cp "${BOARD_DIR}/cmdline.txt" "$SHARE/cmdline.txt"
+case "${LOOPI_BROKEN:-}" in
+	"") ;;
+	agent)  # no agent, so no heartbeat: the trial must roll back after 10 minutes
+		printf '#!/bin/sh\n# Deliberately broken acceptance build (P4a design section 13).\nexit 1\n' \
+			> "${TARGET_DIR}/usr/libexec/loopi/run-agent"
+		chmod 0755 "${TARGET_DIR}/usr/libexec/loopi/run-agent" ;;
+	kernel)  # p4 is ext4, not squashfs: the kernel panics and panic=10 reboots into the good slot
+		sed -i 's|root=@ROOT@|root=/dev/mmcblk0p4|' "$SHARE/cmdline.txt" ;;
+	*) echo "post-build: unknown LOOPI_BROKEN=$LOOPI_BROKEN" >&2; exit 1 ;;
+esac

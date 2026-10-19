@@ -1,0 +1,3 @@
+# USB port: gadget = console + network over the cable to your computer (dev bring-up).
+# For the USB microphone run `loopi-usbmode host` and reboot (or put "# " in front of the next line).
+dtoverlay=dwc2,dr_mode=peripheral

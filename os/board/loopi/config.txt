@@ -19,6 +19,3 @@ disable_fw_kms_setup=1
 dtparam=audio=off
 # Fallback serial console on GPIO14/15 (optional; bring-up uses the USB console)
 enable_uart=1
-# USB port: gadget = console + network over the cable to your computer (dev bring-up).
-# For the USB microphone run `loopi-usbmode host` and reboot (or put "# " in front of the next line).
-dtoverlay=dwc2,dr_mode=peripheral

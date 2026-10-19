@@ -63,6 +63,7 @@ case "$TARGET" in
     [ -n "${LOOPI_BROKEN:-}" ] || "$SRC/os/tests/check-image.sh" "$OUT/images"
     cp "$OUT/images/sdcard.img" "/out/$NAME.img"
     cp "$OUT/images/rootfs.squashfs" "/out/$NAME.squashfs"
+    cp "$OUT/images/$NAME.raucb" "$OUT/images/$NAME.json" /out/
     ;;
   agent)
     make -C "$BR" O="$OUT" loopi-agent-rebuild

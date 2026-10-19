@@ -1,8 +1,9 @@
 # Loopi OS (Buildroot, Raspberry Pi Zero W)
 
 ## Build
-`VARIANT=dev|prod os/build.sh image` (default `dev`) → `os/out/loopi-<variant>-<version>.img` and
-`os/out/loopi-<variant>-<version>.squashfs` (needs Docker; first build 1–3 h, later builds minutes).
+`VARIANT=dev|prod os/build.sh image` (default `dev`) → `os/out/loopi-<variant>-<version>.img`,
+`os/out/loopi-<variant>-<version>.squashfs` and the signed update bundle `os/out/loopi-<variant>-<version>.raucb` with its
+description `.json` (see "OTA" below; needs Docker; first build 1–3 h, later builds minutes).
 
 - **Two variants** (spec §6.5). `dev` keeps SSH (key-only), the USB gadget console, `loopi-usbmode`, rsync, strace,
   the ALSA tools and the `/data/dev/loopi-agent` override; its extra files live in
@@ -85,14 +86,45 @@ it again. Without SSH, put the card in a computer and edit `config.txt` on the b
 
 ## Boot partition and power cuts
 The device loses power without warning, and a FAT volume that was open for writing is then left dirty. So `/boot`
-(`config.txt`, `cmdline.txt`, kernel, `loopi.toml`) is mounted read-only and is writable only while `loopi-provision`
-runs at boot (the first boot imports `loopi.toml` and removes the secrets from it) and while `loopi-usbmode` edits
-`config.txt`. At every boot `/boot` (`fsck.fat`) and `/data` (`e2fsck`) are checked and repaired before they are
+(`config.txt`, the slot directories `a/` and `b/` with the kernel and `cmdline.txt`, `loopi.toml`) is mounted
+read-only and is writable only while `loopi-provision` runs at boot (the first boot imports `loopi.toml` and removes the
+secrets from it), while `loopi-usbmode` edits `config.txt` and while an update writes a slot (`loopi-boot`, see "OTA").
+At every boot `/boot` (`fsck.fat`) and `/data` (`e2fsck`) are checked and repaired before they are
 mounted (`journalctl -u systemd-fsck@dev-mmcblk0p1`, `-u systemd-fsck@dev-mmcblk0p4`). `fsck.repair=yes` on the kernel
 command line makes the repair answer "yes" to every question, so it never stops to ask; a file that a power cut had
 already damaged may be deleted by it. If a partition cannot be repaired the device still boots without it (`nofail`):
 reflash the card. To change a file in `/boot` by hand: `mount -o remount,rw /boot`, edit, `sync`,
 `mount -o remount,ro /boot`.
+
+## OTA (P4a)
+Updates are RAUC bundles signed by a key that never leaves the build machine (spec D26-D28); a device installs one into
+its idle rootfs slot, boots it once as a trial and keeps it only when the agent confirms it within 10 minutes.
+
+- **Keys**: create them once with `os/scripts/rauc-keys.sh` (`~/.config/loopi/rauc/`: `ca.cert.pem`, `ca.key.pem`,
+  `signing.cert.pem`, `signing.key.pem`; `LOOPI_RAUC_KEYS=<dir>` points elsewhere). **Back that directory up**: without it
+  no update can ever be installed again, only a re-flash. It is never in git and the script never prints it. Every image
+  carries only `ca.cert.pem` (as `/etc/rauc/keyring.pem`); the bundles are signed with `signing.key.pem`.
+- **Bundles**: every `os/build.sh image` signs one, `os/out/loopi-<variant>-<version>.raucb`, and writes
+  `os/out/loopi-<variant>-<version>.json` (`bundle`, `version`, `variant`, `sha256`, `size`, `built_at`, `commit`), the
+  description the brain lists the bundle by. The bundle holds the same `rootfs.squashfs` as the image (`compatible=loopi-rpi0w`,
+  verity format). Publish one to the brain with `os/scripts/publish-bundle.sh`.
+- **Boot partition** (FAT32, 64 MiB): the firmware files (`bootcode.bin`, `start.elf`, `fixup.dat`), `loopi.toml.example`,
+  and
+  - `config.txt`: boots the good slot (`os_prefix=a/` or `b/`; a fresh image has `a/`). Written only by renaming
+    `tryboot.txt` over it, never from nothing.
+  - `tryboot.txt`: exists only during an update. The firmware reads it on a `0 tryboot` reboot only, so a trial boots the
+    new slot and any other reboot (watchdog, `panic=10`, power loss, the 10-minute guard) falls back to `config.txt`.
+  - `a/` and `b/`: one slot each (`/dev/mmcblk0p2` = A, `/dev/mmcblk0p3` = B): `zImage`, the device tree, `overlays/`
+    (with its `README`, without which the firmware ignores the directory), `cmdline.txt` (with `rauc.slot=` and `root=` of
+    that slot) and `loopi-config.txt` (the config template the slot was built with). `b/` is empty until the first update.
+  `loopi-boot` (`/usr/libexec/loopi/loopi-boot`) lays these out, both in the image build and on the device (the files it
+  copies are staged in every rootfs under `/usr/share/loopi/boot/`).
+- **Dev images only** carry the USB gadget line (`board/loopi/config-dev.txt`, appended to the template); on prod the USB
+  port is never a gadget.
+- **A dev agent deployed to `/data/dev/loopi-agent`** (`os/scripts/deploy-agent.sh`) replaces the rootfs agent on dev
+  images, so it must be OTA-aware (built from a tree that has the P4a agent): a trial boot is confirmed by the running
+  agent, and an old binary never does, so the update would roll back after 10 minutes. Remove `/data/dev/loopi-agent`
+  before an update to test the packaged agent.
 
 ## Develop the agent without reflashing
 Dev images only. `os/scripts/deploy-agent.sh <device-ip>` rebuilds the ARMv6 binary and runs it from `/data/dev/`.
