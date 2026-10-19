@@ -64,12 +64,20 @@ pub enum BootAction {
     Deliver(Pending),
 }
 
+/// A `Failed` record for the slot that is running now is a trial to confirm like a `Rebooting` one (its error, which
+/// no longer holds, is dropped): running the slot the update installed means the reboot happened, and that slot is
+/// only bootable through tryboot.txt, which exists only after a successful install. This also carries a device whose
+/// previous agent recorded such a reboot as failed (systemctl dies with the service it stops).
 pub fn reconcile(pending: Option<Pending>, booted: Slot) -> BootAction {
-    let Some(pending) = pending else { return BootAction::Idle };
+    let Some(mut pending) = pending else { return BootAction::Idle };
     match pending.phase {
         Phase::Downloading | Phase::Installing => BootAction::Interrupted(pending),
         Phase::Rebooting if pending.target_slot == booted => BootAction::Confirm(pending),
         Phase::Rebooting => BootAction::RolledBack(pending),
+        Phase::Failed if pending.target_slot == booted => {
+            pending.error = None;
+            BootAction::Confirm(pending)
+        }
         Phase::Succeeded | Phase::RolledBack | Phase::Failed => BootAction::Deliver(pending),
     }
 }
@@ -153,6 +161,18 @@ mod tests {
         for phase in [Phase::Succeeded, Phase::RolledBack, Phase::Failed] {
             assert!(matches!(reconcile(Some(pending(phase, Slot::B)), Slot::A), BootAction::Deliver(_)));
         }
+        for phase in [Phase::Succeeded, Phase::RolledBack] {
+            assert!(matches!(reconcile(Some(pending(phase, Slot::B)), Slot::B), BootAction::Deliver(_)));
+        }
+    }
+
+    #[test]
+    fn a_failed_record_for_the_slot_now_running_is_a_trial_to_confirm_without_its_error() {
+        let mut failed = pending(Phase::Failed, Slot::B);
+        failed.error = Some("reboot failed: systemctl reboot failed (signal: 15 (SIGTERM))".into());
+        let BootAction::Confirm(confirm) = reconcile(Some(failed.clone()), Slot::B) else { panic!("expected Confirm") };
+        assert_eq!((confirm.error, confirm.target_slot, confirm.version), (None, Slot::B, "v".to_string()));
+        assert!(matches!(reconcile(Some(failed), Slot::A), BootAction::Deliver(p) if p.error.is_some()));
     }
 
     #[test]

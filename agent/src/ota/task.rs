@@ -296,6 +296,11 @@ async fn install(deps: &mut OtaDeps, request: UpdateRequest, shutdown: &mut watc
     }
     let rebooter = deps.rebooter.clone();
     if let Err(e) = blocking(move || rebooter.reboot_into_trial()).await {
+        // systemd stops this service as the reboot starts, killing systemctl with it: if our own shutdown follows, the
+        // reboot happened and the next boot decides from the Rebooting record.
+        if tokio::time::timeout(deps.timings.reboot_report_wait, shutdown.wait_for(|stop| *stop)).await.is_ok() {
+            return;
+        }
         finish(deps, pending, Phase::Failed, Some(format!("reboot failed: {e}")), shutdown).await;
     }
     // On success systemd is stopping us now; the next boot continues in on_boot().
@@ -475,6 +480,24 @@ mod tests {
         tx.send(request(&good_sha())).await.unwrap();
         rig.until(|r| r.ota().is_some_and(|o| o.state == OtaState::Failed)).await;
         assert!(rig.ota().unwrap().error.unwrap().contains("reboot failed"));
+        assert_eq!(rig.store().load().unwrap().unwrap().phase, Phase::Failed);
+    }
+
+    #[tokio::test]
+    async fn a_reboot_killed_by_the_shutdown_it_started_is_not_a_failure() {
+        let rig = Rig::new();
+        *rig.rebooter.result.lock().unwrap() = Some("systemctl reboot failed (signal: 15 (SIGTERM))".into());
+        let mut deps = rig.deps(Slot::A);
+        deps.timings.reboot_report_wait = Duration::from_millis(300);
+        let (tx, rx) = mpsc::channel(4);
+        let task = tokio::spawn(run_ota(deps, rx, rig.shutdown.subscribe()));
+        tx.send(request(&good_sha())).await.unwrap();
+        // systemd's SIGTERM reaches the agent just after systemctl died, not before.
+        rig.until(|r| *r.rebooter.calls.lock().unwrap() == 1).await;
+        rig.shutdown.send_replace(true);
+        task.await.unwrap();
+        assert_eq!(rig.store().load().unwrap().unwrap().phase, Phase::Rebooting);
+        assert_eq!(rig.ota().unwrap().state, OtaState::Rebooting);
     }
 
     #[tokio::test]
@@ -588,6 +611,24 @@ mod tests {
         rig.heartbeat();
         rig.until(|r| r.ota().is_none()).await;
         assert_eq!(rig.store().load().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_trial_of_the_installed_slot_is_confirmed_although_the_old_agent_recorded_the_reboot_as_failed() {
+        let rig = Rig::new();
+        rig.store().save(&Pending { command_id: Some("X".into()), bundle: Some(BUNDLE.into()), version: "v".into(),
+                                    target_slot: Slot::B, phase: Phase::Failed,
+                                    error: Some("reboot failed: systemctl reboot failed (signal: 15 (SIGTERM))".into()) }).unwrap();
+        let (_tx, _task) = rig.start(Slot::B);
+        rig.until(|r| r.ota().is_some_and(|o| o.state == OtaState::Trying)).await;
+        assert_eq!(rig.ota().unwrap().error, None, "the trial report carries no stale error");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(rig.rauc.calls.lock().unwrap().is_empty(), "no mark-good before a heartbeat got through");
+        rig.heartbeat();
+        rig.until(|r| r.ota().is_some_and(|o| o.state == OtaState::Succeeded)).await;
+        assert_eq!(*rig.rauc.calls.lock().unwrap(), vec!["mark-good".to_string()]);
+        let pending = rig.store().load().unwrap().unwrap();
+        assert_eq!((pending.phase, pending.error), (Phase::Succeeded, None));
     }
 
     #[tokio::test]
