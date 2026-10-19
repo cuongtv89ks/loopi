@@ -556,8 +556,10 @@ check "cmp is in the image" rootfs_has /usr/bin/cmp
 check "mktemp is in the image" rootfs_has /usr/bin/mktemp
 check "trial guard timer enabled" rootfs_has /etc/systemd/system/timers.target.wants/loopi-tryboot-guard.timer
 # RAUC is a CLI only (BR2_PACKAGE_RAUC_DBUS is not set): rauc-mark-good.service would confirm every trial boot by itself (it runs
-# when rauc.slot= is on the command line) and rauc.service would take the agent's rauc calls over D-Bus.
-check "rauc has no D-Bus service: no rauc.service, rauc-mark-good.service or de.pengutronix.rauc files" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq '(^|/)rauc(-mark-good)?\.service\$|de\.pengutronix\.rauc' /tmp/rootfs.list"
+# when rauc.slot= is on the command line) and rauc.service would take the agent's rauc calls over D-Bus. Only what makes a service
+# counts: the two units, the D-Bus activation file and the bus policy. RAUC installs its interface description
+# (usr/share/dbus-1/interfaces/de.pengutronix.rauc.Installer.xml) even without the service; that file is allowed.
+check "rauc has no D-Bus service: no rauc.service, rauc-mark-good.service, D-Bus activation file or bus policy" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq '(^|/)rauc(-mark-good)?\.service\$|dbus-1/system-services/de\.pengutronix\.rauc\.service\$|dbus-1/system\.d/de\.pengutronix\.rauc\.conf\$' /tmp/rootfs.list"
 # The kernel options a verity bundle needs, in the kernel that was built: loop device, device-mapper, dm-verity, and gzip squashfs for
 # the bundle's outer filesystem (the image's own squashfs is LZ4). Only kernel build directories count (linux-headers-* has no
 # .config of the kernel, linux-pam-* no .config at all); every one found must have all options, and at least one must exist.
