@@ -185,20 +185,24 @@ check "trial without config.txt counts as pending" lb trial-pending
 check "guard reboots a trial that has no config.txt" guard_reboots
 printf '\000\000\000\000' > "$T/flag"
 check "guard leaves a boot that is not a trial alone (no config.txt)" guard_idles
-# Final review, Minor 1: set-primary never writes a tryboot.txt for a slot whose boot files are not all there
+# Final review, Minor 1, and the P4a device run (RAUC 1.15 activates the target BEFORE its post-install handler has copied
+# the boot files): set-primary of a slot whose boot files are not all there succeeds but writes no tryboot.txt, so that
+# tryboot.txt never points at a slot without a kernel; install-files writes it once the files are there.
 setup a A 0
-check "set-primary of a slot with no boot directory is refused" refused set-primary B
-check "the refusal says what is missing" msg_has "missing: b/zImage" set-primary B
+cp "$T/boot/config.txt" "$T/config.before"
+check "set-primary of a slot with no boot directory succeeds" lb set-primary B
+check "the note says install-files writes tryboot.txt" msg_has "install-files" set-primary B
+check "the note says what is missing" msg_has "missing: b/zImage" set-primary B
 check "nothing written for it" test ! -e "$T/boot/tryboot.txt" -a ! -e "$T/boot/tryboot.txt.new" -a ! -e "$T/boot/b"
+check "config.txt byte-identical" cmp -s "$T/config.before" "$T/boot/config.txt"
 for f in zImage bcm2708-rpi-zero-w.dtb cmdline.txt overlays/README; do
   setup a A 0
   lb install-files B "$T/root" >/dev/null 2>&1
-  cp "$T/boot/tryboot.txt" "$T/tryboot.before"
   rm "$T/boot/b/$f"
-  check "b/$f missing: set-primary B is refused" refused set-primary B
-  check "b/$f missing: the previous tryboot.txt is kept" cmp -s "$T/tryboot.before" "$T/boot/tryboot.txt"
+  check "b/$f missing: set-primary B succeeds" lb set-primary B
+  check "b/$f missing: the stale tryboot.txt is removed" test ! -e "$T/boot/tryboot.txt"
   rm -f "$T/boot/tryboot.txt"
-  check "b/$f missing, no tryboot.txt yet: still refused" refused set-primary B
+  check "b/$f missing, no tryboot.txt yet: set-primary B succeeds" lb set-primary B
   check "b/$f missing: no tryboot.txt made from nothing" test ! -e "$T/boot/tryboot.txt" -a ! -e "$T/boot/tryboot.txt.new"
 done
 setup a A 0
@@ -206,9 +210,54 @@ lb install-files B "$T/root" >/dev/null 2>&1
 rm -f "$T/boot/tryboot.txt"
 check "set-primary B with all of b/'s files writes tryboot.txt" lb set-primary B
 check "set-primary B: tryboot.txt boots b/" grep -qx 'os_prefix=b/' "$T/boot/tryboot.txt"
+check "set-primary B: still no tryboot.txt.new left" test ! -e "$T/boot/tryboot.txt.new"
+# a stale tryboot.txt of the other slot goes away when set-primary hits a slot without files
+setup a A 0
+printf 'kernel=zImage\n# Loopi slot\n[all]\nos_prefix=a/\n' > "$T/boot/tryboot.txt"
+check "stale tryboot.txt (a/), slot B has no files: set-primary B succeeds" lb set-primary B
+check "stale tryboot.txt (a/) removed" test ! -e "$T/boot/tryboot.txt"
+setup b B 0
+printf 'kernel=zImage\n# Loopi slot\n[all]\nos_prefix=b/\n' > "$T/boot/tryboot.txt"
+check "stale tryboot.txt (b/), slot A has no files: set-primary A succeeds" lb set-primary A
+check "stale tryboot.txt (b/) removed" test ! -e "$T/boot/tryboot.txt"
 setup a A 0
 lb install-files B "$T/root" >/dev/null 2>&1
 check "set-primary of the primary needs no boot files of its own (no a/ here) and drops tryboot.txt" bash -c "$(declare -f lb); T='$T' SCRIPT='$SCRIPT' SHELL_UNDER_TEST='$SHELL_UNDER_TEST' lb set-primary A && test ! -e '$T/boot/tryboot.txt'"
+
+# P4a device run: RAUC 1.15's real order from a booted, confirmed slot B that has no /boot/a/ yet:
+#   set-state A bad -> (write the image) -> set-primary A (activate) -> post-install: install-files A <root>
+setup b B 0
+mkdir "$T/boot/b"; cp -r "$T/root/usr/share/loopi/boot/." "$T/boot/b/"
+cp "$T/boot/config.txt" "$T/config.before"
+check "RAUC order: set-state A bad" lb set-state A bad
+check "RAUC order: set-primary A (a/ not there yet) succeeds" lb set-primary A
+check "RAUC order: no tryboot.txt yet" test ! -e "$T/boot/tryboot.txt"
+check "RAUC order: a/ not invented by set-primary" test ! -e "$T/boot/a"
+check "RAUC order: config.txt byte-identical after set-primary" cmp -s "$T/config.before" "$T/boot/config.txt"
+check "RAUC order: install-files A (the post-install)" lb install-files A "$T/root"
+check "RAUC order: a/ created with its kernel" test -f "$T/boot/a/zImage" -a -f "$T/boot/a/overlays/README"
+check "RAUC order: tryboot.txt says os_prefix=a/" grep -qx 'os_prefix=a/' "$T/boot/tryboot.txt"
+check "RAUC order: tryboot.txt has one os_prefix" test "$(grep -c '^os_prefix=' "$T/boot/tryboot.txt")" = 1
+check "RAUC order: config.txt still byte-identical (still boots b/)" cmp -s "$T/config.before" "$T/boot/config.txt"
+check "RAUC order: A still recorded bad until confirmed" out_is bad get-state A
+check "RAUC order: B stays the primary" out_is B get-primary
+# the "0 tryboot" reboot boots A in trial; the agent confirms it
+echo "root=/dev/mmcblk0p2 rauc.slot=A panic=10" > "$T/cmdline"; printf '\000\000\000\001' > "$T/flag"
+check "RAUC order: trial pending while A runs unconfirmed" lb trial-pending
+check "RAUC order: set-state A good promotes" lb set-state A good
+check "RAUC order: config.txt now boots a/" grep -qx 'os_prefix=a/' "$T/boot/config.txt"
+check "RAUC order: tryboot.txt consumed" test ! -e "$T/boot/tryboot.txt"
+check "RAUC order: A recorded good" out_is good get-state A
+check "RAUC order: primary is A" out_is A get-primary
+check "RAUC order: no trial pending once confirmed" refused trial-pending
+# the post-install fails (a slot root without overlays/README): no tryboot.txt, so the install is reported as failed and the
+# next reboot stays on B
+setup b B 0
+lb set-state A bad >/dev/null 2>&1
+lb set-primary A >/dev/null 2>&1
+cp -r "$T/root" "$T/root-no-readme"; rm "$T/root-no-readme/usr/share/loopi/boot/overlays/README"
+check "RAUC order, post-install fails: install-files A is refused" refused install-files A "$T/root-no-readme"
+check "RAUC order, post-install fails: no tryboot.txt, no a/" test ! -e "$T/boot/tryboot.txt" -a ! -e "$T/boot/a" -a ! -e "$T/boot/a.new"
 
 # Final review, Minor 2: a trial boot without rauc.slot= (the firmware fell back to the legacy root kernel) is unconfirmed
 setup a none 1

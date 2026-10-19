@@ -57,6 +57,11 @@ logged() { grep -qF -- "$1" "$T/mock.log"; }
 nothing_written() { [ ! -e "$T/boot/b" ] && [ ! -e "$T/boot/b.new" ] && [ ! -e "$T/boot/a.new" ] && [ ! -e "$T/boot/tryboot.txt" ]; }
 mount_point_gone() { [ -z "$(ls -A "$T/run")" ]; }
 slot_b=(RAUC_TARGET_SLOTS=1 RAUC_SLOT_DEVICE_1=/dev/fake RAUC_SLOT_BOOTNAME_1=B)
+# lb_env <loopi-boot args...>: the repo's loopi-boot on the fake system, as RAUC's custom bootloader backend calls it.
+lb_env() {
+  env LOOPI_BOOT_DIR="$T/boot" LOOPI_STATE_DIR="$T/state" LOOPI_CMDLINE="$T/cmdline" LOOPI_TRYBOOT_FLAG="$T/flag" \
+    LOOPI_REMOUNT=0 "$T/bin/loopi-boot" "$@"
+}
 
 # the normal case: slot B was written, its boot files and tryboot.txt are installed
 setup
@@ -70,6 +75,23 @@ check "slot B: overlays/README copied to b/" test -f "$T/boot/b/overlays/README"
 check "slot B: cmdline names p3 and rauc.slot=B" grep -qx 'root=/dev/mmcblk0p3 rootfstype=squashfs ro rootwait quiet rauc.slot=B panic=10' "$T/boot/b/cmdline.txt"
 check "slot B: tryboot.txt boots b/" grep -qx 'os_prefix=b/' "$T/boot/tryboot.txt"
 check "slot B: config.txt still boots a/" grep -qx 'os_prefix=a/' "$T/boot/config.txt"
+
+# RAUC 1.15's real order: the target is marked bad and ACTIVATED (set-primary) before the post-install handler has put its
+# boot files on the boot partition, so set-primary sees a slot without files and must not fail the install
+setup
+OUT="$(lb_env set-state B bad 2>&1)"; RC=$?
+check "RAUC order: set-state B bad succeeds" test "$RC" = 0
+OUT="$(lb_env set-primary B 2>&1)"; RC=$?
+check "RAUC order: set-primary B before the handler (no b/ yet) succeeds" test "$RC" = 0
+check "RAUC order: set-primary says install-files writes tryboot.txt" says "install-files writes it"
+check "RAUC order: no tryboot.txt after set-primary alone" test ! -e "$T/boot/tryboot.txt"
+pi "${slot_b[@]}"
+check "RAUC order: the handler then succeeds" test "$RC" = 0
+check "RAUC order: tryboot.txt exists afterwards" test -f "$T/boot/tryboot.txt"
+check "RAUC order: tryboot.txt boots b/" grep -qx 'os_prefix=b/' "$T/boot/tryboot.txt"
+check "RAUC order: b/ has its kernel" test -f "$T/boot/b/zImage"
+check "RAUC order: config.txt still boots a/" grep -qx 'os_prefix=a/' "$T/boot/config.txt"
+check "RAUC order: mount point removed" mount_point_gone
 
 # a target list with a slot that has no boot name (not a rootfs slot) is skipped, the rootfs slot is still installed
 setup

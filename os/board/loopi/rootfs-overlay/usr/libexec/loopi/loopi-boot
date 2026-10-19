@@ -166,9 +166,15 @@ set-primary)
 	if [ "$1" = "$(primary)" ]; then
 		boot_rw
 		rm -f "$BOOT/tryboot.txt"
-	else
-		slot_files_present "$dir" || die "the boot files of slot $1 are not complete in $BOOT/$dir (missing: $missing); tryboot.txt is unchanged"
+	elif slot_files_present "$dir"; then
 		write_tryboot "$1"
+	else
+		# RAUC activates the target before its post-install handler has copied the boot files (install-files), so a slot
+		# without them is not an error here. tryboot.txt must never point at a slot without a kernel, so none is written
+		# (an existing one can only be stale); install-files writes it once the files are there.
+		boot_rw
+		rm -f "$BOOT/tryboot.txt"
+		echo "loopi-boot: note: the boot files of slot $1 are not complete in $BOOT/$dir yet (missing: $missing); no tryboot.txt written, install-files writes it once they are there" >&2
 	fi
 	;;
 set-state)
