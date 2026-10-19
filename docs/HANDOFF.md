@@ -1,4 +1,4 @@
-# Loopi — handoff (2026-10-18)
+# Loopi — handoff (2026-10-19)
 
 Context memory for whoever continues this project, whether that is the owner or a Claude Code session on the brain PC
 (Linux). Read this file first, then `CLAUDE.md`, then the plan you are about to execute.
@@ -19,7 +19,9 @@ Context memory for whoever continues this project, whether that is the owner or 
 | P3a: read-only MCP server | `plans/2026-10-17-p3a-mcp-server.md` | **complete**; live since 2026-10-17 16:47 KST at `/mcp`; Claude Code on the brain PC registered as `loopi` (`--scope user`, token in `~/.config/loopi/mcp-token`), the five tools called OK; pictures off (D24); the api access log no longer records query strings | `feat/p3a` → `feat/phase2` |
 | P3b: daily vlog | `plans/2026-10-17-p3b-vlog.md` | **complete**; live since 2026-10-18 07:21 KST; the first run caught up 10-14 … 10-17. Acceptance (§14: a vlog made by itself every evening) is checked at 08:00 on 10-19, 10-20 and 10-21, then the owner watches one | `feat/p3b` → `feat/phase2` |
 | Media on their own disk | — (bounded change, owner's yes 2026-10-18) | **on `feat/phase2`, not in use**: `LOOPI_MEDIA_DIR` + a required `.loopi-media` marker; with the marker missing the brain writes and forgets nothing. The 1 TB HDD dropped off the bus during the first copy (§3, Storage); media stay on the SSD | `feat/media-volume` e4861ce, bef6df5 → `feat/phase2` |
-| P3c decisions (multi-camera) | `specs/2026-10-18-p3c-multicam-decisions.md` | the owner's decisions only (agent-per-camera bridge + MediaMTX, Imou and two iPhones, all four record audio); design, spec and plan come **after P4** | `feat/p3b` 400e4b1 |
+| P3c decisions (multi-camera) | `specs/2026-10-18-p3c-multicam-decisions.md` | the owner's first decisions; superseded by the P3c design below | `feat/p3b` 400e4b1 |
+| P3c design (multi-camera) | `specs/2026-10-19-p3c-multicam-design.md` | approved 2026-10-19 (D30–D36): any LAN camera can be added in the brain (IP camera, iPhone/Android, ESP32 with camera and a separate audio URL, Loopi ESP32 firmware in P3c-4). Plans P3c-1 … P3c-4 are written **after P4** | `feat/p3c` 88ddc06 (worktree `/home/soul/loopi-p3`) |
+| P4a: prod image + OTA | `specs/2026-10-18-p4a-prod-ota-design.md` (D26–D29), `plans/2026-10-18-p4a-prod-ota.md` | **complete**: all seven device acceptance steps (§13) passed on 2026-10-19 at 383581c; ledger `ledgers/p4a-progress.md` | `feat/p4` (worktree `/home/soul/loopi-p4`); the brain part is live through `feat/phase2` e0045ee |
 
 All plan paths are under `docs/superpowers/`. Execution ledgers are under `docs/superpowers/ledgers/`. They record every
 ruling with its cost if wrong, every deferred finding, and the pre-flight scans. The P1c ledger is still only in the
@@ -28,9 +30,9 @@ for the owner's yes.
 
 ## 2. Phase 1 (device + ingest): done
 
-- Pi Zero W, Rust agent (rustls with ring only; `aws-lc-rs` must never enter the tree), Buildroot dev image. The
-  device runs image **smoke8**, which is smoke7 plus audio gain +20 dB with a −1 dBFS limiter (D19). The image is at
-  `/home/soul/loopi/os/out/loopi-dev-smoke8.img`.
+- Pi Zero W, Rust agent (rustls with ring only; `aws-lc-rs` must never enter the tree), Buildroot dev image. Image
+  **smoke8** (smoke7 plus audio gain +20 dB with a −1 dBFS limiter, D19) is the last single-slot image
+  (`/home/soul/loopi/os/out/loopi-dev-smoke8.img`). Since 2026-10-19 the device uses the A/B layout of P4a (see §3, P4a).
 - P1c acceptance: 24 h soak on smoke7 PASS (0 restarts, 0 agent warnings). The brain outage test passed. The privacy
   LED is the onboard ACT LED (D18).
 - The owner waived the rest of the hardware tests (2026-10-16): SIGKILL/LED watch, 10 power pulls, reboot
@@ -103,6 +105,25 @@ rollback commit 22f523c. Ledger: `docs/superpowers/ledgers/p3b-progress.md`.
 - The api and worker images were rebuilt at e4861ce, but their containers still run the d166a2a build. The next
   `up -d` picks the new images up with no change in behaviour (the defaults keep media under `LOOPI_DATA_DIR`).
 
+**P4a: OTA (since 2026-10-19).** The device runs the **dev** image `2026.10.19-383581c` from slot A, both slots good.
+Updates are started per device with "Cập nhật" on the Thiết bị page; the Phiên bản page lists the bundles with their
+release notes and the device running each one, and deletes old ones (not a bundle a device runs or installs).
+- Build in `/home/soul/loopi-p4`: `VARIANT=dev|prod os/build.sh image` (output `os/out/`, ≈ 1 min incremental). Publish
+  with `os/scripts/publish-bundle.sh os/out/loopi-<variant>-<version>.json /home/soul/loopi-data/ota` (the brain sees
+  it at once). A tree with uncommitted changes builds a `-dirty` version that publish refuses.
+- **Signing keys:** `~/.config/loopi/rauc`. Never commit or print them. **Back them up offline**: without them no
+  bundle the device accepts can be built, and the only way back is re-flashing the SD card. A copy of the device's
+  `/data/keys` and `/data/config` from before the migration is in `~/loopi-backups/device-2026-10-19` (never commit).
+- Prod has no SSH (port 22 refused). To debug a prod device, install the dev bundle through OTA (D28).
+- The brain holds `loopi-dev-2026.10.19-383581c` and `loopi-prod-2026.10.19-383581c`.
+- Measured: bundle ≈ 62 MB; download ≈ 1 min; install 10–30 s; click to "Đã cập nhật" ≈ 3 min; each reboot stops
+  recording ≈ 40 s; a broken bundle comes back by itself (agent dead: ≈ 11 min via the guard; kernel panic: ≈ 1.5 min).
+  Agent while downloading: RSS ≈ 11 MB, ≈ 35–40 % of the CPU.
+- The device's LAN address comes from DHCP and moved once during the acceptance (the host key stayed the same).
+- Three bugs only the real device showed were fixed during the acceptance (ledger, Task 12): RAUC 1.15 marks the slot
+  primary before the post-install handler copies its boot files; systemd kills `systemctl reboot` together with the
+  agent while the reboot it asked for runs; and the stale-agent build trap of a local Buildroot package.
+
 **Rollback P2b → P2a.**
 
 ```bash
@@ -123,6 +144,11 @@ D21: the golden set stays out of git (`/home/soul/loopi-data/eval` + DB) and the
 page. D22: §14's recall@5 is hit@5, and the 30 % rule uses CER for Korean and WER for vi/en. D23: one local text
 model (`qwen3:8b`). D21/D22 are on `feat/p2c`; D23 is on `feat/p2b`/`feat/phase2`.
 
+Later: D24–D25 (P3: MCP pictures off by default, vlog of active hours only). D26–D29 (P4a, on `feat/p4`): A/B through
+the firmware's tryboot with automatic rollback; an update is started by the owner per device and kept only after the
+new system reaches the brain; dev and prod bundles share the signing key and install over each other; the Phiên bản
+page with release notes. D30–D36 (P3c design, on `feat/p3c`).
+
 ## 5. Branches
 
 - `main`: P1, at 7021705.
@@ -130,15 +156,19 @@ model (`qwen3:8b`). D21/D22 are on `feat/p2c`; D23 is on `feat/p2b`/`feat/phase2
 - `feat/phase2`: the live branch: P2a + P2b + P2c (Tasks 1–10) + P3a + P3b + the media-volume change.
 - `feat/p2b` / `feat/p2c`: the P2b and P2c work branches (worktrees `/home/soul/loopi-p2b`, `/home/soul/loopi-p2c`).
 - `feat/p3` / `feat/p3a` / `feat/p3b` / `feat/media-volume`: P3 work in the worktree `/home/soul/loopi-p3`.
+- `feat/p3c`: the P3c design (worktree `/home/soul/loopi-p3`).
+- `feat/p4`: P4a (worktree `/home/soul/loopi-p4`); `feat/phase2` is at its e0045ee, the rest are agent/OS/docs commits.
 
-**Not pushed yet:** `feat/phase2` (20 commits ahead of GitHub), `feat/p2c` (4), `feat/p3b`, `feat/media-volume`.
-Pushing is outward-facing, so ask the owner first.
+**Not pushed yet:** `feat/phase2`, `feat/p2c`, `feat/p3b`, `feat/media-volume`, `feat/p3c`, `feat/p4`. Pushing is
+outward-facing, so ask the owner first.
 
 ## 6. Next
 
-1. **P4** (spec §14: prod image without SSH, WiFi by QR with a captive-portal fallback, OTA through RAUC with
-   automatic rollback, BLE presence that stops audio within 60 s): brainstorm, spec, plan, then SDD.
-2. **P3b acceptance:** the vlog of 10-18, 10-19 and 10-20 appears by itself; the owner watches one.
+1. **P4b: WiFi by QR** with a captive-portal fallback (spec §14), then **P4c: BLE presence** that stops audio within
+   60 s, with an on/off setting (a new D in P4c). Each: brainstorm, spec, plan, then SDD. P4a (prod image + OTA) is done.
+   Open for the owner from P4a: keep or drop the rpicam demo programs in prod; keep or close the prod UART root
+   console; back up the signing keys.
+2. **P3b acceptance:** the vlogs of 10-19 and 10-20 appear by themselves; the owner watches one.
 3. **Storage decision by ≈ 10-25** (§3, Storage).
 4. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
    - the owner labels about 22 clips, 30 keyframes and 25 questions;
@@ -147,11 +177,11 @@ Pushing is outward-facing, so ask the owner first.
    - a final run with no overrides;
    - a fresh 24 h CPU window;
    - the acceptance report, numbers only.
-5. **P3c (multi-camera)** after P4, from `specs/2026-10-18-p3c-multicam-decisions.md`.
+5. **P3c (multi-camera)** after P4: write plans P3c-1 … P3c-4 from `specs/2026-10-19-p3c-multicam-design.md`.
 
 ## 7. How to resume with Claude Code
 
 ```
-Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P4 brainstorm, unless a P4 spec or plan already exists
+Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P4b brainstorm, unless a P4b spec or plan already exists
 under docs/superpowers/; then resume from its ledger.
 ```
