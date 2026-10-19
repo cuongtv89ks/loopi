@@ -32,6 +32,17 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
    and log in with `LOOPI_WEB_USER`.
 8. Devices page → "Tạo token ghép cặp" → copy `pair_token` and `ca_fingerprint` into the device's `loopi.toml`.
 
+## Pause and resume
+
+- `deploy/pause.sh` asks every online device to pause recording, waits (up to 90 s) until each heartbeat says it is
+  paused, then runs `docker compose -p deploy stop`. Containers, volumes, media and the database stay as they are;
+  with `restart: unless-stopped` the stack stays stopped after a reboot. The ids of the devices it paused are kept in
+  `~/.local/state/loopi/paused-devices`.
+- `deploy/resume.sh` runs `docker compose -p deploy start` (the same containers, no rebuild), waits until db, api,
+  worker and models are healthy, then sends "resume" to the devices `pause.sh` paused. A device that is off or away
+  gets it at its next heartbeat.
+- Run both from the checkout the stack was deployed from (`/home/soul/loopi-p2/deploy` on the brain PC).
+
 ## Media on their own disk
 
 Recordings grow by about 15 GB a day per camera (the raw H.264 and its MP4 copy). To keep them on a second disk

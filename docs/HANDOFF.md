@@ -5,6 +5,11 @@ Context memory for whoever continues this project, whether that is the owner or 
 
 ## 1. Where things stand
 
+**Paused since 2026-10-19 (owner's request).** The live stack is stopped (`docker compose -p deploy stop`; containers,
+volumes, media and database kept) and the Pi was asked to pause recording. Start everything again with
+`/home/soul/loopi-p2/deploy/resume.sh` (`deploy/README.md`, "Pause and resume"); `pause.sh` next to it pauses again.
+The 1 TB HDD is not on the bus (it dropped off on 2026-10-18); unplug it if it is still connected.
+
 | Plan | File | State | Branch / commits |
 |---|---|---|---|
 | Spec v1 | `docs/superpowers/specs/2026-10-14-loopi-design.md` | approved; amended by D16–D23 (see §4) | every branch carries it |
@@ -21,6 +26,7 @@ Context memory for whoever continues this project, whether that is the owner or 
 | Media on their own disk | — (bounded change, owner's yes 2026-10-18) | **on `feat/phase2`, not in use**: `LOOPI_MEDIA_DIR` + a required `.loopi-media` marker; with the marker missing the brain writes and forgets nothing. The 1 TB HDD dropped off the bus during the first copy (§3, Storage); media stay on the SSD | `feat/media-volume` e4861ce, bef6df5 → `feat/phase2` |
 | P3c decisions (multi-camera) | `specs/2026-10-18-p3c-multicam-decisions.md` | the owner's first decisions; superseded by the P3c design below | `feat/p3b` 400e4b1 |
 | P3c design (multi-camera) | `specs/2026-10-19-p3c-multicam-design.md` | approved 2026-10-19 (D30–D36): any LAN camera can be added in the brain (IP camera, iPhone/Android, ESP32 with camera and a separate audio URL, Loopi ESP32 firmware in P3c-4). Plans P3c-1 … P3c-4 are written **after P4** | `feat/p3c` 88ddc06 (worktree `/home/soul/loopi-p3`) |
+| P3c-1: storage and display | `plans/2026-10-19-p3c1-storage-display.md` | written 2026-10-19, **waits for the owner's review**; then SDD; its Task 8 (deploy) deletes the raw H.264 copies and turns retention on, so it asks first | `feat/p3c1` (worktree `/home/soul/loopi-p3c`) |
 | P4a: prod image + OTA | `specs/2026-10-18-p4a-prod-ota-design.md` (D26–D29), `plans/2026-10-18-p4a-prod-ota.md` | **complete**: all seven device acceptance steps (§13) passed on 2026-10-19 at 383581c; ledger `ledgers/p4a-progress.md` | `feat/p4` (worktree `/home/soul/loopi-p4`); the brain part is live through `feat/phase2` e0045ee |
 
 All plan paths are under `docs/superpowers/`. Execution ledgers are under `docs/superpowers/ledgers/`. They record every
@@ -160,19 +166,25 @@ image and OTA; WiFi by QR with a captive portal and BLE presence move to the bac
 - `feat/p3c`: the P3c design (worktree `/home/soul/loopi-p3`).
 - `feat/p4`: P4a (worktree `/home/soul/loopi-p4`); `feat/phase2` is at its e0045ee, the rest are agent/OS/docs commits.
 
-`feat/p4` is pushed, with PR #2 into `feat/phase2` (2026-10-19). **Not pushed yet:** `feat/phase2`, `feat/p2c`,
-`feat/p3b`, `feat/media-volume`, `feat/p3c`. Pushing is outward-facing, so ask the owner first.
+On 2026-10-19 every branch was merged into `main` (a fast-forward: each branch is an ancestor of `feat/p3c1`) and
+`main`, `feat/phase2` and every work branch were pushed. `feat/phase2` (the live worktree's branch) was
+fast-forwarded to `main` too; its `brain/` and `deploy/` were unchanged by that, apart from the pause/resume scripts.
+From now on, pushing is still outward-facing: ask the owner first.
 
 ## 6. Next
 
-1. **P3c plans (multi-camera):** P4 is complete. On 2026-10-19 the owner moved WiFi by QR (P4b) and BLE presence
+1. **Resume when the owner says so** (`deploy/resume.sh`), then **P3c-1**: the owner reviews
+   `plans/2026-10-19-p3c1-storage-display.md`, then it runs with SDD. The SSD clock restarts with the stack: with
+   retention off it fills in about 10 days of recording; P3c-1 fixes that (one copy per segment, retention on).
+   Then plans P3c-2 … P3c-4.
+2. **P3c plans (multi-camera), context:** P4 is complete. On 2026-10-19 the owner moved WiFi by QR (P4b) and BLE presence
    (P4c) to the backlog (D37): WiFi stays on `loopi.toml`, and audio is not limited by phones nearby. Write plans
    P3c-1 … P3c-4 from `specs/2026-10-19-p3c-multicam-design.md` (branch `feat/p3c`). Still open for the owner from
    P4a: keep or drop the rpicam demo programs in prod; keep or close the prod UART root console; back up the signing
    keys.
-2. **P3b acceptance:** the vlogs of 10-19 and 10-20 appear by themselves; the owner watches one.
-3. **Storage decision by ≈ 10-25** (§3, Storage).
-4. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
+3. **P3b acceptance:** the vlogs of 10-19 and 10-20 appear by themselves; the owner watches one.
+4. **Storage decision**: settled by P3c-1 (D32) once it is deployed (§3, Storage).
+5. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
    - the owner labels about 22 clips, 30 keyframes and 25 questions;
    - a baseline run, twice, for the noise floor;
    - tuning backed by numbers and the owner's yes;
@@ -183,6 +195,6 @@ image and OTA; WiFi by QR with a captive portal and BLE presence move to the bac
 ## 7. How to resume with Claude Code
 
 ```
-Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P3c plans, unless a P3c plan already exists under
-docs/superpowers/; then resume from its ledger.
+Read CLAUDE.md and docs/HANDOFF.md. Loopi is paused (§1): ask the owner before resuming it. Then continue with §6:
+P3c-1 (plan written, waiting for the owner's review), unless its ledger shows it started; then resume from it.
 ```
