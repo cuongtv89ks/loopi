@@ -1,6 +1,8 @@
 [Unit]
 Description=Reboot into the good slot when a trial boot was not confirmed (P4a, spec D26/D27)
-RequiresMountsFor=/boot
+# Ordering only: /boot is nofail, and a /boot that did not mount is exactly when a trial cannot confirm, so the guard must
+# still run (it reboots then).
+After=boot.mount
 
 [Service]
 Type=oneshot
