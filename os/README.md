@@ -108,6 +108,10 @@ its idle rootfs slot, boots it once as a trial and keeps it only when the agent 
   `os/out/loopi-<variant>-<version>.json` (`bundle`, `version`, `variant`, `sha256`, `size`, `built_at`, `commit`), the
   description the brain lists the bundle by. The bundle holds the same `rootfs.squashfs` as the image (`compatible=loopi-rpi0w`,
   verity format). Publish one to the brain with `os/scripts/publish-bundle.sh`.
+- **RAUC is a command-line tool only** (`BR2_PACKAGE_RAUC_DBUS` is not set): the image has no `rauc.service` and no
+  `rauc-mark-good.service`. The latter would confirm every trial boot by itself and so defeat the rollback;
+  `check-image.sh` fails the build if either appears. It also checks the kernel config (loop, device-mapper, dm-verity,
+  gzip squashfs, SHA-256) and that the shared `cmdline.txt` template takes `root=` and `rauc.slot=` from the slot.
 - **Boot partition** (FAT32, 64 MiB): the firmware files (`bootcode.bin`, `start.elf`, `fixup.dat`), `loopi.toml.example`,
   and
   - `config.txt`: boots the good slot (`os_prefix=a/` or `b/`; a fresh image has `a/`). Written only by renaming

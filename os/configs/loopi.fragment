@@ -69,4 +69,7 @@ BR2_PACKAGE_LIBCAMERA_PIPELINE_RPI_VC4=y
 BR2_PACKAGE_LIBCAMERA_APPS=y
 # OTA (P4a, spec D26): RAUC on the device (CLI only: no D-Bus service, BR2_PACKAGE_RAUC_DBUS unset) and on the build host
 BR2_PACKAGE_RAUC=y
+# The D-Bus service would ship rauc.service and rauc-mark-good.service; the latter confirms every trial boot by itself
+# (it runs when rauc.slot= is on the command line), which would defeat the rollback. check-image.sh checks they are absent.
+# BR2_PACKAGE_RAUC_DBUS is not set
 BR2_PACKAGE_HOST_RAUC=y

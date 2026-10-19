@@ -547,6 +547,32 @@ check "keyring is the OTA CA" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs'
 check "no private key in the rootfs" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -q 'key\.pem\$' /tmp/rootfs.list"
 check "boot control and post-install handler" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && grep -qx 'squashfs-root/usr/libexec/loopi/loopi-boot' /tmp/rootfs.list && grep -qx 'squashfs-root/usr/libexec/loopi/rauc-post-install' /tmp/rootfs.list"
 check "trial guard timer enabled" rootfs_has /etc/systemd/system/timers.target.wants/loopi-tryboot-guard.timer
+# RAUC is a CLI only (BR2_PACKAGE_RAUC_DBUS is not set): rauc-mark-good.service would confirm every trial boot by itself (it runs
+# when rauc.slot= is on the command line) and rauc.service would take the agent's rauc calls over D-Bus.
+check "rauc has no D-Bus service: no rauc.service, rauc-mark-good.service or de.pengutronix.rauc files" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq '(^|/)rauc(-mark-good)?\.service\$|de\.pengutronix\.rauc' /tmp/rootfs.list"
+# The kernel options a verity bundle needs, in the kernel that was built: loop device, device-mapper, dm-verity, and gzip squashfs for
+# the bundle's outer filesystem (the image's own squashfs is LZ4). Only kernel build directories count (linux-headers-* has no
+# .config of the kernel, linux-pam-* no .config at all); every one found must have all options, and at least one must exist.
+kernel_has_verity_support() {
+  local d n=0 opt
+  for d in "$IMAGES"/../build/linux-*/; do
+    case "$(basename "$d")" in linux-headers-*) continue ;; esac
+    [ -f "$d/.config" ] || continue
+    n=$((n + 1))
+    for opt in CONFIG_BLK_DEV_LOOP CONFIG_BLK_DEV_DM CONFIG_DM_VERITY CONFIG_SQUASHFS_ZLIB CONFIG_CRYPTO_SHA256; do
+      grep -qx "$opt=y" "$d/.config" || { echo "$d/.config lacks $opt=y" >&2; return 1; }
+    done
+  done
+  [ "$n" -gt 0 ]
+}
+check "kernel config has loop, device-mapper, dm-verity, gzip squashfs and SHA-256 built in (RAUC verity bundles)" kernel_has_verity_support
+# A hard-coded root= in the shared template would make slot B boot slot A's rootfs, and the agent would still confirm the trial.
+cmdline_template_is_slot_neutral() {
+  local c; c="$(rootfs_cat usr/share/loopi/boot/cmdline.txt | tr ' ' '\n')" || return 1
+  [ "$(grep -c '^root=' <<<"$c")" = 1 ] && grep -qx 'root=@ROOT@' <<<"$c" \
+    && [ "$(grep -c '^rauc\.slot=' <<<"$c")" = 1 ] && grep -qx 'rauc.slot=@SLOT@' <<<"$c"
+}
+check "staged cmdline template takes root= and rauc.slot= from the slot (@ROOT@, @SLOT@), nothing hard-coded" cmdline_template_is_slot_neutral
 check "slot boot files staged in the rootfs" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && for f in zImage bcm2708-rpi-zero-w.dtb cmdline.txt loopi-config.txt overlays/README overlays/dwc2.dtbo; do grep -qx \"squashfs-root/usr/share/loopi/boot/\$f\" /tmp/rootfs.list || exit 1; done"
 NAME="loopi-$variant-${LOOPI_OS_VERSION}"
 check "bundle verifies against the CA" "$IMAGES/../host/bin/rauc" info --keyring="${LOOPI_RAUC_KEYS:-/keys}/ca.cert.pem" "$IMAGES/$NAME.raucb"

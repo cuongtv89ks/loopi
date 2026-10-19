@@ -15,8 +15,11 @@ CONFIG_USB_DWC2_DUAL_ROLE=y
 CONFIG_USB_CONFIGFS=m
 CONFIG_USB_CONFIGFS_ACM=y
 CONFIG_USB_CONFIGFS_ECM=y
-# RAUC verity bundles (P4a): loop-mounted squashfs checked by dm-verity
+# RAUC verity bundles (P4a): loop-mounted squashfs checked by dm-verity. The bundle's own squashfs is gzip (the image
+# rootfs is LZ4), and dm-verity hashes with SHA-256.
 CONFIG_BLK_DEV_LOOP=y
 CONFIG_MD=y
 CONFIG_BLK_DEV_DM=y
 CONFIG_DM_VERITY=y
+CONFIG_SQUASHFS_ZLIB=y
+CONFIG_CRYPTO_SHA256=y
