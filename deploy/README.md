@@ -34,8 +34,9 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 
 ## Pause and resume
 
-- `deploy/pause.sh` asks every online device to pause recording, waits (up to 90 s) until each heartbeat says it is
-  paused, then runs `docker compose -p deploy stop`. Containers, volumes, media and the database stay as they are;
+- `deploy/pause.sh` waits for a fresh heartbeat from every online device (up to 40 s), asks each one that is
+  recording to pause, waits (up to 90 s) until its heartbeat says it is paused, then runs
+  `docker compose -p deploy stop`. Containers, volumes, media and the database stay as they are;
   with `restart: unless-stopped` the stack stays stopped after a reboot. The ids of the devices it paused are kept in
   `~/.local/state/loopi/paused-devices`.
 - `deploy/resume.sh` runs `docker compose -p deploy start` (the same containers, no rebuild), waits until db, api,

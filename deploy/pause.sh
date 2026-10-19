@@ -26,6 +26,18 @@ fi
 mkdir -p "$(dirname "$STATE")"
 touch "$STATE"
 if grep -qx api <<<"$running" && grep -qx db <<<"$running"; then
+  # The paused flag is read from a heartbeat sent after this script started (heartbeats come every 15 s): an older
+  # one can predate a pause or resume that is still on its way, as right after resume.sh.
+  started="$(date +%s)"
+  online="$(sql "SELECT id FROM device WHERE NOT revoked AND last_heartbeat_at > now() - interval '2 minutes' ORDER BY id")"
+  fresh_deadline=$((SECONDS + 40))
+  for id in $online; do
+    [[ "$id" =~ ^[0-9A-Z]{26}$ ]] || continue
+    until [ "$(sql "SELECT count(*) FROM device WHERE id = '$id' AND last_heartbeat_at > to_timestamp($started)")" = 1 ]; do
+      [ "$SECONDS" -lt "$fresh_deadline" ] || { echo "warning: no fresh heartbeat from device $id" >&2; break; }
+      sleep 3
+    done
+  done
   # Devices heard from in the last 2 minutes that are recording (not paused, not revoked).
   ids="$(sql "SELECT id FROM device WHERE NOT revoked AND last_heartbeat_at > now() - interval '2 minutes'
               AND coalesce(last_heartbeat->>'paused', 'false') <> 'true' ORDER BY id")"
