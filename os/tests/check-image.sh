@@ -520,12 +520,16 @@ check "the shipped agent amplifies the microphone before encoding (capture.audio
 check "loopi.toml.example shows the microphone gain (audio_gain_db = 20.0)" example_sets_the_microphone_gain
 
 # --- P4a: version stamp and the prod variant (spec §6.5)
+# run-agent starts /data/dev/loopi-agent only behind this guard. /data is shared by both variants (a device can go dev -> prod
+# over OTA with a deployed /data/dev/loopi-agent left behind), so on prod, which has no /etc/loopi-dev, the guard is the
+# only thing that keeps that binary from running.
+run_agent_guards_data_dev() { rootfs_cat usr/libexec/loopi/run-agent | grep -Fx 'if [ -f /etc/loopi-dev ] && [ -x /data/dev/loopi-agent ]; then'; }
 check "/etc/loopi-release names this build" bash -c "unsquashfs -cat '$IMAGES/rootfs.squashfs' etc/loopi-release | grep -qx 'LOOPI_OS_VERSION=${LOOPI_OS_VERSION}' && unsquashfs -cat '$IMAGES/rootfs.squashfs' etc/loopi-release | grep -qx 'LOOPI_OS_VARIANT=$variant'"
 if ! is_dev; then
   check "prod: no SSH server" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq '/(dropbear|sshd)$' /tmp/rootfs.list"
-  check "prod: no dev marker, gadget unit or usbmode" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq 'etc/loopi-dev$|loopi-usbgadget\.service$|usr/bin/loopi-usbmode$|loopi-devkeys\.service$' /tmp/rootfs.list"
+  check "prod: no dev marker, gadget unit or usbmode" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq 'etc/loopi-dev$|loopi-usbgadget\.service$|usr/bin/loopi-usbmode$|loopi-devkeys\.service$|etc/tmpfiles\.d/loopi\.conf$' /tmp/rootfs.list"
   check "prod: no debug tools" bash -c "unsquashfs -l '$IMAGES/rootfs.squashfs' > /tmp/rootfs.list && ! grep -Eq '/(strace|rsync|arecord|aplay)$' /tmp/rootfs.list"
-  check "prod: agent wrapper never runs /data/dev" bash -c "! unsquashfs -l '$IMAGES/rootfs.squashfs' | grep -q 'etc/loopi-dev$'"
 fi
+check "agent wrapper runs /data/dev only when /etc/loopi-dev exists" run_agent_guards_data_dev
 
 exit $fail
