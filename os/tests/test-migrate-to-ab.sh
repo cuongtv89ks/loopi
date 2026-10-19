@@ -176,12 +176,45 @@ check "unconfirmed: fails" test "$RC" != 0
 check "unconfirmed: says the real wait" says "within 4 seconds"
 check "unconfirmed: the device runs slot B, so nothing is moved back" test -e "$ST/data/ota/pending.json" -a -e "$ST/data/dev/loopi-agent.pre-ab"
 check "unconfirmed: tells how to restore by hand" says "mv /data/dev/loopi-agent.pre-ab /data/dev/loopi-agent"
+check "unconfirmed: the command to restore by hand guards itself on the kernel command line" says "grep -q rauc.slot= /proc/cmdline ||"
+check "unconfirmed: the command only moves the agent back when none is there" says "[ -e /data/dev/loopi-agent ] || mv /data/dev/loopi-agent.pre-ab /data/dev/loopi-agent"
 run never
 check "never: fails" test "$RC" != 0
 check "never: tells the owner to power-cycle" says "power-cycle"
 check "never: says the real wait" says "within 4 seconds"
-check "never: tells how to restore by hand" says "rm -f /data/ota/pending.json; mv /data/dev/loopi-agent.pre-ab /data/dev/loopi-agent"
+check "never: tells how to restore by hand" says "rm -f /data/ota/pending.json; [ -e /data/dev/loopi-agent ] || mv /data/dev/loopi-agent.pre-ab /data/dev/loopi-agent"
+check "never: the command to restore by hand guards itself on the kernel command line" says "grep -q rauc.slot= /proc/cmdline ||"
+check "never: does not claim the power cycle surely boots the old system" not says "boots the old system (config.txt was not touched)"
+check "never: says it cannot tell whether slot B was confirmed meanwhile" says "cannot tell whether slot B was confirmed"
 check "never: does not touch an unreachable device's state" test -e "$ST/data/ota/pending.json"
+
+# The printed command, run on the sandbox as the owner would on the device (/data and /proc/cmdline redirected).
+manual_cmd() { printf '%s\n' "$OUT" | sed -n "s/.*ssh root@[^ ]* '\(.*\)'\$/\1/p" | tail -n 1; }
+run_manual() {
+  local c; c="$(manual_cmd)"; [ -n "$c" ] || return 1
+  c="${c//\/data\//$ST/data/}"; c="${c//\/proc\/cmdline/$ST/cmdline}"
+  $REMOTE_SH -c "$c"
+}
+echo "root=/dev/mmcblk0p3 ro rauc.slot=B" > "$ST/cmdline"
+check "restore by hand on a device that boots a confirmed slot B: runs" run_manual
+check "restore by hand on slot B: pending.json is left alone" test -e "$ST/data/ota/pending.json"
+check "restore by hand on slot B: the agent stays set aside" test -e "$ST/data/dev/loopi-agent.pre-ab" -a ! -e "$ST/data/dev/loopi-agent"
+echo "root=/dev/mmcblk0p2 ro rootwait" > "$ST/cmdline"
+check "restore by hand on the old system: runs" run_manual
+check "restore by hand on the old system: pending.json removed" pending_absent
+check "restore by hand on the old system: the agent is back" agent_in_place
+check "restore by hand on the old system: nothing left aside" no_aside
+check "restore by hand again: harmless" run_manual
+check "restore by hand again: the agent is still there" agent_in_place
+echo a-newer-agent > "$ST/data/dev/loopi-agent"; echo dev-agent-binary > "$ST/data/dev/loopi-agent.pre-ab"
+run_manual
+check "restore by hand: an agent that appeared meanwhile is never overwritten" test "$(cat "$ST/data/dev/loopi-agent")" = a-newer-agent -a -e "$ST/data/dev/loopi-agent.pre-ab"
+NOAGENT=1 run never
+check "never, no dev agent: the command only removes pending.json, guarded" says "grep -q rauc.slot= /proc/cmdline || rm -f /data/ota/pending.json'"
+check "never, no dev agent: no move in the command" not says "mv /data/dev"
+echo "root=/dev/mmcblk0p2 ro rootwait" > "$ST/cmdline"
+check "never, no dev agent: the command runs on the old system" run_manual
+check "never, no dev agent: pending.json removed, nothing invented" bash -c "[ ! -e '$ST/data/dev/loopi-agent' ] && [ ! -e '$ST/data/ota/pending.json' ]"
 
 TAKEN=1 run ok
 check "taken: succeeds" test "$RC" = 0

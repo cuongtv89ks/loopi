@@ -134,8 +134,9 @@ its idle rootfs slot, boots it once as a trial and keeps it only when the agent 
   is simply running; the script then removes `/data/ota/pending.json`, moves the dev agent back, prints what it restored
   and exits non-zero, and can be run again. `/boot/b` and `/boot/tryboot.txt` stay (only a `0 tryboot` reboot reads them).
   If the device never answers again the script cannot restore anything: it tells you to power-cycle the device (a new
-  system that hangs before the watchdog starts never reboots by itself; a power cycle boots the old system) and prints
-  the one `ssh` command that puts the state back. Afterwards the device boots slot B and the first web update writes slot A.
+  system that hangs before the watchdog starts never reboots by itself; a power cycle boots the old system unless slot B
+  was confirmed meanwhile, which the script cannot tell) and prints the one `ssh` command that puts the state back (it
+  does nothing on a device that boots slot A or B, and never overwrites a `loopi-agent` that is there). Afterwards the device boots slot B and the first web update writes slot A.
   `os/tests/test-migrate-to-ab.sh` runs the script against a fake `ssh` (no device needed).
 - **RAUC is a command-line tool only** (`BR2_PACKAGE_RAUC_DBUS` is not set): the image has no `rauc.service` and no
   `rauc-mark-good.service`. The latter would confirm every trial boot by itself and so defeat the rollback;

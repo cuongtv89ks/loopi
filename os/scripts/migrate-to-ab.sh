@@ -46,10 +46,13 @@ rollback_needed=0    # 1 from the first change to the old system's own state unt
 has_agent=0          # a dev agent was in /data/dev when the run started
 aside=/data/dev/loopi-agent.pre-ab
 
+# The command guards itself: it does nothing when the device boots an A/B slot (slot B may have been confirmed meanwhile,
+# and then the new agent's state and the set-aside dev agent must stay), and it never overwrites a loopi-agent that is there.
 print_manual_restore() {
   local cmd="rm -f /data/ota/pending.json"
-  if [ "$has_agent" = 1 ]; then cmd="$cmd; mv $aside /data/dev/loopi-agent"; fi
-  echo "migrate-to-ab: when the old system is up again, put its state back with: ssh root@$host '$cmd'" >&2
+  if [ "$has_agent" = 1 ]; then cmd="{ $cmd; [ -e /data/dev/loopi-agent ] || mv $aside /data/dev/loopi-agent; }"; fi
+  echo "migrate-to-ab: when the old system is up again, put its state back with (it does nothing on a device that boots slot A or B):" >&2
+  echo "migrate-to-ab:   ssh root@$host 'grep -q rauc.slot= /proc/cmdline || $cmd'" >&2
 }
 
 # The device is on the old system: remove the pending update state and move the dev agent back, saying what was done.
@@ -99,7 +102,8 @@ die_unreachable() {
   echo "migrate-to-ab: $*" >&2
   rollback_needed=0
   echo "migrate-to-ab: power-cycle the device (unplug the power, plug it back in): a new system that hangs before the watchdog" >&2
-  echo "migrate-to-ab: starts never reboots by itself, and a power cycle boots the old system (config.txt was not touched)." >&2
+  echo "migrate-to-ab: starts never reboots by itself. A power cycle boots the old system unless slot B was confirmed meanwhile;" >&2
+  echo "migrate-to-ab: this script cannot tell whether slot B was confirmed meanwhile, as it cannot reach the device to look." >&2
   print_manual_restore
   exit 1
 }
