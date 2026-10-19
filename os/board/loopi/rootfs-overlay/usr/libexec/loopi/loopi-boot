@@ -1,0 +1,173 @@
+#!/bin/sh
+# Loopi A/B boot control (P4a design §4-§6, spec D26): the RAUC custom bootloader backend, the step that puts a slot's
+# kernel files on the boot partition, and the trial-boot guard.
+#
+# Slots: A = /dev/mmcblk0p2 + /boot/a/, B = /dev/mmcblk0p3 + /boot/b/. config.txt boots the good slot (os_prefix=a/ or
+# b/; none at all is the pre-P4a layout, which is slot A). tryboot.txt is read by the firmware only on a "0 tryboot"
+# reboot and boots the slot under trial; any other reboot (watchdog, panic=10, power loss, the guard) goes back to
+# config.txt. A trial is confirmed by renaming tryboot.txt over config.txt: config.txt is never written from nothing.
+#
+# RAUC:  get-primary | get-current | get-state <A|B> | set-primary <A|B> | set-state <A|B> good|bad
+# Loopi: install-files <A|B> <mounted slot root> | trial-pending | guard
+set -eu
+
+BOOT="${LOOPI_BOOT_DIR:-/boot}"
+STATE_DIR="${LOOPI_STATE_DIR:-/data/rauc}"
+CMDLINE="${LOOPI_CMDLINE:-/proc/cmdline}"
+TRYBOOT_FLAG="${LOOPI_TRYBOOT_FLAG:-/proc/device-tree/chosen/bootloader/tryboot}"
+REMOUNT="${LOOPI_REMOUNT:-1}"
+REBOOT_CMD="${LOOPI_REBOOT_CMD:-systemctl reboot}"
+SHARE=usr/share/loopi/boot
+
+die() { echo "loopi-boot: $*" >&2; exit 1; }
+
+slot_dir() { case "$1" in A) echo a ;; B) echo b ;; *) die "unknown slot '$1'" ;; esac; }
+slot_root() { case "$1" in A) echo /dev/mmcblk0p2 ;; B) echo /dev/mmcblk0p3 ;; *) die "unknown slot '$1'" ;; esac; }
+
+# The os_prefix of a config file: a, b or nothing.
+prefix_of() { sed -n 's|^os_prefix=\([ab]\)/$|\1|p' "$1" 2>/dev/null | tail -n 1; }
+
+primary() {
+	[ -f "$BOOT/config.txt" ] || die "$BOOT/config.txt is missing"
+	case "$(prefix_of "$BOOT/config.txt")" in b) echo B ;; *) echo A ;; esac
+}
+
+current() { tr ' ' '\n' < "$CMDLINE" | sed -n 's/^rauc\.slot=\([AB]\)$/\1/p' | head -n 1; }
+
+# True when the firmware booted this time from tryboot.txt (a 4-byte big-endian 1 in the device tree).
+in_trial() {
+	[ -f "$TRYBOOT_FLAG" ] || return 1
+	one="$(mktemp)"
+	printf '\000\000\000\001' > "$one"
+	if cmp -s "$TRYBOOT_FLAG" "$one"; then rm -f "$one"; return 0; fi
+	rm -f "$one"
+	return 1
+}
+
+boot_ro() { sync; if [ "$REMOUNT" = 1 ]; then mount -o remount,ro "$BOOT" || true; fi; }
+boot_rw() {
+	[ "$REMOUNT" = 1 ] || return 0
+	mount -o remount,rw "$BOOT"
+	trap boot_ro EXIT
+}
+
+# put <file>: stdin to <file> through a temporary sibling, renamed into place.
+put() { cat > "$1.new"; sync; mv -f "$1.new" "$1"; sync; }
+
+# The firmware config that boots <slot>: the slot's own template when its files are on the boot partition (it may come
+# from another variant), else the current config.txt. The USB gadget overlay keeps the state the running config.txt
+# has (dev images switch it with loopi-usbmode); a template without it (prod) never gets it.
+render_config() {
+	template="$BOOT/$(slot_dir "$1")/loopi-config.txt"
+	[ -f "$template" ] || template="$BOOT/config.txt"
+	if grep -q '^dtoverlay=dwc2' "$BOOT/config.txt" 2>/dev/null; then
+		usb='s/^# *dtoverlay=dwc2/dtoverlay=dwc2/'
+	else
+		usb='s/^dtoverlay=dwc2/# dtoverlay=dwc2/'
+	fi
+	sed -e '/^# Loopi slot$/,$d' -e '/^os_prefix=/d' -e "$usb" "$template"
+	printf '# Loopi slot\n[all]\nos_prefix=%s/\n' "$(slot_dir "$1")"
+}
+
+write_tryboot() { boot_rw; render_config "$1" | put "$BOOT/tryboot.txt"; }
+
+state_get() {
+	[ -f "$STATE_DIR/boot-state" ] || return 0
+	awk -v s="$1" '$1 == s && ($2 == "good" || $2 == "bad") { v = $2 } END { if (v != "") print v }' "$STATE_DIR/boot-state"
+}
+
+state_set() {
+	mkdir -p "$STATE_DIR"
+	{ if [ -f "$STATE_DIR/boot-state" ]; then awk -v s="$1" '$1 != s' "$STATE_DIR/boot-state"; fi; echo "$1 $2"; } \
+		| put "$STATE_DIR/boot-state"
+}
+
+# Once both slots have their own files and config.txt names one, the pre-P4a kernel files at the root are unused.
+cleanup_legacy() {
+	[ -f "$BOOT/a/zImage" ] && [ -f "$BOOT/b/zImage" ] || return 0
+	[ -n "$(prefix_of "$BOOT/config.txt")" ] || return 0
+	rm -rf "$BOOT/zImage" "$BOOT/bcm2708-rpi-zero-w.dtb" "$BOOT/cmdline.txt" "$BOOT/overlays"
+}
+
+trial_unconfirmed() { c="$(current)"; in_trial && [ -n "$c" ] && [ "$c" != "$(primary)" ]; }
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+get-primary)
+	primary
+	;;
+get-current)
+	c="$(current)"
+	[ -n "$c" ] || die "no rauc.slot= on the kernel command line"
+	echo "$c"
+	;;
+get-state)
+	[ $# = 1 ] || die "usage: get-state <A|B>"
+	slot_dir "$1" > /dev/null
+	s="$(state_get "$1")"
+	if [ -z "$s" ]; then
+		if [ "$1" = "$(primary)" ]; then s=good; else s=bad; fi
+	fi
+	echo "$s"
+	;;
+set-primary)
+	[ $# = 1 ] || die "usage: set-primary <A|B>"
+	slot_dir "$1" > /dev/null
+	if [ "$1" = "$(primary)" ]; then
+		boot_rw
+		rm -f "$BOOT/tryboot.txt"
+	else
+		write_tryboot "$1"
+	fi
+	;;
+set-state)
+	[ $# = 2 ] || die "usage: set-state <A|B> good|bad"
+	dir="$(slot_dir "$1")"
+	case "$2" in good | bad) ;; *) die "state must be good or bad, not '$2'" ;; esac
+	if [ "$2" = good ] && [ "$1" = "$(current)" ] && [ "$1" != "$(primary)" ]; then
+		[ "$(prefix_of "$BOOT/tryboot.txt")" = "$dir" ] || die "no tryboot.txt for slot $1: nothing to confirm"
+		state_set "$1" good
+		boot_rw
+		sync
+		mv -f "$BOOT/tryboot.txt" "$BOOT/config.txt"
+		sync
+		cleanup_legacy
+	else
+		state_set "$1" "$2"
+		if [ "$2" = bad ] && [ "$(prefix_of "$BOOT/tryboot.txt")" = "$dir" ]; then
+			boot_rw
+			rm -f "$BOOT/tryboot.txt"
+		fi
+	fi
+	;;
+install-files)
+	[ $# = 2 ] || die "usage: install-files <A|B> <mounted slot root>"
+	dir="$(slot_dir "$1")"
+	[ "$1" != "$(current)" ] || die "slot $1 is running; its boot files stay as they are"
+	for f in zImage bcm2708-rpi-zero-w.dtb cmdline.txt loopi-config.txt; do
+		[ -f "$2/$SHARE/$f" ] || die "$2/$SHARE/$f is missing"
+	done
+	boot_rw
+	rm -rf "$BOOT/$dir.new"
+	cp -r "$2/$SHARE" "$BOOT/$dir.new"
+	sed -e "s|@ROOT@|$(slot_root "$1")|g" -e "s|@SLOT@|$1|g" "$2/$SHARE/cmdline.txt" > "$BOOT/$dir.new/cmdline.txt"
+	sync
+	rm -rf "$BOOT/$dir"
+	mv "$BOOT/$dir.new" "$BOOT/$dir"
+	sync
+	write_tryboot "$1"
+	;;
+trial-pending)
+	trial_unconfirmed
+	;;
+guard)
+	if trial_unconfirmed; then
+		echo "loopi-boot: slot $(current) was not confirmed in time; rebooting into slot $(primary)" >&2
+		$REBOOT_CMD
+	fi
+	;;
+*)
+	die "usage: loopi-boot get-primary|get-current|get-state|set-primary|set-state|install-files|trial-pending|guard"
+	;;
+esac

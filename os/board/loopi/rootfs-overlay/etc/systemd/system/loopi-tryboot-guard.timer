@@ -1,0 +1,9 @@
+[Unit]
+Description=Give a trial boot 10 minutes to confirm itself (P4a, spec D27)
+
+[Timer]
+OnBootSec=10min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,15 @@
+#!/bin/sh
+# RAUC system post-install handler (P4a design §5): put each freshly written rootfs slot's kernel files on the boot
+# partition and point tryboot.txt at it. RAUC passes the slots in RAUC_TARGET_SLOTS and their details per number.
+set -eu
+for i in $RAUC_TARGET_SLOTS; do
+	eval "device=\${RAUC_SLOT_DEVICE_$i:-} bootname=\${RAUC_SLOT_BOOTNAME_$i:-}"
+	[ -n "$bootname" ] || continue
+	mnt="$(mktemp -d /run/loopi-slot.XXXXXX)"
+	mount -t squashfs -o ro "$device" "$mnt"
+	rc=0
+	/usr/libexec/loopi/loopi-boot install-files "$bootname" "$mnt" || rc=$?
+	umount "$mnt"
+	rmdir "$mnt"
+	[ "$rc" = 0 ] || exit "$rc"
+done
