@@ -74,10 +74,26 @@ fi
 notes="$(jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | {commit: .[0], subject: (.[1:] | join("\t"))})' <<<"$log")"
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"; rm -f "$ota/.$bundle.tmp" "$ota/.$desc_name.tmp"' EXIT
+placed=0
+published=0
+cleanup() {
+  rm -rf "$tmp"
+  rm -f "$ota/.$bundle.tmp" "$ota/.$desc_name.tmp"
+  # Never leave a bundle without its description (the brain would list it as unusable and a retry would be refused as
+  # "already published"): the bundle was checked absent above, so what is there now is ours.
+  if [ "$published" != 1 ] && [ "$placed" = 1 ]; then rm -f "$ota/$bundle"; fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
 jq --argjson notes "$notes" --argjson base "$base_version" --argjson truncated "$truncated" \
-  '. + {notes_base: $base, notes: $notes, notes_truncated: $truncated}' "$desc" > "$tmp/desc.json"
-# The bundle first: the brain lists only bundles that have a description.
-cp "$src" "$ota/.$bundle.tmp" && mv "$ota/.$bundle.tmp" "$ota/$bundle"
-cp "$tmp/desc.json" "$ota/.$desc_name.tmp" && mv "$ota/.$desc_name.tmp" "$ota/$desc_name"
+  '. + {notes_base: $base, notes: $notes, notes_truncated: $truncated}' "$desc" > "$tmp/desc.json" \
+  || die "could not build the description of $bundle"
+# The bundle first: the brain lists only bundles that have a description. Every step stands alone: a failing element of an
+# && list does not stop a "set -e" script.
+cp "$src" "$ota/.$bundle.tmp" || die "could not copy $bundle into $ota"
+mv "$ota/.$bundle.tmp" "$ota/$bundle" || die "could not move $bundle into place in $ota"
+placed=1
+cp "$tmp/desc.json" "$ota/.$desc_name.tmp" || die "could not write the description of $bundle into $ota"
+mv "$ota/.$desc_name.tmp" "$ota/$desc_name" || die "could not move the description of $bundle into place in $ota"
+published=1
 echo "published $bundle ($(jq length <<<"$notes") notes$([ "$truncated" = true ] && echo ", truncated"))"

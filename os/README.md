@@ -112,23 +112,31 @@ its idle rootfs slot, boots it once as a trial and keeps it only when the agent 
   (the brain's `LOOPI_DATA_DIR/ota`). It checks that the bundle is the
   one its description names (size, SHA-256, a commit this repository knows), adds the release notes, copies the bundle
   and then the description (the brain lists a bundle only once its description is there) and refuses to publish a
-  version twice. The notes (spec D29) are the subjects of the commits that touched `agent/`, `os/` or
+  version twice; a copy or move that fails publishes nothing and leaves nothing behind (no temporary file, no bundle without
+  its description). The notes (spec D29) are the subjects of the commits that touched `agent/`, `os/` or
   `docs/protocol/` since the newest bundle already in the directory, of either variant (both are built from the same
   code), at most 50, the newest kept and `notes_truncated` set when more were dropped. With no such bundle, or when its
   commit is not an ancestor of this one, they are the last 20. Builds from a dirty tree (`-dirty` in the version) are
   refused; the deliberately broken acceptance builds (`-broken-agent`, `-broken-kernel`) need `--acceptance`.
 - **The one-time move to A/B**: a device flashed before P4a has no slot B and no RAUC, so it cannot be updated from the
   web the first time. `os/scripts/migrate-to-ab.sh <device-ip> os/out/loopi-dev-<version>.json <backup dir>` does that
-  first update by hand over SSH, without taking the card out: it copies `/data/keys` and `/data/config` to
-  `<backup dir>/data-keys-config.tar` (mode 600, never committed: the way back after a re-flash), writes the
-  `.squashfs` to the empty third partition and checks it by reading it back, lets the new system's own `loopi-boot`
-  put slot B's boot files and `tryboot.txt` on `/boot`, leaves the state `/data/ota/pending.json` for the new agent
-  and reboots once into the trial (`0 tryboot`). It then waits for the new agent to confirm slot B. If the trial
-  fails (the new system hangs, panics or never confirms), the firmware goes back to `config.txt`, which was not
-  touched: the device is on the old system again and the script can simply be run again. A dev agent in
-  `/data/dev/loopi-agent` is renamed to `loopi-agent.pre-ab` just before the reboot (it predates OTA and would never
-  confirm the trial); after a failed trial rename it back if you want it. Afterwards the device boots slot B and the
-  first web update writes slot A.
+  first update by hand over SSH, without taking the card out. It takes a dev description only (the trial is watched over
+  SSH, which prod does not have) and a backup directory outside any git work tree. Steps: it copies `/data/keys` and
+  `/data/config` to `<backup dir>/data-keys-config.tar` (mode 600, never committed: the way back after a re-flash; written
+  beside the final name and renamed only once it lists both directories, so a failed run never empties a good backup);
+  writes the `.squashfs` to the empty third partition and checks it by reading it back from the card; lets the new
+  system's own `loopi-boot` put slot B's boot files and `tryboot.txt` on `/boot`; writes `/data/ota/pending.json` for the
+  new agent; as the very last step sets a dev agent in `/data/dev/loopi-agent` aside (`loopi-agent.pre-ab`, or with a
+  time suffix when that name is taken; it predates OTA and would never confirm the trial); and reboots once into the trial
+  (`0 tryboot`). It then waits up to 5 minutes for the device to answer on a new boot and up to 15 minutes for the new
+  agent to confirm slot B (the guard reboots an unconfirmed trial 10 minutes after boot).
+  If anything fails while the device is (or goes back to) the old system, `config.txt` was never touched, so the old system
+  is simply running; the script then removes `/data/ota/pending.json`, moves the dev agent back, prints what it restored
+  and exits non-zero, and can be run again. `/boot/b` and `/boot/tryboot.txt` stay (only a `0 tryboot` reboot reads them).
+  If the device never answers again the script cannot restore anything: it tells you to power-cycle the device (a new
+  system that hangs before the watchdog starts never reboots by itself; a power cycle boots the old system) and prints
+  the one `ssh` command that puts the state back. Afterwards the device boots slot B and the first web update writes slot A.
+  `os/tests/test-migrate-to-ab.sh` runs the script against a fake `ssh` (no device needed).
 - **RAUC is a command-line tool only** (`BR2_PACKAGE_RAUC_DBUS` is not set): the image has no `rauc.service` and no
   `rauc-mark-good.service`. The latter would confirm every trial boot by itself and so defeat the rollback;
   `check-image.sh` fails the build if either appears. It also checks the kernel config (loop, device-mapper, dm-verity,

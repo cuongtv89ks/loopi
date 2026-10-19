@@ -66,5 +66,43 @@ tampered="$(build dev 1.5 2026-10-25T01:00:00Z)"; echo x >> "$OUT/loopi-dev-1.5.
 check "a bundle that does not match its description is refused" bash -c "! LOOPI_REPO='$REPO' '$PUBLISH' '$tampered' '$OTA'"
 lost="$(build dev 1.6 2026-10-26T01:00:00Z)"; jq '.commit = "0000000000000000000000000000000000000000"' "$lost" > "$W/l" && mv "$W/l" "$lost"
 check "an unknown commit is refused" bash -c "! LOOPI_REPO='$REPO' '$PUBLISH' '$lost' '$OTA'"
-check "no temporary files left" bash -c "! ls -A '$OTA' | grep -q '^\.'"
+
+# A copy or a move that fails must not publish half a pair, must not say "published" and must leave nothing behind
+# (no temporary file, no bundle without its description, no description without its bundle). cp and mv are replaced by a
+# shim that fails when an argument ends with $SHIM_FAIL_SUFFIX.
+SHIM="$W/shim"; mkdir -p "$SHIM"
+cat > "$SHIM/failing" <<'SHIM_EOF'
+#!/bin/sh
+name="$(basename "$0")"
+for a in "$@"; do case "$a" in *"$SHIM_FAIL_SUFFIX") echo "shim: $name $a failed" >&2; exit 1 ;; esac; done
+PATH="${PATH#"$SHIM_DIR":}" exec "$name" "$@"
+SHIM_EOF
+chmod 755 "$SHIM/failing"; ln -s failing "$SHIM/cp"; ln -s failing "$SHIM/mv"
+not() { ! "$@"; }
+says_published() { case "$1" in *"published "*) return 0 ;; esac; return 1; }
+no_dot_files() { ! ls -A "$OTA" | grep -q '^\.'; }
+failed_publish() {  # failed_publish <label> <failing suffix> <version>: leaves the description in $LAST
+  local label="$1" suffix="$2" out rc
+  LAST="$(build dev "$3" 2026-11-01T01:00:00Z)"
+  out="$(SHIM_FAIL_SUFFIX="$suffix" SHIM_DIR="$SHIM" PATH="$SHIM:$PATH" LOOPI_REPO="$REPO" "$PUBLISH" "$LAST" "$OTA" 2>&1)"; rc=$?
+  check "$label: exits non-zero" test "$rc" != 0
+  check "$label: does not say published" not says_published "$out"
+  check "$label: no description" test ! -e "$OTA/loopi-dev-$3.json"
+  check "$label: no bundle" test ! -e "$OTA/loopi-dev-$3.raucb"
+  check "$label: no temporary files" no_dot_files
+}
+failed_publish "bundle copy fails" .raucb.tmp 2.1
+check "a retry after the failed copy publishes" publish "$LAST" "$OTA"
+failed_publish "bundle move fails" "$OTA/loopi-dev-2.2.raucb" 2.2
+failed_publish "description copy fails" .json.tmp 2.3
+failed_publish "description move fails" "$OTA/loopi-dev-2.4.json" 2.4
+check "a retry after the failed description publishes" publish "$LAST" "$OTA"
+if [ "$(id -u)" != 0 ]; then
+  RO="$W/readonly"; mkdir "$RO"; chmod 555 "$RO"
+  ro="$(build dev 2.5 2026-11-02T01:00:00Z)"
+  check "a read-only bundle directory is refused" bash -c "! LOOPI_REPO='$REPO' '$PUBLISH' '$ro' '$RO'"
+  check "a read-only bundle directory stays empty" test -z "$(ls -A "$RO")"
+  chmod 755 "$RO"
+fi
+check "no temporary files left" no_dot_files
 exit "$fail"
