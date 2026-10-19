@@ -503,6 +503,23 @@ async fn an_update_is_installed_reported_and_followed_by_a_trial_reboot() {
 /// told the new slot is good) and it must not stop the agent from shutting down.
 #[tokio::test]
 async fn an_unconfirmed_trial_is_not_marked_good_and_does_not_block_shutdown() {
+    unconfirmed_trial_waits_for_a_heartbeat(
+        br#"{"command_id":null,"bundle":null,"version":"2026.10.21-a1b2c3d","target_slot":"B","phase":"rebooting","error":null}"#,
+    )
+    .await;
+}
+
+/// The same trial when the previous agent recorded the reboot as failed (systemctl died with the service it stopped):
+/// slot B and its version are running, so it is a trial too, stored as a pending one before the heartbeat.
+#[tokio::test]
+async fn a_trial_recorded_as_a_failed_reboot_is_a_trial_all_the_same() {
+    unconfirmed_trial_waits_for_a_heartbeat(
+        br#"{"command_id":null,"bundle":null,"version":"2026.10.21-a1b2c3d","target_slot":"B","phase":"failed","error":"reboot failed: systemctl reboot failed (signal: 15 (SIGTERM))"}"#,
+    )
+    .await;
+}
+
+async fn unconfirmed_trial_waits_for_a_heartbeat(pending_json: &[u8]) {
     let brain = MockServer::start().await;
     let violations: Violations = Arc::default();
     let heartbeat_log = violations.clone();
@@ -523,11 +540,7 @@ async fn an_unconfirmed_trial_is_not_marked_good_and_does_not_block_shutdown() {
     fs::write(data_dir.join("config/state.json"), br#"{"paused":true,"audio_enabled":false}"#).unwrap();
     // What an install leaves behind just before the trial reboot (the shape migrate-to-ab.sh also writes).
     fs::create_dir_all(data_dir.join("ota")).unwrap();
-    fs::write(
-        data_dir.join("ota/pending.json"),
-        br#"{"command_id":null,"bundle":null,"version":"2026.10.21-a1b2c3d","target_slot":"B","phase":"rebooting","error":null}"#,
-    )
-    .unwrap();
+    fs::write(data_dir.join("ota/pending.json"), pending_json).unwrap();
     let config = Config {
         wifi: None,
         brain: BrainConfig { url: brain.uri(), pair_token: None, ca_fingerprint: None },

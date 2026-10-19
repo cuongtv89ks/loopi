@@ -24,7 +24,9 @@ pub struct OtaTimings {
     pub retry_first: Duration,
     pub retry_max: Duration,
     pub attempts: u32,
-    /// How long to let the brain hear "rebooting" before the device goes quiet.
+    /// How long to let the brain hear "rebooting" before the device goes quiet, and, after a failed reboot call, how
+    /// long to wait for the agent's own shutdown (systemd stops the service as the reboot starts) before reporting
+    /// the failure.
     pub reboot_report_wait: Duration,
 }
 
@@ -49,6 +51,8 @@ pub struct OtaDeps {
     /// clears it when idle again. Without it a second update would wait unread in the channel behind the first.
     pub busy: Arc<AtomicBool>,
     pub booted: Slot,
+    /// The OS version this system runs (/etc/loopi-release); `None` when unknown.
+    pub version: Option<String>,
     pub timings: OtaTimings,
 }
 
@@ -163,7 +167,7 @@ async fn on_boot(deps: &mut OtaDeps, shutdown: &mut watch::Receiver<bool>) {
         let _ = deps.store.remove();
         None
     });
-    match reconcile(pending, deps.booted) {
+    match reconcile(pending, deps.booted, deps.version.as_deref()) {
         BootAction::Idle => {}
         BootAction::Deliver(pending) => {
             let state = pending.outcome().expect("Deliver carries a final phase");
@@ -371,6 +375,7 @@ mod tests {
                 delivered: self.delivered.subscribe(),
                 busy: self.busy.clone(),
                 booted,
+                version: Some("v".into()),
                 timings: OtaTimings { retry_first: Duration::from_millis(1), retry_max: Duration::from_millis(2),
                                       attempts: 3, reboot_report_wait: Duration::from_millis(20) },
             }
@@ -501,6 +506,27 @@ mod tests {
         // systemd's SIGTERM reaches the agent just after systemctl died, not before.
         rig.until(|r| *r.rebooter.calls.lock().unwrap() == 1).await;
         rig.shutdown.send_replace(true);
+        task.await.unwrap();
+        assert_eq!(rig.store().load().unwrap().unwrap().phase, Phase::Rebooting);
+        assert_eq!(rig.ota().unwrap().state, OtaState::Rebooting);
+    }
+
+    #[tokio::test]
+    async fn a_reboot_that_fails_with_the_shutdown_already_flipped_is_not_a_failure() {
+        // systemd's SIGTERM can reach the agent before systemctl's death is seen by the blocking call's caller.
+        struct StoppingRebooter(watch::Sender<bool>);
+        impl Rebooter for StoppingRebooter {
+            fn reboot_into_trial(&self) -> Result<(), String> {
+                self.0.send_replace(true);
+                Err("systemctl reboot failed (signal: 15 (SIGTERM))".into())
+            }
+        }
+        let rig = Rig::new();
+        let mut deps = rig.deps(Slot::A);
+        deps.rebooter = Arc::new(StoppingRebooter(rig.shutdown.clone()));
+        let (tx, rx) = mpsc::channel(4);
+        let task = tokio::spawn(run_ota(deps, rx, rig.shutdown.subscribe()));
+        tx.send(request(&good_sha())).await.unwrap();
         task.await.unwrap();
         assert_eq!(rig.store().load().unwrap().unwrap().phase, Phase::Rebooting);
         assert_eq!(rig.ota().unwrap().state, OtaState::Rebooting);
@@ -638,6 +664,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_failed_record_for_a_booted_slot_that_runs_another_version_is_delivered_not_confirmed() {
+        for running in [Some("2026.10.14-0000000".to_string()), None] {
+            let rig = Rig::new();
+            rig.store().save(&Pending { command_id: Some("X".into()), bundle: Some(BUNDLE.into()), version: "v".into(),
+                                        target_slot: Slot::B, phase: Phase::Failed,
+                                        error: Some("install failed: refused".into()) }).unwrap();
+            let mut deps = rig.deps(Slot::B);
+            deps.version = running;
+            let (_tx, rx) = mpsc::channel(4);
+            let _task = tokio::spawn(run_ota(deps, rx, rig.shutdown.subscribe()));
+            rig.until(|r| r.ota().is_some_and(|o| o.state == OtaState::Failed)).await;
+            assert_eq!(rig.ota().unwrap().error.as_deref(), Some("install failed: refused"));
+            rig.heartbeat();
+            rig.heartbeat();
+            rig.until(|r| r.ota().is_none()).await;
+            assert!(rig.rauc.calls.lock().unwrap().is_empty(), "delivering an outcome confirms nothing");
+            assert_eq!(rig.store().load().unwrap(), None);
+        }
+    }
+
+    #[tokio::test]
     async fn a_failed_record_for_the_running_slot_is_stored_as_a_pending_trial_before_the_heartbeat() {
         let rig = Rig::new();
         rig.store().save(&Pending { command_id: Some("X".into()), bundle: Some(BUNDLE.into()), version: "v".into(),
@@ -649,7 +696,7 @@ mod tests {
         assert_eq!((stored.phase, stored.error.as_deref()), (Phase::Rebooting, None));
         assert!(rig.rauc.calls.lock().unwrap().is_empty(), "no heartbeat yet, so nothing confirmed");
         // The guard rolls the trial back before it was confirmed: the next boot, on the other slot, reports that.
-        assert!(matches!(reconcile(Some(stored), Slot::A), BootAction::RolledBack(_)));
+        assert!(matches!(reconcile(Some(stored), Slot::A, Some("v")), BootAction::RolledBack(_)));
     }
 
     #[tokio::test]

@@ -64,17 +64,19 @@ pub enum BootAction {
     Deliver(Pending),
 }
 
-/// A `Failed` record for the slot that is running now is a trial to confirm like a `Rebooting` one (its error, which
-/// no longer holds, is dropped): running the slot the update installed means the reboot happened, and that slot is
-/// only bootable through tryboot.txt, which exists only after a successful install. This also carries a device whose
-/// previous agent recorded such a reboot as failed (systemctl dies with the service it stops).
-pub fn reconcile(pending: Option<Pending>, booted: Slot) -> BootAction {
+/// A `Failed` record is a trial to confirm, like a `Rebooting` one (its error, which no longer holds, is dropped), when
+/// the slot it targets is booted and the running version is the one it installed (`running` = `pending.version`): that
+/// system is only bootable through tryboot.txt, which exists only after a successful install, so the reboot happened.
+/// This also carries a device whose previous agent recorded such a reboot as failed (systemctl dies with the service it
+/// stops). On the slot's own version alone the record could be a later update refused while the fallback slot ran, so a
+/// different or unknown `running` version is delivered like any other final phase.
+pub fn reconcile(pending: Option<Pending>, booted: Slot, running: Option<&str>) -> BootAction {
     let Some(mut pending) = pending else { return BootAction::Idle };
     match pending.phase {
         Phase::Downloading | Phase::Installing => BootAction::Interrupted(pending),
         Phase::Rebooting if pending.target_slot == booted => BootAction::Confirm(pending),
         Phase::Rebooting => BootAction::RolledBack(pending),
-        Phase::Failed if pending.target_slot == booted => {
+        Phase::Failed if pending.target_slot == booted && running == Some(pending.version.as_str()) => {
             pending.error = None;
             BootAction::Confirm(pending)
         }
@@ -150,29 +152,53 @@ mod tests {
         Pending { command_id: Some("C".into()), bundle: Some("b.raucb".into()), version: "v".into(), target_slot: target, phase, error: None }
     }
 
+    const RUNNING: Option<&str> = Some("v");
+
     #[test]
     fn reconcile_decides_from_the_phase_and_the_booted_slot() {
-        assert_eq!(reconcile(None, Slot::A), BootAction::Idle);
+        assert_eq!(reconcile(None, Slot::A, RUNNING), BootAction::Idle);
         for phase in [Phase::Downloading, Phase::Installing] {
-            assert!(matches!(reconcile(Some(pending(phase, Slot::B)), Slot::A), BootAction::Interrupted(_)));
+            assert!(matches!(reconcile(Some(pending(phase, Slot::B)), Slot::A, RUNNING), BootAction::Interrupted(_)));
         }
-        assert!(matches!(reconcile(Some(pending(Phase::Rebooting, Slot::B)), Slot::B), BootAction::Confirm(_)));
-        assert!(matches!(reconcile(Some(pending(Phase::Rebooting, Slot::B)), Slot::A), BootAction::RolledBack(_)));
+        assert!(matches!(reconcile(Some(pending(Phase::Rebooting, Slot::B)), Slot::B, RUNNING), BootAction::Confirm(_)));
+        assert!(matches!(reconcile(Some(pending(Phase::Rebooting, Slot::B)), Slot::A, RUNNING), BootAction::RolledBack(_)));
         for phase in [Phase::Succeeded, Phase::RolledBack, Phase::Failed] {
-            assert!(matches!(reconcile(Some(pending(phase, Slot::B)), Slot::A), BootAction::Deliver(_)));
+            assert!(matches!(reconcile(Some(pending(phase, Slot::B)), Slot::A, RUNNING), BootAction::Deliver(_)));
         }
         for phase in [Phase::Succeeded, Phase::RolledBack] {
-            assert!(matches!(reconcile(Some(pending(phase, Slot::B)), Slot::B), BootAction::Deliver(_)));
+            assert!(matches!(reconcile(Some(pending(phase, Slot::B)), Slot::B, RUNNING), BootAction::Deliver(_)));
         }
     }
 
     #[test]
-    fn a_failed_record_for_the_slot_now_running_is_a_trial_to_confirm_without_its_error() {
-        let mut failed = pending(Phase::Failed, Slot::B);
-        failed.error = Some("reboot failed: systemctl reboot failed (signal: 15 (SIGTERM))".into());
-        let BootAction::Confirm(confirm) = reconcile(Some(failed.clone()), Slot::B) else { panic!("expected Confirm") };
+    fn the_trial_boot_does_not_depend_on_the_running_version() {
+        for running in [RUNNING, Some("other"), None] {
+            assert!(matches!(reconcile(Some(pending(Phase::Rebooting, Slot::B)), Slot::B, running), BootAction::Confirm(_)));
+        }
+    }
+
+    fn failed(error: &str) -> Pending {
+        Pending { error: Some(error.into()), ..pending(Phase::Failed, Slot::B) }
+    }
+
+    #[test]
+    fn a_failed_record_for_the_slot_and_version_now_running_is_a_trial_to_confirm_without_its_error() {
+        let failed = failed("reboot failed: systemctl reboot failed (signal: 15 (SIGTERM))");
+        let BootAction::Confirm(confirm) = reconcile(Some(failed.clone()), Slot::B, RUNNING) else { panic!("expected Confirm") };
         assert_eq!((confirm.error, confirm.target_slot, confirm.version), (None, Slot::B, "v".to_string()));
-        assert!(matches!(reconcile(Some(failed), Slot::A), BootAction::Deliver(p) if p.error.is_some()));
+        assert!(matches!(reconcile(Some(failed), Slot::A, RUNNING), BootAction::Deliver(p) if p.error.is_some()));
+    }
+
+    #[test]
+    fn a_failed_record_is_only_a_trial_when_the_running_system_is_the_one_it_installed() {
+        // The slot is booted but runs another version (an update refused while the fallback slot was running) or an
+        // unknown one: the failure is an outcome to deliver, with its error.
+        for running in [Some("2026.10.14-0000000"), None] {
+            let BootAction::Deliver(p) = reconcile(Some(failed("install failed: refused")), Slot::B, running) else {
+                panic!("expected Deliver for {running:?}")
+            };
+            assert_eq!(p.error.as_deref(), Some("install failed: refused"));
+        }
     }
 
     #[test]

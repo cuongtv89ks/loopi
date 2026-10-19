@@ -327,6 +327,7 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
                 delivered: delivered.subscribe(),
                 busy: ota_busy.clone(),
                 booted,
+                version: os.version.clone(),
                 timings: system.timings,
             };
             tasks.spawn(run_ota(deps, rx, shutdown.clone()));
