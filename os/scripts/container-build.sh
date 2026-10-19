@@ -56,6 +56,13 @@ case "$TARGET" in
     if ls -d "$OUT"/build/linux-* >/dev/null 2>&1 && [ "$(cat "$LINUX_STAMP" 2>/dev/null)" != "$(linux_fragment_sha)" ]; then
       make -C "$BR" O="$OUT" linux-reconfigure
     fi
+    # loopi-agent is a local-site package (LOOPI_AGENT_SITE_METHOD = local): Buildroot rsyncs its source once
+    # (.stamp_rsynced), so an output directory that built it before keeps shipping that old agent whatever agent/ holds
+    # now (a dev image once shipped the P1 agent, without OTA, for days). Re-sync and rebuild it on every image build; on
+    # a fresh output directory (no build dir yet) the main make below builds it from the current source anyway.
+    if ls -d "$OUT"/build/loopi-agent-* >/dev/null 2>&1; then
+      make -C "$BR" O="$OUT" loopi-agent-rebuild
+    fi
     make -C "$BR" O="$OUT"
     linux_fragment_sha > "$LINUX_STAMP"
     NAME="loopi-$VARIANT-$LOOPI_OS_VERSION"

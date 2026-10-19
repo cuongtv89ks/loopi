@@ -3,7 +3,8 @@
 ## Build
 `VARIANT=dev|prod os/build.sh image` (default `dev`) → `os/out/loopi-<variant>-<version>.img`,
 `os/out/loopi-<variant>-<version>.squashfs` and the signed update bundle `os/out/loopi-<variant>-<version>.raucb` with its
-description `.json` (see "OTA" below; needs Docker; first build 1–3 h, later builds minutes).
+description `.json` (see "OTA" below; needs Docker; first build 1–3 h, later builds minutes). Every image build
+rebuilds the agent from the current `agent/` source, because Buildroot alone would keep shipping the one it built first.
 
 - **Two variants** (spec §6.5). `dev` keeps SSH (key-only), the USB gadget console, `loopi-usbmode`, rsync, strace,
   the ALSA tools and the `/data/dev/loopi-agent` override; its extra files live in

@@ -524,6 +524,15 @@ example_sets_the_microphone_gain() { boot_cat loopi.toml.example | grep -E '^aud
 check "the shipped agent amplifies the microphone before encoding (capture.audio_gain_db, spec D19)" agent_binary_amplifies_the_microphone
 check "loopi.toml.example shows the microphone gain (audio_gain_db = 20.0)" example_sets_the_microphone_gain
 
+# --- P4a: the agent carries the OTA client. The same stale-source trap as above (a local package is rsynced once) shipped a
+# P1 agent in a P4a image; its trial boot was never confirmed and the device rolled back. This string is the log line of
+# agent/src/ota/task.rs that a freshly booted slot writes before it confirms itself (keep the two in step).
+agent_binary_supports_ota() {
+  local text; text="$(rootfs_cat usr/bin/loopi-agent | strings -a)" || return 1
+  grep -F 'trial boot: confirming after the first heartbeat' <<<"$text"
+}
+check "the shipped agent supports OTA updates (P4a: trial-boot confirmation)" agent_binary_supports_ota
+
 # --- P4a: version stamp and the prod variant (spec §6.5)
 # run-agent starts /data/dev/loopi-agent only behind this guard. /data is shared by both variants (a device can go dev -> prod
 # over OTA with a deployed /data/dev/loopi-agent left behind), so on prod, which has no /etc/loopi-dev, the guard is the
