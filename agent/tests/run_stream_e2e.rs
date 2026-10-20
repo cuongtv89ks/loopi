@@ -241,13 +241,14 @@ fn children_of_this_process() -> Vec<String> {
 struct StreamAgent {
     stop: watch::Sender<bool>,
     task: JoinHandle<anyhow::Result<()>>,
-    _presses: mpsc::Sender<loopi_agent::button::Press>,
 }
 
 impl StreamAgent {
+    /// A shutdown that hangs fails the test instead of hanging it.
     async fn stop(self) {
         self.stop.send(true).unwrap();
-        self.task.await.unwrap().unwrap();
+        let joined = tokio::time::timeout(Duration::from_secs(20), self.task).await;
+        joined.expect("the agent did not shut down within 20 s").unwrap().unwrap();
     }
 }
 
@@ -272,7 +273,6 @@ fn stream_config(brain: &MockServer, tmp: &Path, camera: &str, audio_enabled: bo
 }
 
 fn start_agent(brain: &MockServer, config: Config, audio_factory: AudioSourceFactory, audio_retry: Duration) -> StreamAgent {
-    let (press_tx, presses) = mpsc::channel(1);
     let deps = Deps {
         config,
         clock: Arc::new(SyncedClock),
@@ -280,7 +280,8 @@ fn start_agent(brain: &MockServer, config: Config, audio_factory: AudioSourceFac
         transport: Arc::new(HttpTransport::new(reqwest::Client::new(), &brain.uri())),
         audio_factory,
         led: Some(Box::new(NullLed)),
-        presses,
+        // As main.rs does for a network camera: no button, the sender is already gone.
+        presses: mpsc::channel(1).1,
         probe: Arc::new(NoProbe),
         timings: Timings {
             heartbeat: Duration::from_millis(100),
@@ -297,7 +298,7 @@ fn start_agent(brain: &MockServer, config: Config, audio_factory: AudioSourceFac
         ota: None,
     };
     let (stop, stop_rx) = watch::channel(false);
-    StreamAgent { stop, task: tokio::spawn(run(deps, stop_rx)), _presses: press_tx }
+    StreamAgent { stop, task: tokio::spawn(run(deps, stop_rx)) }
 }
 
 fn sound_factory(config: &Config, ffmpeg: &str) -> AudioSourceFactory {
@@ -368,20 +369,22 @@ async fn the_password_never_reaches_the_log_or_the_heartbeat() {
     let ffmpeg = failing_ffmpeg(tmp.path(), &fake);
     let config = stream_config(&brain, tmp.path(), &ffmpeg, true);
     let factory = sound_factory(&config, &ffmpeg);
-    // The sound's retry is slow on purpose: its "microphone: ..." message shares `last_error` with the camera's, and
-    // retrying every 100 ms would keep overwriting the camera's before a heartbeat could carry it.
-    let agent = start_agent(&brain, config, factory, Duration::from_secs(10));
+    // The sound retries every 100 ms: its generic "microphone: ... ended" must not bury the camera's reason in
+    // `last_error` (a network camera keeps the camera's error while the camera is failing).
+    let agent = start_agent(&brain, config, factory, Duration::from_millis(100));
 
     let phrase = "refused the user name or password";
-    let seen = wait_for(&brain, Duration::from_secs(10), |requests| {
+    wait_for(&brain, Duration::from_secs(10), |requests| {
         let beats = heartbeats(requests);
         beats.iter().any(|hb| hb["camera_failures"].as_u64().is_some_and(|n| n >= 1))
             && beats.iter().any(|hb| hb["last_error"].as_str().is_some_and(|e| e.contains(phrase)))
     })
     .await;
+    // Many more sound retries (about fifteen) on top of the one that came with the first failure.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     agent.stop().await;
 
-    let seen = if heartbeats(&seen).is_empty() { brain.received_requests().await.unwrap() } else { seen };
+    let seen = brain.received_requests().await.unwrap();
     let beats = heartbeats(&seen);
     assert!(beats.iter().any(|hb| hb["camera_failures"].as_u64().is_some_and(|n| n >= 1)), "a heartbeat counts the failure");
     assert!(
@@ -389,6 +392,15 @@ async fn the_password_never_reaches_the_log_or_the_heartbeat() {
         "last_error says why in words: {:?}",
         beats.iter().filter_map(|hb| hb["last_error"].as_str()).collect::<Vec<_>>()
     );
+    assert!(beats.len() >= 10, "heartbeats kept coming: {}", beats.len());
+    let last: Vec<&Value> = beats.iter().rev().take(5).collect();
+    assert!(
+        last.iter().all(|hb| hb["last_error"].as_str().is_some_and(|e| e.contains(phrase))),
+        "the last heartbeats still say why the camera fails, not only that the sound ended: {:?}",
+        last.iter().map(|hb| hb["last_error"].clone()).collect::<Vec<_>>()
+    );
+    // The sound's flag flickers off for the few milliseconds each reopened ffmpeg lives, so one heartbeat is enough.
+    assert!(last.iter().any(|hb| hb["mic_missing"] == json!(true)), "the sound is still reported missing");
     for request in seen.iter().filter(|r| r.url.path() == "/v1/heartbeat") {
         assert_no_secret(&String::from_utf8_lossy(&request.body), "a heartbeat body");
     }

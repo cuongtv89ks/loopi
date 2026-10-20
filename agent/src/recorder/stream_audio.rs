@@ -124,6 +124,16 @@ mod tests {
         assert!(frame.iter().all(|s| *s == 0));
     }
 
+    /// ffmpeg quotes the address, with the password, in its errors: its stderr must be /dev/null, not the journal.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_sound_ffmpegs_error_output_is_discarded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cmd = script(tmp.path(), "#!/bin/sh\n[ \"$(readlink /proc/$$/fd/2)\" = /dev/null ] || exit 1\nexec cat /dev/zero\n");
+        let mut source = StreamAudioSource::open(&cmd, &input(), Duration::from_secs(2)).unwrap();
+        source.read_frame(&mut [1i16; FRAME_SAMPLES]).expect("the fake exits when its stderr is not /dev/null");
+    }
+
     #[test]
     fn a_sound_stream_that_ends_is_an_error() {
         let tmp = tempfile::tempdir().unwrap();

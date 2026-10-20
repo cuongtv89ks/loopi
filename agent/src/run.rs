@@ -11,7 +11,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::button::Press;
 use crate::clock::Clock;
-use crate::config::Config;
+use crate::config::{CaptureSource, Config};
 use crate::control::{self, recording_gates, Command, ControlState};
 use crate::disk::{self, DiskUsage};
 use crate::heartbeat::{run_heartbeat, HeartbeatDeps, HEARTBEAT_INTERVAL};
@@ -352,6 +352,7 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
         segment: timings.audio_segment.unwrap_or(segment),
         incoming_dir: paths.audio_incoming.clone(),
         retry: timings.audio_retry,
+        keep_camera_error: config.capture.source == CaptureSource::Stream,
     };
     // Every frame is amplified before encoding (spec D19); the raw ALSA level is far too quiet.
     let audio_factory = gain::with_gain(audio_factory, config.capture.audio_gain_db);

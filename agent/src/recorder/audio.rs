@@ -31,6 +31,9 @@ pub struct AudioOptions {
     pub segment: Duration,
     pub incoming_dir: PathBuf,
     pub retry: Duration,
+    /// A network camera: while the camera itself is failing (`camera_failures > 0`) the video recorder's reason is
+    /// the one worth showing, so a sound error leaves `last_error` alone (it still sets `mic_missing` and logs).
+    pub keep_camera_error: bool,
 }
 
 /// First USB audio card in `/proc/asound/cards` (" 1 [Device ]: USB-Audio - ...").
@@ -235,11 +238,15 @@ fn shutdown_requested(shutdown: &watch::Receiver<bool>) -> bool {
     shutdown.has_changed().is_err() || *shutdown.borrow()
 }
 
-fn report_mic_error(status: &StatusTx, error: &io::Error) {
+/// `keep_camera_error`: while a network camera is failing, `last_error` already holds the video recorder's reason
+/// (wrong password, wrong address, ...); the sound's generic "stream ended" would bury it every retry.
+fn report_mic_error(status: &StatusTx, error: &io::Error, keep_camera_error: bool) {
     tracing::warn!(%error, "microphone unavailable");
     status.send_modify(|s| {
         s.mic_missing = true;
-        s.last_error = Some(format!("microphone: {error}"));
+        if !keep_camera_error || s.camera_failures == 0 {
+            s.last_error = Some(format!("microphone: {error}"));
+        }
     });
 }
 
@@ -280,7 +287,7 @@ pub fn run_audio_blocking(
         };
         status.send_modify(|s| s.recording_audio = false);
         if let Err(e) = result {
-            report_mic_error(&status, &e);
+            report_mic_error(&status, &e, opts.keep_camera_error);
             sleep_unless_shutdown(opts.retry, &shutdown);
         }
     }
@@ -391,7 +398,7 @@ mod tests {
         let t0 = Utc.with_ymd_and_hms(2026, 10, 14, 1, 0, 0).unwrap();
         let clock = Arc::new(ManualClock::new(t0));
         let mut source = ToneSource::stepping(clock.clone(), 120);
-        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10) };
+        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10), keep_camera_error: false };
         let (_gate_tx, gate) = watch::channel(true);
         let (_stop_tx, stop) = watch::channel(false);
 
@@ -440,7 +447,7 @@ mod tests {
                 Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>)
             }
         });
-        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(50) };
+        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(50), keep_camera_error: false };
         let (q, s) = (queue.clone(), status.clone());
         let worker = std::thread::spawn(move || run_audio_blocking(factory, opts, q, Arc::new(SyncedClock), gate, s, stop));
 
@@ -512,7 +519,7 @@ mod tests {
         let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
         let clock = Arc::new(ManualClock::new(Utc.with_ymd_and_hms(2026, 10, 14, 1, 0, 0).unwrap()));
         let mut source = JumpSource { clock: clock.clone(), jump, done: false };
-        let opts = AudioOptions { segment: Duration::from_secs(60), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10) };
+        let opts = AudioOptions { segment: Duration::from_secs(60), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10), keep_camera_error: false };
         let (_g, gate) = watch::channel(true);
         let (_s, stop) = watch::channel(false);
         assert!(record_segments(&mut source, &opts, &queue, clock.as_ref(), &gate, &stop).is_err());
@@ -583,7 +590,7 @@ mod tests {
             seen.lock().unwrap().push(st.borrow().recording_audio);
             Err(io::Error::new(io::ErrorKind::NotFound, "no USB microphone found"))
         });
-        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(20) };
+        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(20), keep_camera_error: false };
         let (q, s) = (Arc::new(queue), status.clone());
         let worker = std::thread::spawn(move || run_audio_blocking(factory, opts, q, Arc::new(SyncedClock), gate, s, stop));
         std::thread::sleep(Duration::from_millis(150));
@@ -596,6 +603,50 @@ mod tests {
     }
 
     #[test]
+    fn a_sound_error_leaves_a_failing_cameras_error_alone_only_when_asked_to() {
+        let error = io::Error::other("the camera's sound stream ended");
+        let cases = [
+            // (keep_camera_error, camera_failures, last_error afterwards)
+            (false, 3, "microphone: the camera's sound stream ended"), // the Pi: always the microphone's error
+            (false, 0, "microphone: the camera's sound stream ended"),
+            (true, 3, "camera says why"),                              // a failing network camera keeps its reason
+            (true, 0, "microphone: the camera's sound stream ended"),  // a working one reports the sound
+        ];
+        for (keep, failures, expected) in cases {
+            let status =
+                status_channel(AgentStatus { camera_failures: failures, last_error: Some("camera says why".into()), ..AgentStatus::default() });
+            report_mic_error(&status, &error, keep);
+            let seen = status.borrow().clone();
+            assert!(seen.mic_missing, "the sound is reported missing either way (keep={keep}, failures={failures})");
+            assert_eq!(seen.last_error.as_deref(), Some(expected), "keep={keep}, failures={failures}");
+        }
+    }
+
+    #[test]
+    fn the_audio_loop_passes_keep_camera_error_on() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let status =
+            status_channel(AgentStatus { camera_failures: 2, last_error: Some("camera says why".into()), ..AgentStatus::default() });
+        let (_gate_tx, gate) = watch::channel(true);
+        let (stop_tx, stop) = watch::channel(false);
+        let factory: AudioSourceFactory = Box::new(|| Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the camera's sound stream ended")));
+        let opts = AudioOptions {
+            segment: Duration::from_secs(1),
+            incoming_dir: tmp.path().join("in"),
+            retry: Duration::from_millis(20),
+            keep_camera_error: true,
+        };
+        let (q, s) = (Arc::new(queue), status.clone());
+        let worker = std::thread::spawn(move || run_audio_blocking(factory, opts, q, Arc::new(SyncedClock), gate, s, stop));
+        std::thread::sleep(Duration::from_millis(150));
+        stop_tx.send(true).unwrap();
+        worker.join().unwrap();
+        assert!(status.borrow().mic_missing);
+        assert_eq!(status.borrow().last_error.as_deref(), Some("camera says why"));
+    }
+
+    #[test]
     fn dropped_senders_stop_the_worker_instead_of_spinning() {
         for drop_gate in [true, false] {
             let tmp = tempfile::tempdir().unwrap();
@@ -604,7 +655,7 @@ mod tests {
             let (gate_tx, gate) = watch::channel(true);
             let (stop_tx, stop) = watch::channel(false);
             let factory: AudioSourceFactory = Box::new(|| Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>));
-            let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(20) };
+            let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(20), keep_camera_error: false };
             let (q, s) = (Arc::new(queue), status.clone());
             let worker = std::thread::spawn(move || run_audio_blocking(factory, opts, q, Arc::new(SyncedClock), gate, s, stop));
             std::thread::sleep(Duration::from_millis(100));
@@ -628,7 +679,7 @@ mod tests {
         let t0 = Utc.with_ymd_and_hms(2026, 10, 14, 1, 0, 0).unwrap();
         let clock = Arc::new(ManualClock::new(t0));
         let mut source = ToneSource::stepping(clock.clone(), 120);
-        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10) };
+        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10), keep_camera_error: false };
         let (_g, gate) = watch::channel(true);
         let (_s, stop) = watch::channel(false);
         let finished = AtomicU64::new(0);
