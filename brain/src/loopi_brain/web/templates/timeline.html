@@ -1,11 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
+{% set dq = ("&device=" ~ device) if device else "" %}
 <nav class="days">
-  <a href="/hours?day={{ prev_day }}">← {{ prev_day }}</a>
+  <a href="/hours?day={{ prev_day }}{{ dq }}">← {{ prev_day }}</a>
   <strong>{{ day }}</strong>
-  <a href="/hours?day={{ next_day }}">{{ next_day }} →</a>
-  <a href="/?day={{ day }}">Theo chương</a>
+  <a href="/hours?day={{ next_day }}{{ dq }}">{{ next_day }} →</a>
+  <a href="/?day={{ day }}{{ dq }}">Theo chương</a>
 </nav>
+{% include "_places.html" %}
 {% if not hours %}<p>Không có dữ liệu cho ngày này.</p>{% endif %}
 {% for hour, h in hours.items() %}
 <section class="hour">
@@ -16,7 +18,7 @@
     <figure id="kf-{{ kf.id }}">
       <a href="/media/{{ kf.path }}"><img src="/thumb/{{ kf.id }}.jpg" loading="lazy" alt="{{ kf.caption.scene if kf.caption else 'Khung hình' }}"></a>
       <figcaption><time>{{ kf.local_ts.strftime("%H:%M:%S") }}</time>
-        {% if kf.caption %}{{ kf.caption.scene }} — {{ kf.caption.activity }}
+        {% if kf.place %}<span class="place">{{ kf.place }}</span> {% endif %}{% if kf.caption %}{{ kf.caption.scene }} — {{ kf.caption.activity }}
         {% elif kf.caption_failed %}<span class="err">Lỗi mô tả</span>
         {% else %}Đang chờ mô tả…{% endif %}</figcaption>
     </figure>
@@ -24,10 +26,10 @@
   </div>
   {% endif %}
   {% for m in h.speech %}
-  <p class="speech"><time>{{ m.local_ts.strftime("%H:%M:%S") }}</time> <span class="lang">{{ m.lang|upper }}</span> {{ m.text }}</p>
+  <p class="speech"><time>{{ m.local_ts.strftime("%H:%M:%S") }}</time> {% if m.place %}<span class="place">{{ m.place }}</span> {% endif %}<span class="lang">{{ m.lang|upper }}</span> {{ m.text }}</p>
   {% endfor %}
   {% for m in h.markers %}
-  <p class="marker"><time>{{ m.local_ts.strftime("%H:%M:%S") }}</time> ★ {{ m.label }}</p>
+  <p class="marker"><time>{{ m.local_ts.strftime("%H:%M:%S") }}</time> {% if m.place %}<span class="place">{{ m.place }}</span> {% endif %}★ {{ m.label }}</p>
   {% endfor %}
   <details>
     <summary>{{ h.segments|length }} đoạn ghi</summary>
@@ -35,7 +37,7 @@
     {% for it in h.segments %}
       <li class="item {{ it.kind }}" id="item-{{ it.id }}">
         <time>{{ it.local_start.strftime("%H:%M:%S") }}–{{ it.local_end.strftime("%H:%M:%S") }}</time>
-        {% if it.raw_deleted_at %}<span class="muted">Đã hết hạn</span>
+        {% if it.place %}<span class="place">{{ it.place }}</span> {% endif %}{% if it.raw_deleted_at %}<span class="muted">Đã hết hạn</span>
         {% elif it.kind == "video" %}
           {% if it.status == "ready" %}<video controls preload="none" src="/media/{{ it.view_path }}"></video>
           {% elif it.status == "error" %}<span class="err">Không chuyển được video</span>

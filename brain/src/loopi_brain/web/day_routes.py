@@ -7,7 +7,7 @@ import datetime as dt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
-from .. import thumbs
+from .. import places, thumbs
 from ..days import day_bounds_utc, local_now
 from ..pipeline import moments as moment_rules
 from ..pipeline import recap as recap_rules
@@ -28,8 +28,9 @@ def day_title(day: dt.date) -> str:
     return f"{WEEKDAYS[day.weekday()]}, {day:%d/%m/%Y}"
 
 
-def _moment_view(row: dict, zone) -> dict:
-    view = {**row, "time": row["ts_start"].astimezone(zone).strftime("%H:%M:%S")}
+def _moment_view(row: dict, zone, named: bool = False) -> dict:
+    view = {**row, "time": row["ts_start"].astimezone(zone).strftime("%H:%M:%S"),
+            "place": row["location"] if named else None}
     if row["kind"] == "marker":
         view["label"] = moment_rules.marker_note(row["item_meta"] or {}) or MARKER_LABEL
     if row["kind"] == "speech" and row["item_id"] and row["item_kind"] == "audio":
@@ -55,21 +56,27 @@ _COMMITMENTS = (
 )
 
 
-async def day_view(pool, day: dt.date, zone, today: dt.date | None = None) -> dict:
+async def day_view(pool, day: dt.date, zone, today: dt.date | None = None, device: str | None = None) -> dict:
     """Everything the Day page shows for local ``day`` (on ``today``'s page: also the commitments still open
-    from the previous 7 days)."""
+    from the previous 7 days). With ``device``, only that camera's moments; with several cameras and no filter,
+    each moment carries its place."""
     start, end = day_bounds_utc(day, zone)
+    day_cams = await places.day_places(pool, start, end)
+    named = device is None and len(day_cams) >= 2
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT * FROM chapter WHERE day = %s ORDER BY ts_start", (day,))
         chapter_rows = await cur.fetchall()
         cur = await conn.execute(
-            "SELECT m.id, m.kind, m.ts_start, m.text, m.lang, m.keyframe_id, m.item_id, k.path AS keyframe_path,"
-            " i.kind AS item_kind, i.meta AS item_meta, i.started_at AS item_start, i.raw_deleted_at"
+            "SELECT m.id, m.kind, m.ts_start, m.text, m.lang, m.keyframe_id, m.item_id, m.device_id,"
+            " k.path AS keyframe_path, d.location, i.kind AS item_kind, i.meta AS item_meta,"
+            " i.started_at AS item_start, i.raw_deleted_at"
             " FROM moment m LEFT JOIN item i ON i.id = m.item_id LEFT JOIN keyframe k ON k.id = m.keyframe_id"
-            " WHERE m.ts_start >= %s AND m.ts_start < %s ORDER BY m.ts_start, m.id",
-            (start, end),
+            " LEFT JOIN device d ON d.id = m.device_id"
+            " WHERE m.ts_start >= %s AND m.ts_start < %s AND (%s::text IS NULL OR m.device_id = %s)"
+            " ORDER BY m.ts_start, m.id",
+            (start, end, device, device),
         )
-        moment_rows = [_moment_view(r, zone) for r in await cur.fetchall()]
+        moment_rows = [_moment_view(r, zone, named) for r in await cur.fetchall()]
         cur = await conn.execute("SELECT * FROM day_recap WHERE day = %s", (day,))
         recap = await cur.fetchone()
         cur = await conn.execute(f"{_COMMITMENTS} WHERE c.day = %s ORDER BY c.created_at, c.id", (day,))
@@ -108,6 +115,8 @@ async def day_view(pool, day: dt.date, zone, today: dt.date | None = None) -> di
                 loose.append(moment_rows[k])
             k += 1
         flush_loose()
+        if device and not members:  # a camera filter leaves out the chapters with none of that camera's moments
+            continue
         sections.append({
             **_group(row["title"], members),
             "kind": "chapter",
@@ -128,6 +137,8 @@ async def day_view(pool, day: dt.date, zone, today: dt.date | None = None) -> di
         "recap_at": recap["generated_at"].astimezone(zone).strftime("%d/%m %H:%M") if recap else None,
         "commitments": commitments,
         "has_data": bool(moment_rows),
+        "places": day_cams,
+        "device": device,
     }
 
 
@@ -136,7 +147,11 @@ def _commitment_view(row: dict, zone) -> dict:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def day_page(request: Request, day: dt.date | None = Query(default=None)):
+async def day_page(
+    request: Request,
+    day: dt.date | None = Query(default=None),
+    device: str | None = Query(default=None, max_length=64),
+):
     zone = request.app.state.settings.zone
     today = local_now(zone).date()
     day = day or today
@@ -145,17 +160,22 @@ async def day_page(request: Request, day: dt.date | None = Query(default=None)):
         prev_day, next_day = day - dt.timedelta(days=1), day + dt.timedelta(days=1)
     except OverflowError as exc:  # the first and last days of the calendar have no UTC bounds or no neighbour
         raise HTTPException(status_code=422, detail=f"day {day} is out of range") from exc
+    pool = request.app.state.pool
+    device = device or None  # a blank filter is no filter
+    if device and not await places.known_device(pool, device):
+        raise HTTPException(status_code=422, detail="unknown device")
     return TEMPLATES.TemplateResponse(
         request,
         "day.html",
         {
-            **await day_view(request.app.state.pool, day, zone, today),
+            **await day_view(pool, day, zone, today, device),
+            "base": "/",
             "day": day,
             "title": day_title(day),
             "is_today": day == today,
             "prev_day": prev_day,
             "next_day": next_day,
-            "vlog": await vlog_view(request.app.state.pool, day, zone),
+            "vlog": await vlog_view(pool, day, zone),
             "is_future": day > today,
         },
     )

@@ -1,0 +1,6 @@
+{% if places|length >= 2 or device %}
+<nav class="places">Camera:
+  {% if device %}<a href="{{ base }}?day={{ day }}">Tất cả</a>{% else %}<strong>Tất cả</strong>{% endif %}
+  {% for p in places %} · {% if p.id == device %}<strong>{{ p.location }}</strong>{% else %}<a href="{{ base }}?day={{ day }}&amp;device={{ p.id }}">{{ p.location }}</a>{% endif %}{% endfor %}
+</nav>
+{% endif %}

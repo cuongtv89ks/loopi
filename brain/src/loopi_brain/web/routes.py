@@ -61,49 +61,59 @@ def _hour() -> dict[str, list]:
     return {"keyframes": [], "speech": [], "markers": [], "segments": []}
 
 
-async def _day_by_hour(pool, day: dt.date, zone: ZoneInfo) -> dict[int, dict[str, list]]:
-    """Keyframes, speech, markers and raw segments of one local day, grouped by local hour."""
+async def _day_by_hour(
+    pool, day: dt.date, zone: ZoneInfo, device: str | None = None, labels: dict[str, str] | None = None
+) -> dict[int, dict[str, list]]:
+    """Keyframes, speech, markers and raw segments of one local day, grouped by local hour. With ``device``, only
+    that camera's; with ``labels`` (device id -> location), each entry carries its place."""
     start, end = day_bounds_utc(day, zone)
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT i.id, i.kind, i.started_at, i.ended_at, i.status, i.view_path, i.meta, i.analysis_state,"
-            " i.raw_deleted_at,"
+            "SELECT i.id, i.device_id, i.kind, i.started_at, i.ended_at, i.status, i.view_path, i.meta,"
+            " i.analysis_state, i.raw_deleted_at,"
             " j.status IS NOT DISTINCT FROM 'failed' AS analysis_failed"
             " FROM item i LEFT JOIN procrastinate_jobs j ON j.id = i.analysis_job_id"
-            " WHERE i.started_at >= %s AND i.started_at < %s ORDER BY i.started_at",
-            (start, end),
+            " WHERE i.started_at >= %s AND i.started_at < %s AND (%s::text IS NULL OR i.device_id = %s)"
+            " ORDER BY i.started_at",
+            (start, end, device, device),
         )
         items = await cur.fetchall()
         cur = await conn.execute(
-            "SELECT k.id, k.ts, k.path, k.caption, j.status IS NOT DISTINCT FROM 'failed' AS caption_failed"
+            "SELECT k.id, k.device_id, k.ts, k.path, k.caption,"
+            " j.status IS NOT DISTINCT FROM 'failed' AS caption_failed"
             " FROM keyframe k LEFT JOIN procrastinate_jobs j ON j.id = k.caption_job_id"
-            " WHERE k.ts >= %s AND k.ts < %s ORDER BY k.ts",
-            (start, end),
+            " WHERE k.ts >= %s AND k.ts < %s AND (%s::text IS NULL OR k.device_id = %s) ORDER BY k.ts",
+            (start, end, device, device),
         )
         keyframes = await cur.fetchall()
         cur = await conn.execute(
-            "SELECT m.id, m.kind, m.ts_start, m.lang, m.text, i.meta AS item_meta"
+            "SELECT m.id, m.device_id, m.kind, m.ts_start, m.lang, m.text, i.meta AS item_meta"
             " FROM moment m LEFT JOIN item i ON i.id = m.item_id"
-            " WHERE m.kind IN ('speech', 'marker') AND m.ts_start >= %s AND m.ts_start < %s ORDER BY m.ts_start",
-            (start, end),
+            " WHERE m.kind IN ('speech', 'marker') AND m.ts_start >= %s AND m.ts_start < %s"
+            " AND (%s::text IS NULL OR m.device_id = %s) ORDER BY m.ts_start",
+            (start, end, device, device),
         )
         moments = await cur.fetchall()
+
+    def place(row: dict) -> str | None:
+        return (labels or {}).get(row["device_id"])
+
     hours: dict[int, dict[str, list]] = defaultdict(_hour)
     for row in items:
         local_start = row["started_at"].astimezone(zone)
         hours[local_start.hour]["segments"].append(
-            {**row, "local_start": local_start, "local_end": row["ended_at"].astimezone(zone)}
+            {**row, "local_start": local_start, "local_end": row["ended_at"].astimezone(zone), "place": place(row)}
         )
     for row in keyframes:
         local_ts = row["ts"].astimezone(zone)
-        hours[local_ts.hour]["keyframes"].append({**row, "local_ts": local_ts})
+        hours[local_ts.hour]["keyframes"].append({**row, "local_ts": local_ts, "place": place(row)})
     for row in moments:
         local_ts = row["ts_start"].astimezone(zone)
         if row["kind"] == "speech":
-            hours[local_ts.hour]["speech"].append({**row, "local_ts": local_ts})
+            hours[local_ts.hour]["speech"].append({**row, "local_ts": local_ts, "place": place(row)})
         else:  # the marker's note; the moment's text is the English fallback that gets embedded
             label = moment_rules.marker_note(row["item_meta"] or {}) or MARKER_LABEL
-            hours[local_ts.hour]["markers"].append({**row, "local_ts": local_ts, "label": label})
+            hours[local_ts.hour]["markers"].append({**row, "local_ts": local_ts, "label": label, "place": place(row)})
     return dict(sorted(hours.items()))
 
 
@@ -112,15 +122,32 @@ def _ca_fingerprint(request: Request) -> str:
 
 
 @router.get("/hours", response_class=HTMLResponse)
-async def timeline(request: Request, day: dt.date | None = Query(default=None)):
-    """"Chi tiết theo giờ": every keyframe, speech line, marker and segment of a day, by local hour (P2a)."""
+async def timeline(
+    request: Request, day: dt.date | None = Query(default=None), device: str | None = Query(default=None, max_length=64)
+):
+    """"Chi tiết theo giờ": every keyframe, speech line, marker and segment of a day, by local hour (P2a), of every
+    camera or of the one named by ``device``; with several cameras each entry names its place."""
     zone = request.app.state.settings.zone
+    pool = request.app.state.pool
     day = day or dt.datetime.now(zone).date()
-    hours = await _day_by_hour(request.app.state.pool, day, zone)
+    device = device or None
+    if device and not await places.known_device(pool, device):
+        raise HTTPException(status_code=422, detail="unknown device")
+    day_cams = await places.day_places(pool, *day_bounds_utc(day, zone))
+    labels = {p["id"]: p["location"] for p in day_cams} if device is None and len(day_cams) >= 2 else None
+    hours = await _day_by_hour(pool, day, zone, device, labels)
     return TEMPLATES.TemplateResponse(
         request,
         "timeline.html",
-        {"day": day, "prev_day": day - dt.timedelta(days=1), "next_day": day + dt.timedelta(days=1), "hours": hours},
+        {
+            "day": day,
+            "prev_day": day - dt.timedelta(days=1),
+            "next_day": day + dt.timedelta(days=1),
+            "hours": hours,
+            "places": day_cams,
+            "device": device,
+            "base": "/hours",
+        },
     )
 
 

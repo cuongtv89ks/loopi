@@ -4,6 +4,7 @@ as the device's name; the owner changes it on the Thiết bị page. Pages and p
 come from two or more devices, so a brain with a single camera looks and prompts as before."""
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Iterable
 
 from psycopg_pool import AsyncConnectionPool
@@ -45,3 +46,26 @@ def several(device_ids: Iterable[str | None]) -> bool:
 def at(location: str | None, named: bool, sep: str = "") -> str:
     """The place in a line of model text (" at Phòng khách" + ``sep``), or nothing when places are not named."""
     return f" at {location}{sep}" if named and location else ""
+
+
+async def day_places(pool: AsyncConnectionPool, start: dt.datetime, end: dt.datetime) -> list[dict]:
+    """Every device (revoked ones too) with a recording or a moment in [start, end), as {"id", "location"},
+    ordered by location then id: the cameras a merged day shows."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT d.id, d.location FROM device d"
+            " WHERE EXISTS (SELECT 1 FROM item i WHERE i.device_id = d.id AND i.started_at >= %(start)s"
+            "               AND i.started_at < %(end)s)"
+            " OR EXISTS (SELECT 1 FROM moment m WHERE m.device_id = d.id AND m.ts_start >= %(start)s"
+            "            AND m.ts_start < %(end)s)"
+            " ORDER BY d.location, d.id",
+            {"start": start, "end": end},
+        )
+        return await cur.fetchall()
+
+
+async def known_device(pool: AsyncConnectionPool, device_id: str) -> bool:
+    """Whether a device (revoked ones too) has this id: a camera filter naming anything else is refused."""
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT 1 FROM device WHERE id = %s", (device_id,))
+        return await cur.fetchone() is not None

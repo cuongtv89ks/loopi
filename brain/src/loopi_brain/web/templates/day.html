@@ -4,7 +4,7 @@
   <div class="frames">
   {% for m in g.frames %}
     <figure id="m-{{ m.id }}"><a href="/media/{{ m.keyframe_path }}"><img src="/thumb/{{ m.keyframe_id }}.jpg" loading="lazy" alt="{{ m.text }}"></a>
-      <figcaption><time>{{ m.time }}</time> {{ m.text }}</figcaption></figure>
+      <figcaption><time>{{ m.time }}</time> {% if m.place %}<span class="place">{{ m.place }}</span> {% endif %}{{ m.text }}</figcaption></figure>
   {% endfor %}
   </div>
   {% endif %}
@@ -13,31 +13,33 @@
   <div class="frames">
   {% for m in g.more_frames %}
     <figure id="m-{{ m.id }}"><a href="/media/{{ m.keyframe_path }}"><img src="/thumb/{{ m.keyframe_id }}.jpg" loading="lazy" alt="{{ m.text }}"></a>
-      <figcaption><time>{{ m.time }}</time> {{ m.text }}</figcaption></figure>
+      <figcaption><time>{{ m.time }}</time> {% if m.place %}<span class="place">{{ m.place }}</span> {% endif %}{{ m.text }}</figcaption></figure>
   {% endfor %}
   </div>
   </details>
   {% endif %}
   {% for m in g.markers %}
-  <p class="marker" id="m-{{ m.id }}"><time>{{ m.time }}</time> ★ {{ m.label }}</p>
+  <p class="marker" id="m-{{ m.id }}"><time>{{ m.time }}</time> {% if m.place %}<span class="place">{{ m.place }}</span> {% endif %}★ {{ m.label }}</p>
   {% endfor %}
   {% if g.speech %}
   <details><summary>Lời nói ({{ g.speech|length }})</summary>
   {% for m in g.speech %}
-    <p class="speech" id="m-{{ m.id }}"><time>{{ m.time }}</time> <span class="lang">{{ (m.lang or "?")|upper }}</span> {{ m.text }}
+    <p class="speech" id="m-{{ m.id }}"><time>{{ m.time }}</time> {% if m.place %}<span class="place">{{ m.place }}</span> {% endif %}<span class="lang">{{ (m.lang or "?")|upper }}</span> {{ m.text }}
       {% if m.audio %}<audio controls preload="none" src="{{ m.audio }}"></audio>{% elif m.expired %}<span class="muted">(âm thanh đã hết hạn)</span>{% endif %}</p>
   {% endfor %}
   </details>
   {% endif %}
 {% endmacro %}
 {% block content %}
+{% set dq = ("&device=" ~ device) if device else "" %}
 <nav class="days">
-  <a href="/?day={{ prev_day }}">← {{ prev_day }}</a>
-  <a href="/?day={{ next_day }}">{{ next_day }} →</a>
-  <form class="inline" method="get" action="/"><input type="date" name="day" value="{{ day }}"><button>Xem</button></form>
-  <a href="/hours?day={{ day }}">Chi tiết theo giờ</a>
+  <a href="/?day={{ prev_day }}{{ dq }}">← {{ prev_day }}</a>
+  <a href="/?day={{ next_day }}{{ dq }}">{{ next_day }} →</a>
+  <form class="inline" method="get" action="/"><input type="date" name="day" value="{{ day }}">{% if device %}<input type="hidden" name="device" value="{{ device }}">{% endif %}<button>Xem</button></form>
+  <a href="/hours?day={{ day }}{{ dq }}">Chi tiết theo giờ</a>
 </nav>
 <h1>{% if is_today %}Hôm nay · {% endif %}{{ title }}</h1>
+{% include "_places.html" %}
 <section class="card" id="recap">
   <h2>Recap</h2>
   {% if recap %}
