@@ -69,6 +69,8 @@ async def test_a_real_worker_runs_every_stage(pool, pki_settings, dev, jobs_open
     found = await fetch_all(pool, "SELECT kind, text, embedding FROM moment ORDER BY ts_start")
     assert [m["kind"] for m in found] == ["visual", "visual", "speech", "marker"]
     assert all(m["embedding"] is not None for m in found)
+    speech_moment = await fetch_one(pool, "SELECT id FROM moment WHERE kind = 'speech'")
+    assert (await fetch_one(pool, "SELECT moment_id FROM speech_region"))["moment_id"] == speech_moment["id"]
     statuses = await fetch_all(pool, "SELECT task_name, status FROM procrastinate_jobs")
     assert {r["status"] for r in statuses} == {"succeeded"}
     assert {r["task_name"] for r in statuses} == set(jobs.PIPELINE_TASKS)

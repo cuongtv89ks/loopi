@@ -16,6 +16,7 @@ from helpers import (
     jobs_by_lock,
     make_ctx,
     make_opus,
+    new_ulid,
     paired_device,
 )
 from loopi_brain import audio_level
@@ -39,6 +40,21 @@ async def _audio_item(pool, settings, device_id, seconds=5, started_at=T0) -> st
     item_id = await insert_item(pool, device_id, kind="audio", started_at=started_at, seconds=seconds)
     row = await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item_id,))
     make_opus(settings.media_root / row["raw_path"], seconds=seconds)
+    return item_id
+
+
+async def _chosen_item(pool, settings, device_id, regions, seconds=5) -> str:
+    """An audio item whose speech was detected and whose ``regions`` ((start, end) in seconds) grouping chose."""
+    item_id = await _audio_item(pool, settings, device_id, seconds)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET speech_detected_at = now() WHERE id = %s", (item_id,))
+        for start, end in regions:
+            await conn.execute(
+                "INSERT INTO speech_region (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db, state)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, 20, 'chosen')",
+                (new_ulid(), item_id, device_id, T0 + dt.timedelta(seconds=start), T0 + dt.timedelta(seconds=end),
+                 start, end - start),
+            )
     return item_id
 
 
@@ -148,8 +164,8 @@ def _p999(audio: np.ndarray) -> float:
 
 
 async def _vad_input(pool, settings, device_id, source, monkeypatch, seconds=4):
-    """Transcribe an audio item made from the lavfi ``source``; return (the decoded file, what VAD got,
-    the FakeTranscriber)."""
+    """Detect the speech of an audio item made from the lavfi ``source`` (grouping chooses its one region), then
+    transcribe it; return (the decoded file, what VAD got, the FakeTranscriber)."""
     item_id = await insert_item(pool, device_id, kind="audio", seconds=seconds)
     row = await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item_id,))
     path = make_opus(settings.media_root / row["raw_path"], source, seconds)
@@ -161,7 +177,9 @@ async def _vad_input(pool, settings, device_id, source, monkeypatch, seconds=4):
 
     monkeypatch.setattr(asr, "speech_regions", regions)
     fake = FakeTranscriber(RegionResult("vi", 0.9, [seg("Mai mình đi chợ")]))
-    assert await asr.transcribe_audio(make_ctx(pool, settings, transcriber=fake), item_id) == 1
+    ctx = make_ctx(pool, settings, transcriber=fake)
+    assert await asr.detect_speech(ctx, item_id) == 1
+    assert await asr.transcribe_audio(ctx, item_id) == 1
     return asr.load_audio(path), seen[0], fake
 
 
@@ -194,16 +212,16 @@ async def test_room_noise_stays_without_speech_after_normalisation(pool, pki_set
     path = make_opus(pki_settings.media_root / row["raw_path"], ROOM_NOISE, 10)
     assert audio_level.dbfs(audio_level.level_gain(asr.load_audio(path))) > 10, "the noise is raised before VAD"
     fake = FakeTranscriber()
-    assert await asr.transcribe_audio(make_ctx(pool, pki_settings, transcriber=fake), item_id) == 0
+    ctx = make_ctx(pool, pki_settings, transcriber=fake)
+    assert await asr.detect_speech(ctx, item_id) == 0
+    assert await asr.transcribe_audio(ctx, item_id) == 0
     assert fake.chunks == [], "no speech region reaches Whisper"
     assert await fetch_all(pool, "SELECT id FROM transcript_segment") == []
     assert (await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (item_id,)))["analysis_state"] == "done"
 
 
-async def test_speech_regions_become_segments_and_moments(pool, pki_settings, dev, jobs_open, monkeypatch):
-    item_id = await _audio_item(pool, pki_settings, dev["device_id"])
-    monkeypatch.setattr(asr, "speech_regions",
-                        lambda _audio, _threshold: [Region(0.5, 2.5), Region(3.0, 4.5), Region(4.6, 4.9)])
+async def test_chosen_regions_become_segments_and_moments(pool, pki_settings, dev, jobs_open):
+    item_id = await _chosen_item(pool, pki_settings, dev["device_id"], [(0.5, 2.5), (3.0, 4.5), (4.6, 4.9)])
     fake = FakeTranscriber(
         RegionResult("vi", 0.9, [seg("Mai mình đi chợ", 0.0, 1.0), seg("nhớ mua trứng nhé", 1.0, 2.0)]),
         RegionResult("ko", 0.8, [seg("네 알겠어요", 0.2, 1.4)]),
@@ -222,6 +240,9 @@ async def test_speech_regions_become_segments_and_moments(pool, pki_settings, de
     assert [(m["kind"], m["lang"], m["text"]) for m in found] == [
         ("speech", "vi", "Mai mình đi chợ nhớ mua trứng nhé"), ("speech", "ko", "네 알겠어요")]
     assert found[0]["transcript_segment_id"] == segments[0]["id"]
+    pointers = await fetch_all(pool, "SELECT offset_s, moment_id FROM speech_region ORDER BY offset_s")
+    assert [(p["offset_s"], p["moment_id"]) for p in pointers] == [
+        (0.5, found[0]["id"]), (3.0, found[1]["id"]), (4.6, None)]  # the hallucinated region has no moment
     assert (found[0]["ts_start"], found[0]["ts_end"]) == (T0 + dt.timedelta(seconds=0.5), T0 + dt.timedelta(seconds=2.5))
     item = await fetch_one(pool, "SELECT analysis_state, analysis_error FROM item WHERE id = %s", (item_id,))
     assert item == {"analysis_state": "done", "analysis_error": None}
@@ -231,11 +252,12 @@ async def test_speech_regions_become_segments_and_moments(pool, pki_settings, de
     assert await asr.transcribe_audio(ctx, item_id) == 2
     assert len(await fetch_all(pool, "SELECT id FROM transcript_segment")) == 3
     assert len(await fetch_all(pool, "SELECT id FROM moment")) == 2
+    again = await fetch_all(pool, "SELECT moment_id FROM speech_region WHERE moment_id IS NOT NULL")
+    assert {r["moment_id"] for r in again} == {m["id"] for m in await fetch_all(pool, "SELECT id FROM moment")}
 
 
-async def test_hallucinated_text_on_noise_leaves_no_transcript(pool, pki_settings, dev, jobs_open, monkeypatch):
-    item_id = await _audio_item(pool, pki_settings, dev["device_id"])
-    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _threshold: [Region(0.0, 4.0)])
+async def test_hallucinated_text_on_noise_leaves_no_transcript(pool, pki_settings, dev, jobs_open):
+    item_id = await _chosen_item(pool, pki_settings, dev["device_id"], [(0.0, 4.0)])
     tv_noise = RegionResult("vi", 0.5, [
         seg("Hẹn gặp lại các bạn trong những video tiếp theo", 0.0, 2.0),
         seg("Thanks for watching", 2.0, 3.0),
@@ -249,16 +271,15 @@ async def test_hallucinated_text_on_noise_leaves_no_transcript(pool, pki_setting
 
 
 async def test_real_silence_is_done_without_calling_whisper(pool, pki_settings, dev, jobs_open):
-    item_id = await _audio_item(pool, pki_settings, dev["device_id"])
+    item_id = await _audio_item(pool, pki_settings, dev["device_id"])  # never detected: the job detects first (R8)
     fake = FakeTranscriber()
     assert await asr.transcribe_audio(make_ctx(pool, pki_settings, transcriber=fake), item_id) == 0
     assert fake.chunks == []
     assert (await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (item_id,)))["analysis_state"] == "done"
 
 
-async def test_item_deleted_during_transcription_stores_nothing(pool, pki_settings, dev, jobs_open, monkeypatch):
-    item_id = await _audio_item(pool, pki_settings, dev["device_id"])
-    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _threshold: [Region(0.0, 2.0)])
+async def test_item_deleted_during_transcription_stores_nothing(pool, pki_settings, dev, jobs_open):
+    item_id = await _chosen_item(pool, pki_settings, dev["device_id"], [(0.0, 2.0)])
 
     class DeletingTranscriber(FakeTranscriber):
         def transcribe(self, chunk):  # runs in the worker thread, like Whisper
@@ -421,25 +442,31 @@ def test_the_vad_threshold_reaches_silero(monkeypatch):
     assert (seen[0].min_silence_duration_ms, seen[0].speech_pad_ms) == (500, 200)
 
 
-async def test_the_rules_and_vad_threshold_come_from_settings_and_the_language_probability_is_kept(
-    pool, pki_settings, dev, jobs_open, monkeypatch
-):
-    thresholds = []
-
-    def regions(_audio, threshold):
-        thresholds.append(threshold)
-        return [Region(0.0, 2.0), Region(2.5, 4.5)]
-
-    monkeypatch.setattr(asr, "speech_regions", regions)
+async def test_the_rules_come_from_settings_and_the_language_probability_is_kept(pool, pki_settings, dev, jobs_open):
     results = (RegionResult("en", 0.3, [seg("Thank you.")]), RegionResult("vi", 0.8, [seg("Mai mình đi chợ")]))
-    item_id = await _audio_item(pool, pki_settings, dev["device_id"])
+    item_id = await _chosen_item(pool, pki_settings, dev["device_id"], [(0.0, 2.0), (2.5, 4.5)])
     assert await asr.transcribe_audio(make_ctx(pool, pki_settings, transcriber=FakeTranscriber(*results)), item_id) == 2
     rows = await fetch_all(pool, "SELECT lang, lang_prob, text FROM transcript_segment ORDER BY start_ts")
     assert [(r["lang"], r["lang_prob"], r["text"]) for r in rows] == [
         ("en", pytest.approx(0.3), "Thank you."), ("vi", pytest.approx(0.8), "Mai mình đi chợ")]
-    ruled = pki_settings.model_copy(update={"asr_rules": "lone_phrase,short_foreign", "asr_vad_threshold": 0.4})
+    ruled = pki_settings.model_copy(update={"asr_rules": "lone_phrase,short_foreign"})
     async with pool.connection() as conn:
         await conn.execute("UPDATE item SET analysis_state = 'pending' WHERE id = %s", (item_id,))
     assert await asr.transcribe_audio(make_ctx(pool, ruled, transcriber=FakeTranscriber(*results)), item_id) == 1
     assert [r["text"] for r in await fetch_all(pool, "SELECT text FROM transcript_segment")] == ["Mai mình đi chợ"]
+
+
+async def test_the_vad_threshold_comes_from_settings(pool, pki_settings, dev, jobs_open, monkeypatch):
+    thresholds = []
+
+    def regions(_audio, threshold):
+        thresholds.append(threshold)
+        return [Region(0.0, 2.0)]
+
+    monkeypatch.setattr(asr, "speech_regions", regions)
+    first = await _audio_item(pool, pki_settings, dev["device_id"])
+    second = await _audio_item(pool, pki_settings, dev["device_id"], started_at=T0 + dt.timedelta(minutes=1))
+    assert await asr.detect_speech(make_ctx(pool, pki_settings), first) == 1
+    sensitive = pki_settings.model_copy(update={"asr_vad_threshold": 0.4})
+    assert await asr.detect_speech(make_ctx(pool, sensitive), second) == 1
     assert thresholds == [0.5, 0.4]

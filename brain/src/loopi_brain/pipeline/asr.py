@@ -1,5 +1,5 @@
-"""detect_speech (Silero VAD + SNR per region, D33) and transcribe_audio: level normalisation, then Silero VAD +
-faster-whisper per speech region (spec §9.2, D19).
+"""detect_speech (Silero VAD + SNR per region, D33) and transcribe_audio: level normalisation, then faster-whisper on
+each speech region the grouping stage chose (spec §9.2, D19, D33).
 
 Step 4: the raw audio is kept like video (spec D20, 7 days by default); ``retention.py`` then deletes it
 together with its playback copy ``view/<device>/YYYY/MM/DD/<id>.opus`` (see ``media.normalise_audio``).
@@ -298,14 +298,26 @@ class WhisperTranscriber:
         ])
 
 
+def transcribe_regions(
+    path: Path,
+    transcriber: Transcriber,
+    regions: list[Region],
+    max_gain_db: float = audio_level.MAX_GAIN_DB,
+) -> list[tuple[Region, RegionResult]]:
+    """Blocking: decode, normalise the level, transcribe each given region. Segment times stay region-relative."""
+    audio = normalise(load_audio(path), max_gain_db)
+    return [(r, transcriber.transcribe(audio[int(r.start * SAMPLE_RATE): int(r.end * SAMPLE_RATE)]))
+            for r in regions]
+
+
 def transcribe_file(
     path: Path,
     transcriber: Transcriber,
     max_gain_db: float = audio_level.MAX_GAIN_DB,
     vad_threshold: float = VAD_THRESHOLD,
 ) -> list[tuple[Region, RegionResult]]:
-    """Blocking: decode, normalise the level, find speech, transcribe each region. Segment times stay
-    region-relative. The live stage and the evaluation runner both go this way."""
+    """Blocking: decode, normalise the level, find speech, transcribe each region (the evaluation runner's way; the
+    live stage finds speech in ``detect_speech`` and transcribes only the regions grouping chose)."""
     audio = normalise(load_audio(path), max_gain_db)
     results = []
     for region in speech_regions(audio, vad_threshold):
@@ -390,19 +402,30 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
     pool = ctx.pool
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT device_id, kind, started_at, raw_path, analysis_state FROM item WHERE id = %s", (item_id,)
+            "SELECT device_id, kind, started_at, raw_path, analysis_state, speech_detected_at FROM item WHERE id = %s",
+            (item_id,),
         )
         item = await cur.fetchone()
     if item is None or item["kind"] != "audio" or item["analysis_state"] != "pending":
         return 0
+    if item["speech_detected_at"] is None:  # R8: a job queued before detect_speech existed: detect, then wait
+        await _detect(ctx, item_id)
+        return 0
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT id, offset_s, length_s FROM speech_region WHERE item_id = %s AND state = 'chosen' ORDER BY offset_s",
+            (item_id,),
+        )
+        chosen = await cur.fetchall()
     path = ctx.settings.media_root / item["raw_path"]
     if not path.is_file():
         await finish_item(pool, item_id, "skipped")
         return 0
     settings = ctx.settings
     rules = settings.asr_rule_set
+    regions = [Region(r["offset_s"], r["offset_s"] + r["length_s"]) for r in chosen]
     results = await anyio.to_thread.run_sync(
-        transcribe_file, path, ctx.transcriber, settings.asr_max_gain_db, settings.asr_vad_threshold
+        transcribe_regions, path, ctx.transcriber, regions, settings.asr_max_gain_db
     )
     version = ctx.router.model_version("asr")
     start: dt.datetime = item["started_at"]
@@ -413,7 +436,7 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
             return 0
         # Re-running replaces the item's transcript (moments go with their segments: ON DELETE CASCADE).
         await conn.execute("DELETE FROM transcript_segment WHERE item_id = %s", (item_id,))
-        for region, result in results:
+        for row, (region, result) in zip(chosen, results):
             kept = kept_segments(result, rules)
             if not kept:
                 continue
@@ -430,19 +453,21 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
                      start + dt.timedelta(seconds=region.start + seg.end),
                      result.lang, seg.text.strip(), seg.avg_logprob, seg.no_speech_prob, result.lang_prob, version),
                 )
+            moment_id = devices.new_id()
             await conn.execute(
                 "INSERT INTO moment (id, device_id, ts_start, ts_end, kind, text, lang, item_id,"
                 " transcript_segment_id, model_version) VALUES (%s, %s, %s, %s, 'speech', %s, %s, %s, %s, %s)",
-                (devices.new_id(), item["device_id"],
+                (moment_id, item["device_id"],
                  start + dt.timedelta(seconds=region.start + kept[0].start),
                  start + dt.timedelta(seconds=region.start + kept[-1].end),
                  " ".join(s.text.strip() for s in kept), result.lang, item_id, segment_ids[0], version),
             )
+            await conn.execute("UPDATE speech_region SET moment_id = %s WHERE id = %s", (moment_id, row["id"]))
             moments += 1
         await mark_item_done(conn, item_id)
     if moments:
         await dispatch.defer_embed(pool)
-    log.info("item %s: %d speech regions, %d kept", item_id, len(results), moments)
+    log.info("item %s: %d chosen regions, %d kept", item_id, len(chosen), moments)
     return moments
 
 
