@@ -77,7 +77,7 @@ Chi tiết (plan P3c-3, R1–R8): hai đoạn tiếng nói ở hai mic thuộc m
 - Tìm kiếm, nguồn của chat và kết quả MCP có nhãn vị trí.
 - Vlog (D35): chia ngày thành khối 10 phút; mỗi khối có hoạt động chọn camera có nhiều moment nhất; ảnh highlight từ mọi camera; nhãn vị trí trên từng cảnh.
 
-Nhãn vị trí vẽ bằng ffmpeg `drawtext` (DejaVu Sans) ở góc trên bên trái, chỉ khi vlog có ≥ 2 camera; đổi tên vị trí làm mới tóm tắt chương và recap của 14 ngày gần nhất có ≥ 2 camera (R9, R10).
+Nhãn vị trí vẽ bằng ffmpeg `drawtext` (DejaVu Sans) ở góc trên bên trái, chỉ khi vlog có ≥ 2 camera; đổi tên vị trí làm mới tóm tắt chương và recap của những ngày gần nhất còn video (mặc định 7 ngày, tối đa 14) có ≥ 2 camera; lưu lại tên không đổi thì không làm gì (R9, R10).
 
 ### 4.5 Web (P3c-1, P3c-2, D31, D34)
 - Timeline gộp có nhãn và bộ lọc (P3c-1, có ích ngay cả khi chỉ có Pi vì đặt được tên vị trí).

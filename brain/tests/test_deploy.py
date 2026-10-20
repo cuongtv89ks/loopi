@@ -270,3 +270,46 @@ def test_the_cameras_image_builds_both_binaries_and_runs_as_the_data_owner():
     assert 'CMD ["loopi-cameras", "--root", "/srv/loopi/cameras"]' in text
     ignore = (DEPLOY.parent / ".dockerignore").read_text().split()
     assert ignore[:2] == ["*", "!agent/"] and "agent/target/" in ignore
+
+
+def _p3c3_note() -> str:
+    readme = (DEPLOY / "README.md").read_text()
+    section = readme.split("## Network cameras (P3c-2)", 1)[1].split("\n## ", 1)[0]
+    return section.split("**Deploying and rolling back P3c-3:**", 1)[1].split("\n- ", 1)[0]
+
+
+def test_the_readme_says_how_to_deploy_p3c3():
+    note = _p3c3_note()
+    assert "api and worker together" in note and "docker compose -p deploy up -d --build" in note
+    assert "Tìm tiếng nói" in note  # retried from Xử lý after the deploy
+    assert "docker compose -p deploy stop api worker" in note  # no new dispatcher defers a detection again meanwhile
+
+
+async def test_the_readme_rollback_hands_every_pending_detection_back_to_the_old_dispatcher(pool, pki_settings,
+                                                                                           jobs_open):
+    import datetime as dt
+
+    from helpers import fetch_all, insert_item, paired_device
+    from loopi_brain.pipeline import dispatch, jobs
+
+    (sql,) = re.findall(r'psql -U loopi -d loopi -c "([^"]+)"', _p3c3_note())
+    pi = await paired_device(pool, pki_settings)
+    start = dt.datetime(2026, 10, 21, 1, 0, tzinfo=dt.UTC)
+    items = {}
+    for k, status in enumerate(("todo", "failed", "succeeded", "doing")):  # an older worker cannot run any of them
+        items[status] = await insert_item(pool, pi["device_id"], kind="audio", started_at=start + dt.timedelta(minutes=k))
+        job = await dispatch.defer_item(pool, items[status])
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE procrastinate_jobs SET status = %s WHERE id = %s", (status, job))
+    whisper = await insert_item(pool, pi["device_id"], kind="audio", started_at=start + dt.timedelta(minutes=9))
+    video = await insert_item(pool, pi["device_id"], kind="video", started_at=start)
+    async with pool.connection() as conn:
+        job = await jobs.enqueue(conn, jobs.TRANSCRIBE_AUDIO, queue="audio", lock="asr",
+                                 queueing_lock=f"asr:{whisper}", item_id=whisper)  # the old image runs these
+        await conn.execute("UPDATE item SET analysis_job_id = %s WHERE id = %s", (job, whisper))
+    await dispatch.defer_item(pool, video)
+    async with pool.connection() as conn:
+        await conn.execute(sql)
+    rows = {r["id"]: r["analysis_job_id"] for r in await fetch_all(pool, "SELECT id, analysis_job_id FROM item")}
+    assert all(rows[i] is None for i in items.values())  # the old dispatcher defers its own audio job for them
+    assert rows[whisper] is not None and rows[video] is not None

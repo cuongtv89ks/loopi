@@ -55,8 +55,16 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - The camera shows up as a device; pause, sound on/off (for a camera added with sound) and the place name work as for
   the Pi. The header of every page says how many cameras record now.
 - With two or more microphones, a sentence is transcribed once, from the clearest one; the brain waits up to 3 minutes
-  for every recording microphone's audio of a minute. The Xử lý page shows how many speech regions wait for another
-  microphone.
+  for every recording microphone's audio of a minute (a long conversation is decided minute by minute). The Xử lý
+  page shows how many speech regions wait for another microphone or the next minute.
+- **Deploying and rolling back P3c-3:** recreate api and worker together (`docker compose -p deploy up -d --build`
+  does): a worker from before P3c-3 fails a new api's "Tìm tiếng nói" job as an unknown task. After the deploy, open
+  Xử lý and retry any failed "Tìm tiếng nói" job. To roll back to an image from before P3c-3, stop the new one
+  first (`docker compose -p deploy stop api worker`, so its dispatcher does not defer a detection again), hand the
+  pending audio back to the old dispatcher with
+  `docker compose -p deploy exec -T db psql -U loopi -d loopi -c "UPDATE item SET analysis_job_id = NULL WHERE kind = 'audio' AND analysis_state = 'pending' AND analysis_job_id IN (SELECT id FROM procrastinate_jobs WHERE task_name = 'detect_speech')"`,
+  then start the old image. Its worker marks the "Tìm tiếng nói" jobs still queued as failed (unknown task); the
+  items are transcribed by the old audio job, and the `speech_region` rows stay unread.
 - A camera that has not paired within 24 h (cameras container down): "Ghép cặp lại". "Gỡ camera" stops its agent,
   removes the password from its file and revokes it; what it recorded stays until retention or "Quên".
 - A network camera's card shows "Gỡ camera" instead of "Thu hồi" (removing also revokes).
