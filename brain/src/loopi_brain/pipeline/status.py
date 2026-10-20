@@ -35,6 +35,7 @@ TASK_LABELS = {
     jobs.WRITE_VLOG_SCRIPT: "Viết kịch bản vlog",
     jobs.RENDER_VLOG: "Dựng vlog",
     jobs.APPLY_RETENTION: "Dọn dữ liệu cũ",
+    jobs.DROP_RAW_VIDEO: "Bỏ bản H.264 thô",
     jobs.RUN_EVAL: "Chạy đánh giá",
 }
 _LATENCY = (

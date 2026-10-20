@@ -20,6 +20,7 @@ TASK_MODULES = [
     "loopi_brain.pipeline.recap",
     "loopi_brain.pipeline.vlogs",
     "loopi_brain.pipeline.retention",
+    "loopi_brain.pipeline.one_copy",
     "loopi_brain.evaluation.runner",
 ]
 
@@ -36,6 +37,7 @@ BUILD_CHAPTERS = "build_chapters"
 PLAN_RECAPS = "plan_recaps"
 WRITE_RECAP = "write_recap"
 APPLY_RETENTION = "apply_retention"
+DROP_RAW_VIDEO = "drop_raw_video"
 PLAN_VLOGS = "plan_vlogs"
 WRITE_VLOG_SCRIPT = "write_vlog_script"
 RENDER_VLOG = "render_vlog"
@@ -46,7 +48,7 @@ PIPELINE_TASKS = (ANALYZE_VIDEO, CAPTION_KEYFRAME, TRANSCRIBE_AUDIO, INDEX_MARKE
 # retried and only the newest failed one is kept.
 AUTO_RERUN_TASKS = (
     EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS, PLAN_CHAPTERS, BUILD_CHAPTERS, PLAN_RECAPS,
-    PLAN_VLOGS, APPLY_RETENTION,
+    PLAN_VLOGS, APPLY_RETENTION, DROP_RAW_VIDEO,
 )
 # The text models run one job at a time (chapters, recaps): each one takes most of the CPU. They also wait behind
 # every live job (video, captions, ASR, markers, embeddings: priority 0) for a free worker slot, so recordings keep
