@@ -16,8 +16,9 @@
   {% for c in waiting_cameras %}
   <div class="card" id="camera-{{ c.id }}">
     <strong>{{ c.location }}</strong> <span class="muted">{{ kinds[c.kind].label }} · {{ c.video_url }}</span>
-    <button hx-post="/cameras/{{ c.id }}/repair" hx-target="#camera-{{ c.id }}">Ghép cặp lại</button>
-    <button hx-post="/cameras/{{ c.id }}/remove" hx-target="#camera-{{ c.id }}" hx-confirm="Gỡ camera {{ c.location }}?">Gỡ camera</button>
+    <button hx-post="/cameras/{{ c.id }}/repair" hx-target="#camera-msg-{{ c.id }}">Ghép cặp lại</button>
+    <button hx-post="/cameras/{{ c.id }}/remove" hx-target="#camera-msg-{{ c.id }}" hx-confirm="Gỡ camera {{ c.location }}?">Gỡ camera</button>
+    <div id="camera-msg-{{ c.id }}"></div>
   </div>
   {% endfor %}
 </section>
@@ -54,8 +55,9 @@
     <button hx-post="/devices/{{ d.id }}/commands/audio-off">Tắt audio</button>
     <button hx-post="/devices/{{ d.id }}/commands/audio-on">Bật audio</button>
     {% endif %}
-    <button hx-post="/devices/{{ d.id }}/revoke" hx-confirm="Thu hồi thiết bị này?">Thu hồi</button>
-    {% if c %}<button hx-post="/cameras/{{ c.id }}/remove" hx-target="#result-{{ d.id }}" hx-confirm="Gỡ camera {{ d.location }}?">Gỡ camera</button>{% endif %}
+    {# A network camera is not revoked on its own: "Gỡ camera" revokes the device and scrubs the password (R9). #}
+    {% if c %}<button hx-post="/cameras/{{ c.id }}/remove" hx-target="#result-{{ d.id }}" hx-confirm="Gỡ camera {{ d.location }}?">Gỡ camera</button>
+    {% else %}<button hx-post="/devices/{{ d.id }}/revoke" hx-confirm="Thu hồi thiết bị này?">Thu hồi</button>{% endif %}
   </div>
   <div id="result-{{ d.id }}"></div>
   <form hx-post="/devices/{{ d.id }}/update" hx-target="#update-{{ d.id }}" hx-disinherit="hx-confirm"
@@ -70,6 +72,12 @@
   </form>
   <div id="notes-{{ d.id }}"></div>
   <div id="update-{{ d.id }}"></div>
+  {% elif c %}
+  {# A camera left behind by an earlier "Thu hồi": its device is revoked but the camera still runs its agent. #}
+  <div hx-target="#camera-result-{{ c.id }}">
+    <button hx-post="/cameras/{{ c.id }}/remove" hx-confirm="Gỡ camera {{ d.location }}?">Gỡ camera</button>
+  </div>
+  <div id="camera-result-{{ c.id }}"></div>
   {% endif %}
   {% if history %}
   <details><summary>Cập nhật gần đây</summary>

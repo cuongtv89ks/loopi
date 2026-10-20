@@ -33,17 +33,17 @@ async def camera_form(request: Request, kind: str = Query("ip")):
 @router.post("/cameras/probe", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 async def probe(request: Request, video_url: str = Form(""), audio_url: str = Form(""), username: str = Form(""),
                 password: str = Form("")):
-    # The same address check as a save (clean_input): an address that would be refused is never handed to ffprobe.
+    # The same checks as a save (clean_input): what it would refuse is never handed to ffprobe.
     try:
-        video = cameras.clean_url(video_url, schemes=("rtsp://", "http://", "https://"), what="Địa chỉ")
-        audio = (cameras.clean_url(audio_url, schemes=("http://", "https://", "rtsp://"), what="Địa chỉ âm thanh")
-                 if audio_url.strip() else None)
+        video = cameras.clean_video_url(video_url)
+        audio = cameras.clean_audio_url(audio_url)
+        user, secret = cameras.clean_credentials(username, password)
     except cameras.CameraError as exc:
         return TEMPLATES.TemplateResponse(request, "_camera_probe.html",
                                           {"results": [camera_probe.ProbeResult(False, str(exc))]})
-    results = [await camera_probe.probe(video, username.strip(), password)]
+    results = [await camera_probe.probe(video, user, secret)]
     if audio:
-        sound = await camera_probe.probe(audio, username.strip(), password)
+        sound = await camera_probe.probe(audio, user, secret)
         message = "Âm thanh: có." if sound.has_audio else "Âm thanh: " + (sound.message if not sound.ok else "không có.")
         results.append(camera_probe.ProbeResult(sound.has_audio is True, message))
     return TEMPLATES.TemplateResponse(request, "_camera_probe.html", {"results": results})

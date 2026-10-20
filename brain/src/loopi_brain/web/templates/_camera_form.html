@@ -1,7 +1,6 @@
 <form id="camera-form" hx-post="/cameras" hx-target="#camera-form" hx-swap="outerHTML">
   <p class="muted">Dung lượng ước tính cho {{ capacity.days }} ngày: {{ gb(capacity.total_bytes) }}
-    {% if capacity.free_bytes is not none %}/ còn trống {{ gb(capacity.free_bytes) }}
-    ({{ "%d"|format((capacity.ratio or 0) * 100) }} %){% else %}(chưa rõ chỗ trống){% endif %}.</p>
+    {% if capacity.free_bytes is not none %}/ còn trống {{ gb(capacity.free_bytes) }} ({% if capacity.free_bytes == 0 %}đầy{% else %}{{ "%d"|format((capacity.ratio or 0) * 100) }} %{% endif %}){% else %}(chưa rõ chỗ trống){% endif %}.</p>
   {% if capacity.warn_if_added %}<p class="err">Thêm một camera sẽ cần khoảng {{ gb(capacity.new_camera_bytes) }} cho
     {{ capacity.days }} ngày, vượt 85 % chỗ trống còn lại.</p>{% endif %}
   <label>Loại camera

@@ -50,12 +50,14 @@ async def estimate(pool: AsyncConnectionPool, settings: Settings) -> Capacity:
         measured = (await cur.fetchone())["bytes"]
         cur = await conn.execute(
             "SELECT count(*) AS n FROM network_camera c LEFT JOIN device d ON d.id = c.device_id"
-            " WHERE c.removed_at IS NULL AND (c.device_id IS NULL OR NOT EXISTS ("
-            "   SELECT 1 FROM item i WHERE i.device_id = c.device_id AND i.started_at <= now() - interval '24 hours'))"
+            " WHERE c.removed_at IS NULL AND (c.device_id IS NULL OR ("  # a waiting camera has no device yet
+            "   NOT d.revoked AND d.last_heartbeat_at > now() - interval '7 days' AND NOT EXISTS ("
+            "   SELECT 1 FROM item i WHERE i.device_id = c.device_id AND i.started_at <= now() - interval '24 hours')))"
         )
         young = (await cur.fetchone())["n"]
-    # A camera with less than a day of recordings is counted at the nominal rate instead of its partial day. What is
-    # taken out is what the first query put in (same device filter), so a revoked or silent device never goes negative.
+    # A camera with less than a day of recordings is counted at the nominal rate instead of its partial day: a waiting
+    # camera, or a paired one whose device is active (the first query's own filter). What is taken out is what the first
+    # query put in, so a revoked or silent device's bytes are never taken out of a total they were not part of.
     if young:
         async with pool.connection() as conn:
             cur = await conn.execute(

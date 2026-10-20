@@ -283,3 +283,26 @@ async def test_only_a_camera_that_has_not_paired_and_is_not_removed_can_be_repai
     assert await cameras.repair_camera(pool, pki_settings, removed_id) is False
     assert config_of(pki_settings, paired_id)["brain"]["pair_token"] == token  # untouched
     assert "pair_token" not in config_of(pki_settings, removed_id)["brain"]
+
+
+def test_the_credentials_checks_stand_alone_and_clean_input_uses_them():
+    assert cameras.clean_credentials("  admin ", "pw") == ("admin", "pw")
+    assert cameras.clean_credentials("", "") == ("", "")
+    for username, password, message in [
+        ("ad\x00min", "", "Tên đăng nhập có ký tự không hợp lệ."),
+        ("u" * 65, "", "Tên đăng nhập dài quá 64 ký tự."),
+        ("", "p" * 129, "Mật khẩu dài quá 128 ký tự."),
+        ("", "pw\x00", "Mật khẩu có ký tự không hợp lệ."),
+    ]:
+        with pytest.raises(cameras.CameraError, match=message):
+            cameras.clean_credentials(username, password)
+
+
+def test_the_address_checks_stand_alone():
+    assert cameras.clean_video_url(" rtsp://192.0.2.10/cam ") == "rtsp://192.0.2.10/cam"
+    assert cameras.clean_audio_url("") is None and cameras.clean_audio_url("  ") is None
+    assert cameras.clean_audio_url("http://192.0.2.10/audio") == "http://192.0.2.10/audio"
+    with pytest.raises(cameras.CameraError, match="Địa chỉ phải bắt đầu bằng"):
+        cameras.clean_video_url("")
+    with pytest.raises(cameras.CameraError, match="Địa chỉ âm thanh phải bắt đầu bằng"):
+        cameras.clean_audio_url("ftp://192.0.2.10/a")

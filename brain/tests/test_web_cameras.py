@@ -1,6 +1,6 @@
 
-from helpers import fetch_one
-from loopi_brain import camera_probe
+from helpers import fetch_one, make_csr_pem, paired_device
+from loopi_brain import camera_probe, devices, pki
 
 HX = {"HX-Request": "true"}
 FORM = dict(kind="ip", location="Phòng khách", video_url="rtsp://192.0.2.10:554/cam/realmonitor?channel=1&subtype=0",
@@ -72,6 +72,19 @@ async def test_probing_refuses_an_address_that_a_save_would_refuse_and_never_run
     assert calls == []  # nothing, not even the good video address next to the bad audio address, reached ffprobe
 
 
+async def test_probing_refuses_credentials_a_save_would_refuse_and_never_runs_ffprobe(client, monkeypatch):
+    calls = _spy_probe(monkeypatch)
+    r = await client.post("/cameras/probe", data=FORM | {"password": "p" * 129}, headers=HX)
+    assert r.status_code == 200 and "Mật khẩu dài quá 128 ký tự." in r.text and "p" * 129 not in r.text
+    r = await client.post("/cameras/probe", data=FORM | {"username": "u" * 65}, headers=HX)
+    assert r.status_code == 200 and "Tên đăng nhập dài quá 64 ký tự." in r.text
+    r = await client.post("/cameras/probe", data=FORM | {"password": "pw\x00"}, headers=HX)
+    assert r.status_code == 200 and "Mật khẩu có ký tự không hợp lệ." in r.text
+    assert calls == []
+    r = await client.post("/cameras/probe", data=FORM | {"username": "u" * 64, "password": "p" * 128}, headers=HX)
+    assert "đã thử" in r.text and len(calls) == 1  # the limits themselves are accepted
+
+
 async def test_a_separate_sound_address_is_probed_for_sound_only(client, monkeypatch):
     async def fake_probe(url, username, password, **_):
         if url.endswith("/stream"):
@@ -95,9 +108,19 @@ async def test_repairing_and_removing_a_waiting_camera(client, pool, pki_setting
     r = await client.post(f"/cameras/{camera_id}/repair", headers=HX)
     assert r.status_code == 200 and "Đã tạo token ghép cặp mới" in r.text
     r = await client.post(f"/cameras/{camera_id}/remove", headers=HX)
-    assert r.status_code == 200 and "Đã gỡ camera Phòng khách" in r.text
+    assert r.status_code == 200 and "Đã gỡ camera Phòng khách" in r.text and r.headers.get("HX-Refresh") == "true"
     assert (pki_settings.cameras_dir / camera_id / "disabled").exists()
     assert (await client.post(f"/cameras/{camera_id}/remove", headers=HX)).status_code == 404
+
+
+async def test_a_waiting_camera_card_keeps_its_buttons_when_a_message_comes_back(client, pool):
+    await client.post("/cameras", data=FORM, headers=HX)
+    camera_id = (await fetch_one(pool, "SELECT id FROM network_camera"))["id"]
+    page = (await client.get("/devices")).text
+    assert f'id="camera-msg-{camera_id}"' in page
+    assert f'hx-post="/cameras/{camera_id}/repair" hx-target="#camera-msg-{camera_id}"' in page
+    assert f'hx-post="/cameras/{camera_id}/remove" hx-target="#camera-msg-{camera_id}"' in page
+    assert f'hx-target="#camera-{camera_id}"' not in page  # a swap into the card would replace its buttons
 
 
 async def test_repairing_a_camera_whose_password_cannot_be_read_says_so(client, pool, pki_settings):
@@ -115,21 +138,60 @@ async def test_repairing_or_removing_an_unknown_camera_is_a_404(client):
     assert (await client.post("/cameras/nope/repair")).status_code == 403
 
 
-async def test_a_paired_camera_shows_on_its_device_card_and_can_be_removed_there(client, pool, pki_settings):
-    from helpers import make_csr_pem
-    from loopi_brain import devices, pki
-    await client.post("/cameras", data=FORM | {"has_audio": ""}, headers=HX)
+async def _pair(client, pool, pki_settings, **over) -> tuple[str, str]:
+    """Add a camera through the form and pair it as the cameras container's agent would; (camera id, device id)."""
+    await client.post("/cameras", data=FORM | over, headers=HX)
     row = await fetch_one(pool, "SELECT id FROM network_camera")
     token = (await fetch_one(pool, "SELECT token FROM pair_token WHERE camera_id = %s", (row["id"],)))["token"]
     reg = await devices.register_device(
         pool, token, {"model": "x", "serial": "1", "agent_version": "0.1.0"},
         lambda device_id: pki.sign_csr(pki_settings.pki_dir, make_csr_pem(), device_id))
+    return row["id"], reg["device_id"]
+
+
+async def test_a_paired_camera_shows_on_its_device_card_without_a_revoke_button(client, pool, pki_settings):
+    camera_id, device_id = await _pair(client, pool, pki_settings, has_audio="")
     page = (await client.get("/devices")).text
     assert "Camera chờ ghép cặp" not in page
     assert "Camera mạng: Camera IP (RTSP)" in page and "không ghi âm" in page and "S3cr3t" not in page
-    assert f'hx-post="/cameras/{row["id"]}/remove"' in page and f'hx-target="#result-{reg["device_id"]}"' in page
+    assert f'hx-post="/cameras/{camera_id}/remove"' in page and f'hx-target="#result-{device_id}"' in page
+    assert f"/devices/{device_id}/revoke" not in page  # "Gỡ camera" revokes the device and scrubs the password
     assert "commands/audio-on" not in page and "commands/audio-off" not in page  # a camera without sound
     assert "commands/pause" in page
+
+
+async def test_a_camera_with_sound_keeps_its_audio_buttons_and_an_ordinary_device_keeps_revoke(client, pool, pki_settings):
+    camera_id, device_id = await _pair(client, pool, pki_settings)
+    pi = await paired_device(pool, pki_settings)
+    page = (await client.get("/devices")).text
+    assert "commands/audio-on" in page and "commands/audio-off" in page
+    assert f"/devices/{pi['device_id']}/revoke" in page and f"/devices/{device_id}/revoke" not in page
+
+
+async def test_removing_a_camera_from_its_paired_devices_card(client, pool, pki_settings):
+    camera_id, device_id = await _pair(client, pool, pki_settings)
+    r = await client.post(f"/cameras/{camera_id}/remove", headers=HX)
+    assert r.status_code == 200 and "Đã gỡ camera Phòng khách" in r.text and r.headers.get("HX-Refresh") == "true"
+    assert (pki_settings.cameras_dir / camera_id / "disabled").exists()
+    assert (await fetch_one(pool, "SELECT revoked FROM device WHERE id = %s", (device_id,)))["revoked"] is True
+    assert (await fetch_one(pool, "SELECT removed_at IS NOT NULL AS gone FROM network_camera"))["gone"] is True
+    page = (await client.get("/devices")).text
+    assert "Camera mạng:" not in page and f"/cameras/{camera_id}/remove" not in page
+
+
+async def test_a_camera_whose_device_was_revoked_can_still_be_removed(client, pool, pki_settings):
+    camera_id, device_id = await _pair(client, pool, pki_settings)
+    # A camera stuck by an earlier "Thu hồi": the device is revoked, the camera row is not removed.
+    assert (await client.post(f"/devices/{device_id}/revoke", headers=HX)).status_code == 200
+    page = (await client.get("/devices")).text
+    assert "đã thu hồi" in page and f'hx-post="/cameras/{camera_id}/remove"' in page
+    assert f'id="camera-result-{camera_id}"' in page and f'hx-target="#camera-result-{camera_id}"' in page
+    assert f'id="result-{device_id}"' not in page  # the target of a live card does not exist here
+    r = await client.post(f"/cameras/{camera_id}/remove", headers=HX)
+    assert r.status_code == 200 and "Đã gỡ camera Phòng khách" in r.text and r.headers.get("HX-Refresh") == "true"
+    assert (pki_settings.cameras_dir / camera_id / "disabled").exists()
+    page = (await client.get("/devices")).text
+    assert "đã thu hồi" in page and f"/cameras/{camera_id}/remove" not in page
 
 
 async def test_the_form_warns_when_the_disk_would_fill(client, monkeypatch):
@@ -137,3 +199,18 @@ async def test_the_form_warns_when_the_disk_would_fill(client, monkeypatch):
     monkeypatch.setattr(capacity, "_free_bytes", lambda settings: 10 * 10**9)
     page = (await client.get("/devices")).text
     assert "vượt 85 % chỗ trống" in page
+
+
+async def test_a_full_disk_says_full_instead_of_zero_percent_and_still_warns(client, monkeypatch):
+    from loopi_brain import capacity
+    monkeypatch.setattr(capacity, "_free_bytes", lambda settings: 0)
+    page = (await client.get("/devices")).text
+    assert "còn trống 0,0 GB (đầy)" in page and "(0 %)" not in page
+    assert "vượt 85 % chỗ trống" in page
+
+
+async def test_a_disk_with_room_shows_the_percent_of_it_the_estimate_takes(client, monkeypatch):
+    from loopi_brain import capacity
+    monkeypatch.setattr(capacity, "_free_bytes", lambda settings: 100 * 10**9)
+    page = (await client.get("/devices")).text
+    assert "còn trống 100,0 GB" in page and "(0 %)" in page and "đầy" not in page

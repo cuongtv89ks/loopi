@@ -90,16 +90,21 @@ def clean_url(text: str, *, schemes: tuple[str, ...], what: str) -> str:
     return url
 
 
-def clean_input(*, kind: str, location: str, video_url: str, audio_url: str, username: str, password: str,
-                has_audio: bool) -> CameraInput:
-    if kind not in KINDS:
-        raise CameraError("Loại camera không hợp lệ.")
-    try:
-        place = places.clean_location(location)
-    except places.LocationError as exc:
-        raise CameraError(str(exc)) from exc
-    video = clean_url(video_url, schemes=("rtsp://", "http://", "https://"), what="Địa chỉ")
-    audio = clean_url(audio_url, schemes=("http://", "https://", "rtsp://"), what="Địa chỉ âm thanh") if audio_url.strip() else None
+VIDEO_SCHEMES = ("rtsp://", "http://", "https://")
+AUDIO_SCHEMES = ("http://", "https://", "rtsp://")
+
+
+def clean_video_url(text: str) -> str:
+    return clean_url(text, schemes=VIDEO_SCHEMES, what="Địa chỉ")
+
+
+def clean_audio_url(text: str) -> str | None:
+    """The separate sound address, or None when the field is blank."""
+    return clean_url(text, schemes=AUDIO_SCHEMES, what="Địa chỉ âm thanh") if text.strip() else None
+
+
+def clean_credentials(username: str, password: str) -> tuple[str, str]:
+    """The login as the agent's config takes it (the form and Thử kết nối both use this): the username trimmed."""
     user = username.strip()
     if not user.isprintable():
         raise CameraError("Tên đăng nhập có ký tự không hợp lệ.")
@@ -109,6 +114,20 @@ def clean_input(*, kind: str, location: str, video_url: str, audio_url: str, use
         raise CameraError(f"Mật khẩu dài quá {PASSWORD_MAX} ký tự.")
     if "\x00" in password:
         raise CameraError("Mật khẩu có ký tự không hợp lệ.")
+    return user, password
+
+
+def clean_input(*, kind: str, location: str, video_url: str, audio_url: str, username: str, password: str,
+                has_audio: bool) -> CameraInput:
+    if kind not in KINDS:
+        raise CameraError("Loại camera không hợp lệ.")
+    try:
+        place = places.clean_location(location)
+    except places.LocationError as exc:
+        raise CameraError(str(exc)) from exc
+    video = clean_video_url(video_url)
+    audio = clean_audio_url(audio_url)
+    user, password = clean_credentials(username, password)
     return CameraInput(kind, place, video, audio, user, password, bool(has_audio))
 
 
