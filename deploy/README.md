@@ -54,6 +54,9 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   4.4 GB a day with sound).
 - The camera shows up as a device; pause, sound on/off (for a camera added with sound) and the place name work as for
   the Pi. The header of every page says how many cameras record now.
+- With two or more microphones, a sentence is transcribed once, from the clearest one; the brain waits up to 3 minutes
+  for every recording microphone's audio of a minute. The Xử lý page shows how many speech regions wait for another
+  microphone.
 - A camera that has not paired within 24 h (cameras container down): "Ghép cặp lại". "Gỡ camera" stops its agent,
   removes the password from its file and revokes it; what it recorded stays until retention or "Quên".
 - A network camera's card shows "Gỡ camera" instead of "Thu hồi" (removing also revokes).

@@ -22,6 +22,7 @@ Read `docs/HANDOFF.md` first: it holds the current state, the next steps and eve
 ```bash
 # brain (Python 3.13, uv; Docker needed for testcontainers)
 cd brain && uv sync && uv run pytest --cov=loopi_brain
+# the vlog label tests need an ffmpeg with drawtext: on the brain PC run them with PATH=/usr/bin:$PATH (the brew ffmpeg lacks it)
 # deploy smoke test against the real stack: see deploy/README.md
 # agent (Rust)
 cd agent && cargo test && cargo llvm-cov --ignore-filename-regex 'main.rs' && cargo tree -i aws-lc-rs

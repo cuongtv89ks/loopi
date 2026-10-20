@@ -1,7 +1,7 @@
 # Loopi P3c — nhiều camera (thiết kế)
 
 - **Ngày:** 2026-10-19
-- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết từ ngày 2026-10-19, P3c-1 trước (viết ngày 2026-10-19, sau khi P4 kết thúc theo D37: `plans/2026-10-19-p3c1-storage-display.md`); P3c-2 có plan ngày 2026-10-20 (`plans/2026-10-20-p3c2-network-cameras.md`, có bảng R1–R9 ghi chỗ plan khác lời spec)
+- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết từ ngày 2026-10-19, P3c-1 trước (viết ngày 2026-10-19, sau khi P4 kết thúc theo D37: `plans/2026-10-19-p3c1-storage-display.md`); P3c-2 có plan ngày 2026-10-20 (`plans/2026-10-20-p3c2-network-cameras.md`, có bảng R1–R9 ghi chỗ plan khác lời spec); P3c-3 có plan ngày 2026-10-21 (`plans/2026-10-21-p3c3-multicam-understanding.md`)
 - **Spec gốc (bắt buộc):** `docs/superpowers/specs/2026-10-14-loopi-design.md`. Tài liệu này thay cho các quyết định tạm ngày 2026-10-18 trong `2026-10-18-p3c-multicam-decisions.md` ở những điểm nó sửa (cầu nối, lưu trữ). Nếu có chỗ mâu thuẫn, spec gốc thắng, trừ các quyết định mới D30–D36 dưới đây; các plan P3c sửa spec gốc cho khớp.
 - **Mục tiêu:** thêm được **camera bất kỳ trong LAN** vào brain — camera IP, điện thoại (iPhone, Android) chạy app phát luồng, bo ESP32 có camera — và **mọi camera đã thêm đều đi qua cùng luồng phân tích như Pi**: keyframe, caption, chép lời (khi camera có âm thanh), moment, chương, recap, tìm kiếm, hỏi đáp, MCP và vlog. Bộ camera đầu tiên của chủ dự án: 1 camera IP Imou và 2 iPhone cũ; sau đó có thể thêm điện thoại Android và ESP32.
 
@@ -70,10 +70,14 @@ Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của các phase P3c
   - các đoạn khác của nhóm được đánh dấu "đã chép ở mic khác" và trỏ tới transcript được chọn.
 - Audio của mọi mic vẫn giữ 7 ngày để nghe lại.
 
+Chi tiết (plan P3c-3, R1–R8): hai đoạn tiếng nói ở hai mic thuộc một nhóm khi chúng chồng nhau sau khi nới mỗi bên 2 giây; mic thắng là mic có đoạn SNR cao nhất, mọi đoạn của nó được chép; đoạn của mic khác chỉ bỏ khi phần hợp của các đoạn đã chọn của những mic khác (mỗi đoạn nới 2 giây) phủ ít nhất một nửa đoạn đó, các đoạn không được cộng dồn. SNR = mức tiếng nói (phân vị 90 của RMS khung 20 ms) trên nền nhiễu của chính đoạn audio thô (không thấp hơn −70 dBFS). 3 phút tính từ lúc audio đầu tiên của phút đó tới brain, và chỉ audio chưa tới mới được bỏ qua khi hết thời gian chờ; audio đã tới nhưng còn đang phân tích vẫn được chờ, trừ khi việc phân tích đó lỗi; chỉ audio chồng phút đó quá 2 giây mới tính cho phút đó; camera có mic bị thiếu (`mic_missing`) không được chờ. Audio đến muộn hơn không đổi quyết định nhưng câu chỉ mic đó nghe vẫn được chép.
+
 ### 4.4 Chương, recap, tìm kiếm, vlog (P3c-1, P3c-3)
 - Moment mang `device_id`; văn bản đưa cho model có nhãn vị trí (ví dụ `[Phòng khách] …`), nên chương và recap nói được ở đâu.
 - Tìm kiếm, nguồn của chat và kết quả MCP có nhãn vị trí.
 - Vlog (D35): chia ngày thành khối 10 phút; mỗi khối có hoạt động chọn camera có nhiều moment nhất; ảnh highlight từ mọi camera; nhãn vị trí trên từng cảnh.
+
+Nhãn vị trí vẽ bằng ffmpeg `drawtext` (DejaVu Sans) ở góc trên bên trái, chỉ khi vlog có ≥ 2 camera; đổi tên vị trí làm mới tóm tắt chương và recap của 14 ngày gần nhất có ≥ 2 camera (R9, R10).
 
 ### 4.5 Web (P3c-1, P3c-2, D31, D34)
 - Timeline gộp có nhãn và bộ lọc (P3c-1, có ích ngay cả khi chỉ có Pi vì đặt được tên vị trí).
