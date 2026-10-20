@@ -5,7 +5,7 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from helpers import fetch_all, fetch_one, insert_item, new_ulid, paired_device
-from loopi_brain.pipeline import asr, dispatch, grouping, jobs
+from loopi_brain.pipeline import asr, dispatch, grouping, jobs, speech
 
 M = dt.datetime(2026, 10, 21, 1, 0, tzinfo=dt.UTC)  # a minute's start
 NOW = M + dt.timedelta(minutes=1, seconds=5)
@@ -313,3 +313,109 @@ async def test_grouping_takes_the_advisory_lock_the_other_writers_share(pool, pk
         assert (await _states(pool))[region] == ("waiting", None)
     await asyncio.wait_for(task, 10)
     assert (await _states(pool))[region] == ("chosen", None)
+
+
+async def _talk(pool, device_id, start, lag, snr):
+    """A minute of audio from ``device_id`` with speech all minute long: 15 s regions, 1.5 s pauses, the last one
+    running to the item's end; return the regions as (id, end)."""
+    item = await insert_item(pool, device_id, kind="audio", started_at=start, seconds=60)
+    regions, t = [], lag
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE item SET ended_at = %s, received_at = %s, speech_detected_at = %s WHERE id = %s",
+                           (start + dt.timedelta(seconds=60) + TAIL, start + dt.timedelta(seconds=61),
+                            start + dt.timedelta(seconds=62), item))
+        while t < 60:
+            end = min(t + 15, 60.0)
+            (region,) = await _regions(conn, item, device_id, start, [(t, end - t, snr)])
+            regions.append((region, start + dt.timedelta(seconds=end)))
+            t = end + 1.5
+    return regions
+
+
+async def test_a_long_conversation_on_two_microphones_is_decided_minute_by_minute(pool, pki_settings, jobs_open):
+    pi, cam = await paired_device(pool, pki_settings), await paired_device(pool, pki_settings)
+    for device in (pi, cam):  # the minute before the talk: delivered, silent
+        await _detected(pool, device["device_id"], [], start=M - dt.timedelta(minutes=1),
+                        received=M + dt.timedelta(seconds=1))
+    pi_regions, cam_regions = [], []
+    for k in range(10):  # ten minutes of talk both microphones hear, every minute delivered on time
+        start, now = M + dt.timedelta(minutes=k), M + dt.timedelta(minutes=k + 1, seconds=5)
+        for device in (pi, cam):
+            await _hb(pool, device["device_id"], at=now)
+        pi_regions += await _talk(pool, pi["device_id"], start, 0.0, 20.0)
+        cam_regions += await _talk(pool, cam["device_id"], start, 0.8, 10.0)
+        await grouping.group_speech(pool, now=now)
+        states, nxt = await _states(pool), M + dt.timedelta(minutes=k + 1)
+        for region, end in pi_regions + cam_regions:  # only speech reaching the next minute (not ready) still waits
+            assert (states[region][0] == "waiting") == (end + speech.GROUP_SLACK > nxt), (k, end)
+    await grouping.group_speech(pool, now=M + dt.timedelta(minutes=14))  # the microphones went quiet: all ready
+    states = await _states(pool)
+    assert all(states[r] == ("chosen", None) for r, _ in pi_regions)  # one transcript per pair, from the clearer
+    assert all(states[r][0] == "covered" and states[r][1] in dict(pi_regions) for r, _ in cam_regions)
+
+
+async def test_the_ready_part_of_a_group_is_grouped_again_before_it_is_decided(pool, pki_settings, jobs_open):
+    pi, cam, hall = [await paired_device(pool, pki_settings) for _ in range(3)]
+    for device in (pi, cam, hall):
+        await _hb(pool, device["device_id"])
+    _, (p1, p2) = await _detected(pool, pi["device_id"], [(40, 5, 10.0), (50, 5, 30.0)])
+    _, (c1, c2) = await _detected(pool, cam["device_id"], [(40.5, 5, 30.0), (50.5, 5, 10.0)])
+    _, (tail,) = await _detected(pool, hall["device_id"], [(44, 15, 5.0)])  # joins both, reaches the next minute
+    await grouping.group_speech(pool, now=NOW)
+    assert await _states(pool) == {c1: ("chosen", None), p1: ("covered", c1),  # two sentences, each its clearer mic
+                                   p2: ("chosen", None), c2: ("covered", p2), tail: ("waiting", None)}
+
+
+async def test_a_detection_committing_during_the_pass_holds_its_group_to_the_next_pass(
+        pool, pki_settings, jobs_open, monkeypatch):
+    pi, cam = await paired_device(pool, pki_settings), await paired_device(pool, pki_settings)
+    await _hb(pool, pi["device_id"])
+    await _hb(pool, cam["device_id"])
+    _, (pi_region,) = await _detected(pool, pi["device_id"], [(10, 3, 12.0)])
+    cam_item, _ = await _detected(pool, cam["device_id"], [])
+    real, late = grouping.minute_ready, []
+
+    async def detection_commits_meanwhile(conn, minute, now, expected):
+        if not late:  # the camera's detection of the same sentence commits while the pass checks the minute
+            async with pool.connection() as other:
+                late.extend(await _regions(other, cam_item, cam["device_id"], M, [(10.8, 3, 30.0)]))
+        return await real(conn, minute, now, expected)
+
+    monkeypatch.setattr(grouping, "minute_ready", detection_commits_meanwhile)
+    assert (await grouping.group_speech(pool, now=NOW)).decided == 0
+    assert await _states(pool) == {pi_region: ("waiting", None), late[0]: ("waiting", None)}
+    await grouping.group_speech(pool, now=NOW + dt.timedelta(seconds=5))  # the next pass sees both
+    assert await _states(pool) == {late[0]: ("chosen", None), pi_region: ("covered", late[0])}
+
+
+async def test_a_live_transcription_runs_before_a_reprocessed_backlog(pool, pki_settings, jobs_open):
+    from helpers import FakeTranscriber, make_ctx, make_opus, run_jobs
+    from loopi_brain.pipeline.asr import RegionResult, SegmentResult
+
+    pi = await paired_device(pool, pki_settings)
+    await _hb(pool, pi["device_id"])
+    old = M - dt.timedelta(hours=5)  # a day being processed again: its items ended hours ago
+    backlog, _ = await _detected(pool, pi["device_id"], [(10, 3, 20.0)], start=old)
+    live, _ = await _detected(pool, pi["device_id"], [(10, 2, 20.0)])  # ended a minute ago
+    for item in (backlog, live):
+        row = await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item,))
+        make_opus(pki_settings.media_root / row["raw_path"], seconds=60)
+    assert sorted((await grouping.group_speech(pool, now=NOW)).transcribing) == sorted([backlog, live])
+    rows = await fetch_all(pool, "SELECT args->>'item_id' AS item, priority FROM procrastinate_jobs")
+    assert {r["item"]: r["priority"] for r in rows} == {live: 0, backlog: grouping.BACKLOG_PRIORITY}
+    assert grouping.BACKLOG_PRIORITY == -5
+    whisper = FakeTranscriber(RegionResult("vi", 0.9, [SegmentResult(0.0, 1.0, "xin chào", -0.2, 0.05, 1.0)]))
+    await run_jobs(make_ctx(pool, pki_settings, transcriber=whisper))
+    assert whisper.chunks == [2 * asr.SAMPLE_RATE, 3 * asr.SAMPLE_RATE]  # the live item's region first
+
+
+@pytest.mark.parametrize(("ago", "priority"), [(29, 0), (31, -5)])
+async def test_an_item_that_ended_within_30_minutes_is_transcribed_as_live_work(
+        pool, pki_settings, jobs_open, ago, priority):
+    pi = await paired_device(pool, pki_settings)
+    await _hb(pool, pi["device_id"])
+    await _detected(pool, pi["device_id"], [(10, 3, 20.0)])
+    now = M + dt.timedelta(minutes=1) + TAIL + dt.timedelta(minutes=ago)
+    await _hb(pool, pi["device_id"], at=now)
+    await grouping.group_speech(pool, now=now)
+    assert (await fetch_one(pool, "SELECT priority FROM procrastinate_jobs"))["priority"] == priority

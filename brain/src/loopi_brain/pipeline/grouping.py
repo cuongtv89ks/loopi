@@ -1,10 +1,11 @@
 """group_speech (D33, P3c design §4.3; plan rulings R2–R4, R6): decide which speech regions Whisper transcribes.
 
-A region waits until every minute its group touches is ready (``minute_ready``): all the audio that has arrived for it
-is detected, and every microphone that records has delivered it — WAIT, counted from the minute's first arrival,
-excuses only audio that has not arrived. Then ``speech.decide`` keeps the clearest region of each group; an item whose
-regions are all decided gets its Whisper job (lock "asr") when it has a chosen region, and is done otherwise. Runs at
-the end of every detection and every minute."""
+A region waits until every minute it touches is ready (``minute_ready``): all the audio that has arrived for it is
+detected, and every microphone that records has delivered it — WAIT, counted from the minute's first arrival, excuses
+only audio that has not arrived. Then ``speech.decide`` keeps the clearest region of each group. A group still running
+into a minute that is not ready (a long conversation) has its regions before that minute decided now and the rest on a
+later pass, against those (R4). An item whose regions are all decided gets its Whisper job (lock "asr") when it has a
+chosen region, and is done otherwise. Runs at the end of every detection and every minute."""
 from __future__ import annotations
 
 import datetime as dt
@@ -28,6 +29,11 @@ LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended('loopi:group_speech', 
 MINUTE = dt.timedelta(minutes=1)
 MAX_ITEM = dt.timedelta(hours=1)  # an uploaded audio item is at most 3600 s: the lookups need not reach further back
 MAX_REGION = dt.timedelta(seconds=60)  # a region lasts at most asr.MAX_REGION_S (20 s; asr imports this module)
+# Procrastinate runs a todo job of a higher priority before older ones holding the same lock ("asr"): an item that
+# ended this long ago (a day processed again, a brain catching up) is transcribed after the live ones, which keep
+# their latency; it still runs before the chapter and recap jobs (-10) and the evaluation (-20).
+LIVE_WINDOW = dt.timedelta(minutes=30)
+BACKLOG_PRIORITY = -5
 
 
 @dataclass
@@ -105,36 +111,69 @@ async def _decide(conn: AsyncConnection, now: dt.datetime) -> int:
         (first - MAX_REGION, last, first),
     )
     decided = [_span(r) for r in await cur.fetchall()]
-    expected = await _expected(conn, now)
+    expected, known = await _expected(conn, now), {s.id for s in waiting}
     ready: dict[dt.datetime, bool] = {}
     count = 0
     for group in speech.groups(waiting + decided):
         if not any(s.state == "waiting" for s in group):
             continue
-        minutes = sorted({m for s in group for m in minutes_touched(s)})
-        for m in minutes:
-            if m not in ready:
-                ready[m] = await minute_ready(conn, m, now, expected)
-        if not all(ready[m] for m in minutes):
-            continue
-        for d in speech.decide(group):
-            await conn.execute(
-                "UPDATE speech_region SET state = %s, covered_by = %s, decided_at = %s"
-                " WHERE id = %s AND state = 'waiting'",
-                (d.state, d.covered_by, now, d.id),
-            )
-            count += 1
+        blocked = await _first_unready(conn, group, ready, now, expected)
+        if blocked is None:
+            parts = [group]
+        else:  # C1: the spans before the first minute not ready are decided now, the rest later against them (R4)
+            before = [s for s in group if s.state != "waiting" or s.end + speech.GROUP_SLACK <= blocked]
+            parts = [g for g in speech.groups(before) if any(s.state == "waiting" for s in g)]
+        for part in parts:
+            if not await _arrived_meanwhile(conn, part, known):
+                count += await _apply(conn, part, now)
     return count
 
 
-async def _settle_items(conn: AsyncConnection, result: Grouped) -> None:
+async def _arrived_meanwhile(conn: AsyncConnection, part: list[speech.Span], known: set[str]) -> bool:
+    """M1: a detection committing after the pass read the waiting spans can make a minute ready while its regions are
+    missing here; a part near such a region is left to the next pass, which decides it with them."""
+    spans = [s for s in part if s.state == "waiting"]
+    reach = 2 * speech.GROUP_SLACK
+    lo, hi = min(s.start for s in spans) - reach, max(s.end for s in spans) + reach
     cur = await conn.execute(
-        "SELECT i.id, j.task_name, j.status, bool_or(r.state = 'waiting') AS waiting,"
+        "SELECT id FROM speech_region WHERE state = 'waiting' AND start_ts > %s AND start_ts < %s AND end_ts > %s",
+        (lo - MAX_REGION, hi, lo),
+    )
+    return any(r["id"] not in known for r in await cur.fetchall())
+
+
+async def _first_unready(conn: AsyncConnection, group: list[speech.Span], ready: dict[dt.datetime, bool],
+                         now: dt.datetime, expected: set[str]) -> dt.datetime | None:
+    """The first minute the group touches that is not ready (``ready`` caches the pass's answers); None if all are."""
+    for m in sorted({m for s in group for m in minutes_touched(s)}):
+        if m not in ready:
+            ready[m] = await minute_ready(conn, m, now, expected)
+        if not ready[m]:
+            return m
+    return None
+
+
+async def _apply(conn: AsyncConnection, part: list[speech.Span], now: dt.datetime) -> int:
+    """Store ``speech.decide``'s decisions for the waiting spans of ``part``; return how many."""
+    count = 0
+    for d in speech.decide(part):
+        await conn.execute(
+            "UPDATE speech_region SET state = %s, covered_by = %s, decided_at = %s"
+            " WHERE id = %s AND state = 'waiting'",
+            (d.state, d.covered_by, now, d.id),
+        )
+        count += 1
+    return count
+
+
+async def _settle_items(conn: AsyncConnection, now: dt.datetime, result: Grouped) -> None:
+    cur = await conn.execute(
+        "SELECT i.id, i.ended_at, j.task_name, j.status, bool_or(r.state = 'waiting') AS waiting,"
         " bool_or(r.state = 'chosen') AS chosen"
         " FROM item i JOIN speech_region r ON r.item_id = i.id"
         " LEFT JOIN procrastinate_jobs j ON j.id = i.analysis_job_id"
         " WHERE i.kind = 'audio' AND i.analysis_state = 'pending' AND i.speech_detected_at IS NOT NULL"
-        " GROUP BY i.id, j.task_name, j.status ORDER BY i.id"
+        " GROUP BY i.id, i.ended_at, j.task_name, j.status ORDER BY i.id"
     )
     for row in await cur.fetchall():
         if row["waiting"]:
@@ -144,7 +183,8 @@ async def _settle_items(conn: AsyncConnection, result: Grouped) -> None:
                 continue  # queued, running, or on the dead-letter list (retried from Xử lý)
             if not await lock_pending_item(conn, row["id"]):
                 continue
-            job_id = await jobs.enqueue(conn, jobs.TRANSCRIBE_AUDIO, queue="audio", lock="asr",
+            priority = 0 if row["ended_at"] >= now - LIVE_WINDOW else BACKLOG_PRIORITY
+            job_id = await jobs.enqueue(conn, jobs.TRANSCRIBE_AUDIO, queue="audio", lock="asr", priority=priority,
                                         queueing_lock=f"asr:{row['id']}", item_id=row["id"])
             await conn.execute("UPDATE item SET analysis_job_id = %s WHERE id = %s", (job_id, row["id"]))
             result.transcribing.append(row["id"])
@@ -160,7 +200,7 @@ async def group_speech(pool: AsyncConnectionPool, now: dt.datetime | None = None
     async with pool.connection() as conn, conn.transaction():
         await conn.execute(LOCK_SQL)
         result.decided = await _decide(conn, now)
-        await _settle_items(conn, result)
+        await _settle_items(conn, now, result)
     if result.decided or result.transcribing or result.finished:
         log.info("speech grouping: %d regions decided, %d items to transcribe, %d items covered elsewhere",
                  result.decided, len(result.transcribing), len(result.finished))
