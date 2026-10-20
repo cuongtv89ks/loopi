@@ -43,7 +43,8 @@ def test_two_different_conversations_are_both_kept():
 def test_a_region_without_an_envelope_keeps_the_time_rule():
     pi = span("a", "pi", 0, talk(6, seed=1), 25.0)
     old = Span("b", "cam", T + dt.timedelta(seconds=0.5), T + dt.timedelta(seconds=6), 12.0)  # stored before 014
-    assert speech.same_sound(old, pi)
+    assert speech.best_correlation(old, pi) is None and speech.best_correlation(pi, old) is None
+    assert speech.same_sound(old, pi) and speech.same_sound(pi, old)
     assert speech.decide(speech.groups([pi, old])[0])[1] == Decision("b", "covered", "a")
 
 
@@ -56,10 +57,48 @@ def test_a_flat_envelope_is_not_a_match():
         assert not speech.same_sound(pi, hum)
 
 
-def test_too_little_common_time_counts_as_the_same():
+def test_too_little_common_time_is_not_the_same():
     pi = span("a", "pi", 0, talk(6, seed=1), 25.0)
     edge = span("b", "cam", 7.9, talk(3, seed=3), 15.0)  # same group (within the slack), < 1 s common at every lag
-    assert speech.same_sound(edge, pi)
+    assert speech.best_correlation(edge, pi) is None
+    assert not speech.same_sound(edge, pi)  # nothing to compare: not the same (I1), the time rule would lose it
+
+
+def test_a_region_under_a_second_keeps_the_time_rule():
+    pi = span("a", "pi", 0, talk(6, seed=1), 25.0)
+    blip = span("b", "cam", 2.0, [-60.0, -25.0, -22.0, -30.0, -60.0], 15.0)  # 0.5 s: too short to have a shape
+    assert speech.best_correlation(blip, pi) is None
+    assert speech.same_sound(blip, pi)  # a: the waiting region, under SAME_SOUND_MIN_FRAMES frames
+
+
+def test_a_short_chosen_region_does_not_cover_a_long_one_of_another_conversation():
+    """I1: a 0.5 s "ừ" of the Pi inside an 8 s camera region (another conversation) is not the same sound."""
+    pi = span("a", "pi", 3.0, [-60.0, -25.0, -22.0, -30.0, -60.0], 25.0)
+    cam = span("b", "cam", 0, talk(8, seed=2), 15.0)
+    assert speech.best_correlation(cam, pi) is None and not speech.same_sound(cam, pi)
+    assert speech.decide(speech.groups([pi, cam])[0]) == [Decision("a", "chosen"), Decision("b", "chosen")]
+
+
+def test_two_chosen_regions_reaching_a_long_one_only_by_the_slack_do_not_cover_it():
+    """I1: 20 s Pi regions ending at 5 s and starting at 15 s around a 20 s camera region (another conversation):
+    the union of their slack-widened ends hears 14 s of 20, but neither is compared with it (too little in common)."""
+    before, after = span("a", "pi", -15, talk(20, seed=1), 25.0), span("c", "pi", 15, talk(20, seed=3), 25.0)
+    cam = span("b", "cam", 0, talk(20, seed=2), 15.0)
+    assert speech.best_correlation(cam, before) is None and speech.best_correlation(cam, after) is None
+    assert speech.decide(speech.groups([before, cam, after])[0]) == [
+        Decision("a", "chosen"), Decision("c", "chosen"), Decision("b", "chosen")]
+
+
+def test_a_chosen_region_far_from_a_waiting_one_is_never_compared(monkeypatch):
+    """M1: only the chosen regions that reach the waiting one (within the slack) are correlated."""
+    env = talk(6, seed=1)
+    near, far = span("a", "pi", 0, env, 25.0, "chosen"), span("c", "pi", 600, talk(6, seed=3), 25.0, "chosen")
+    cam = span("b", "cam", 0.5, env, 15.0)  # the same sound as the near region
+    seen, real = [], speech.same_sound
+    monkeypatch.setattr(speech, "same_sound", lambda a, b, slack=speech.GROUP_SLACK: seen.append((a.id, b.id)) or
+                        real(a, b, slack))
+    assert speech.decide([near, far, cam]) == [Decision("b", "covered", "a")]
+    assert seen == [("b", "a")]
 
 
 def test_a_part_of_a_longer_sound_that_starts_later_matches():
@@ -74,14 +113,15 @@ def test_a_part_of_a_longer_sound_that_starts_later_matches():
 def test_a_short_common_stretch_is_not_compared():
     pi, late = span("a", "pi", 0, talk(6, seed=1), 25.0), span("b", "cam", 6.0, talk(6, seed=2), 15.0)
     assert speech.best_correlation(pi, late) is None  # at most 2 s in common at any lag: under half of 6 s
-    assert speech.same_sound(late, pi)  # nothing to compare: today's time rule
+    assert not speech.same_sound(late, pi)  # nothing to compare: not the same (I1)
 
 
 @pytest.mark.parametrize("offset", [0.0, 0.3, 0.6])
-def test_no_unrelated_pair_of_talk_envelopes_reaches_the_threshold(offset):
-    """S2's threshold, pinned on the same generator as the tests above: seeds 1-39 give 741 unrelated pairs (the
-    second ``offset`` seconds late); the best-lag correlation of none reaches SAME_SOUND_MIN. The offsets are those
-    whose false-match rate is 0 %: with larger ones (1-5 s) a few pairs still match: left to acceptance §8.2."""
+def test_no_unrelated_pair_of_6_second_talk_envelopes_reaches_the_threshold(offset):
+    """S2's threshold, pinned on the same generator as the tests above, for 6 s regions only: seeds 1-39 give 741
+    unrelated pairs (the second ``offset`` seconds late); the best-lag correlation of none reaches SAME_SOUND_MIN. The
+    offsets are those whose false-match rate is 0 %: with larger ones (1-5 s) a few pairs still match, and shorter
+    regions (under about 3 s) match by chance far more often (I2): both are left to acceptance §8.2."""
     envs = {seed: talk(6, seed) for seed in range(1, 40)}
     worst = max(speech.best_correlation(span("a", "pi", 0, envs[i], 1.0), span("b", "cam", offset, envs[j], 1.0))
                 for i in envs for j in envs if i < j)

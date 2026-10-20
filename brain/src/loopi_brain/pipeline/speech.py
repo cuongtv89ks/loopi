@@ -20,7 +20,8 @@ ENVELOPE_HOP_S = 0.1  # S1: one loudness value per 100 ms
 # S2: no unrelated synthetic pair of seeds 1-39 reaches it at start offsets <= 0.6 s (0.3-0.4 % do at 1-5 s);
 # tuned at acceptance §8.2
 SAME_SOUND_MIN = 0.7
-SAME_SOUND_MIN_FRAMES = 10  # S2: at least 1 s in common to compare at all (and half of the shorter envelope)
+# S2: at least 1 s in common to compare (and half of the shorter envelope); a region under 1 s has no shape
+SAME_SOUND_MIN_FRAMES = 10
 WAIT = dt.timedelta(minutes=3)  # D33: the longest wait for a minute's audio from every microphone (R3)
 
 
@@ -124,11 +125,17 @@ def best_correlation(a: Span, b: Span, slack: dt.timedelta = GROUP_SLACK) -> flo
 
 
 def same_sound(a: Span, b: Span, slack: dt.timedelta = GROUP_SLACK) -> bool:
-    """S2: do ``a`` and ``b`` (two microphones) hold the same sound? Their best envelope correlation reaches
-    SAME_SOUND_MIN. True when there is nothing to compare (no envelope, stored before the check existed, or no lag with
-    enough frames in common) — today's time-only rule."""
+    """S2: does the waiting region ``a`` hold the same sound as the chosen region ``b`` of another microphone? Their
+    best envelope correlation reaches SAME_SOUND_MIN. Not symmetric: ``a`` is the one being decided. True when either
+    has no envelope (stored before the check existed) — today's time-only rule. When both have one but nothing can be
+    compared (no lag with enough frames in common), True only for an ``a`` under SAME_SOUND_MIN_FRAMES frames, too
+    short to have a shape; a longer one is kept (a duplicate beats a lost sentence, I1)."""
+    if not a.envelope or not b.envelope:
+        return True
     best = best_correlation(a, b, slack)
-    return best is None or best >= SAME_SOUND_MIN
+    if best is None:
+        return len(a.envelope) < SAME_SOUND_MIN_FRAMES
+    return best >= SAME_SOUND_MIN
 
 
 def groups(spans: list[Span], slack: dt.timedelta = GROUP_SLACK) -> list[list[Span]]:
@@ -161,7 +168,8 @@ def decide(group: list[Span], slack: dt.timedelta = GROUP_SLACK, share: float = 
     its best-SNR span (then the earliest, then the smaller device id) — and chooses all the winner's spans. A group
     that already has decisions (late audio) keeps them. Every other waiting span, best SNR first, is covered by the
     chosen span of another microphone that holds the same sound (S3) and hears most of it when such chosen spans hear
-    at least ``share`` of it, and is chosen otherwise."""
+    at least ``share`` of it, and is chosen otherwise. Only chosen spans reaching ``s`` within the slack are compared
+    with it."""
     waiting = [s for s in group if s.state == "waiting"]
     if not waiting:
         return []
@@ -175,7 +183,8 @@ def decide(group: list[Span], slack: dt.timedelta = GROUP_SLACK, share: float = 
                 chosen.append(s)
         waiting = [s for s in waiting if s.device_id != winner]
     for s in sorted(waiting, key=lambda s: (-s.snr_db, s.start, s.id)):
-        others = [c for c in chosen if c.device_id != s.device_id and same_sound(s, c, slack)]
+        others = [c for c in chosen
+                  if c.device_id != s.device_id and _heard(s, c, slack) > 0 and same_sound(s, c, slack)]
         length = (s.end - s.start).total_seconds()
         heard = _heard_together(s, others, slack)
         best = min(others, key=lambda c: (-_heard(s, c, slack), -c.snr_db, c.id), default=None)
