@@ -11,7 +11,7 @@ import numpy as np
 
 from .. import audio_level
 
-SAMPLE_RATE = 16_000
+SAMPLE_RATE = audio_level.SAMPLE_RATE
 NOISE_FLOOR_MIN_DBFS = -70.0  # a noise gate sends digital silence: a floor of ~0 must not win every group (R5)
 SPEECH_PERCENTILE = 90  # the speech level: the loud frames of a region, whatever its pauses
 GROUP_SLACK = dt.timedelta(seconds=2)  # a network camera's sound reaches its agent about a second late (R1)
@@ -68,6 +68,18 @@ def _heard(a: Span, b: Span, slack: dt.timedelta) -> float:
     return max(0.0, (hi - lo).total_seconds())
 
 
+def _heard_together(a: Span, others: list[Span], slack: dt.timedelta) -> float:
+    """Seconds of ``a`` covered by the union of ``others``, each widened by ``slack`` (overlaps are not added twice)."""
+    intervals = sorted((max(a.start, c.start - slack), min(a.end, c.end + slack)) for c in others)
+    heard, edge = 0.0, a.start
+    for lo, hi in intervals:
+        lo = max(lo, edge)
+        if hi > lo:
+            heard += (hi - lo).total_seconds()
+            edge = hi
+    return heard
+
+
 def groups(spans: list[Span], slack: dt.timedelta = GROUP_SLACK) -> list[list[Span]]:
     """Spans of different microphones that overlap within ``slack``, joined transitively; each group in time order,
     the groups by their first span."""
@@ -114,8 +126,8 @@ def decide(group: list[Span], slack: dt.timedelta = GROUP_SLACK, share: float = 
     for s in sorted(waiting, key=lambda s: (-s.snr_db, s.start, s.id)):
         others = [c for c in chosen if c.device_id != s.device_id]
         length = (s.end - s.start).total_seconds()
-        heard = min(length, sum(_heard(s, c, slack) for c in others))
-        best = max(others, key=lambda c: (_heard(s, c, slack), c.snr_db), default=None)
+        heard = _heard_together(s, others, slack)
+        best = min(others, key=lambda c: (-_heard(s, c, slack), -c.snr_db, c.id), default=None)
         if best is not None and length > 0 and heard >= share * length:
             decisions.append(Decision(s.id, "covered", best.id))
         else:
