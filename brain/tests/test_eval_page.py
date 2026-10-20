@@ -189,7 +189,7 @@ async def test_golden_files_are_served_only_for_their_samples(pool, pki_settings
     assert (await web.get("/eval/audio/01NOSUCH000000000000000000.opus")).status_code == 404
     assert (await web.get("/eval/keyframes/01NOSUCH000000000000000000.jpg")).status_code == 404
     async with pool.connection() as conn:  # a row without its copy (the copy was lost)
-        await conn.execute("INSERT INTO device (id, name, cert_fingerprint) VALUES ('D1', 'd', 'fp')")
+        await conn.execute("INSERT INTO device (id, name, location, cert_fingerprint) VALUES ('D1', 'd', 'd', 'fp')")
         await conn.execute("INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes, raw_path,"
                            " status) VALUES ('I1', 'D1', 'audio', now(), now(), 'x', 1, 'raw/x.opus', 'ready')")
         await conn.execute("INSERT INTO eval_audio (id, item_id, path, no_speech) VALUES ('A1', 'I1', 'audio/A1.opus', true)")

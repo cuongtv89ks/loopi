@@ -71,9 +71,10 @@ async def register_device(
                 return None
             cert_pem = issue_cert(device_id)
             fp = pki.fingerprint(cert_pem)
+            name = f"loopi-{device_id[-4:].lower()}"
             await conn.execute(
-                "INSERT INTO device (id, name, cert_fingerprint, hw_info) VALUES (%s, %s, %s, %s)",
-                (device_id, f"loopi-{device_id[-4:].lower()}", fp, Jsonb(hw_info)),
+                "INSERT INTO device (id, name, location, cert_fingerprint, hw_info) VALUES (%s, %s, %s, %s, %s)",
+                (device_id, name, name, fp, Jsonb(hw_info)),
             )
             await conn.execute(
                 "UPDATE pair_token SET device_id = %s WHERE token = %s", (device_id, token)
@@ -178,7 +179,7 @@ async def record_heartbeat(
 async def list_devices(pool: AsyncConnectionPool) -> list[dict]:
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT id, name, revoked, hw_info, last_heartbeat, last_heartbeat_at,"
+            "SELECT id, name, location, revoked, hw_info, last_heartbeat, last_heartbeat_at,"
             " dropped_total, created_at FROM device ORDER BY created_at"
         )
         return await cur.fetchall()

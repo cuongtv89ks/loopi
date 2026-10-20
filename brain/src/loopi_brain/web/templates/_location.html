@@ -1,0 +1,6 @@
+<form class="inline location" hx-post="/devices/{{ d.id }}/location" hx-target="this" hx-swap="outerHTML">
+  <label>Vị trí: <input name="location" value="{{ d.location }}" maxlength="60" required></label>
+  <button>Lưu</button>
+  {% if saved %}<span class="muted">Đã lưu.</span>{% endif %}
+  {% if error %}<span class="err">{{ error }}</span>{% endif %}
+</form>

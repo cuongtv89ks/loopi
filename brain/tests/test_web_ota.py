@@ -24,7 +24,8 @@ def ota_dir(pki_settings):
 
 def update_form(html):
     """The update form of the only device on the page."""
-    return html[html.index("<form hx-post"):html.index("</form>")]
+    start = html.index('/update"')
+    return html[html.rindex("<form", 0, start):html.index("</form>", start)]
 
 
 def tag(html, name):
@@ -240,7 +241,7 @@ async def test_previewing_notes_does_not_ask_for_the_install_confirmation(client
     # hx-confirm on the form would be inherited by the select's hx-get and ask "Cài bản đã chọn?" on a preview.
     await paired_device(pool, pki_settings)
     html = (await client.get("/devices")).text
-    form = html[html.index("<form hx-post"):html.index("</form>")]
+    form = update_form(html)
     assert 'hx-disinherit="hx-confirm"' in form and "hx-confirm=" in form
     assert '<select name="bundle" hx-get="/devices/update-notes"' in form
 
