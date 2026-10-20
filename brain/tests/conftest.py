@@ -8,7 +8,7 @@ from loopi_brain.db import make_pool, migrate
 
 PG_IMAGE = "pgvector/pgvector:pg17"
 APP_TABLES = (
-    "vlog, mcp_token, eval_run_audio, eval_run, eval_answer, eval_question, eval_caption_score, eval_caption, eval_audio,"
+    "network_camera, vlog, mcp_token, eval_run_audio, eval_run, eval_answer, eval_question, eval_caption_score, eval_caption, eval_audio,"
     " commitment, chapter, day_recap, setting, forget_log, day_job_error,"
     " moment, transcript_segment, keyframe, device_command, item, pair_token, device,"
     " procrastinate_events, procrastinate_periodic_defers, procrastinate_jobs, procrastinate_workers"
@@ -49,6 +49,7 @@ def settings(database_url, tmp_path):
         pki_dir=tmp_path / "pki",
         eval_dir=tmp_path / "eval",
         ota_dir=tmp_path / "ota",
+        cameras_dir=tmp_path / "cameras",
         min_free_bytes=0,
     )
 

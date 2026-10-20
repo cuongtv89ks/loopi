@@ -35,12 +35,12 @@ def _new_token() -> str:
     return f"{raw[:4]}-{raw[4:]}"
 
 
-async def create_pair_token(pool: AsyncConnectionPool, ttl: dt.timedelta) -> dict:
+async def create_pair_token(pool: AsyncConnectionPool, ttl: dt.timedelta, camera_id: str | None = None) -> dict:
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "INSERT INTO pair_token (token, expires_at) VALUES (%s, now() + %s)"
+            "INSERT INTO pair_token (token, expires_at, camera_id) VALUES (%s, now() + %s, %s)"
             " RETURNING token, expires_at",
-            (_new_token(), ttl),
+            (_new_token(), ttl, camera_id),
         )
         return await cur.fetchone()
 
@@ -79,6 +79,14 @@ async def register_device(
             await conn.execute(
                 "UPDATE pair_token SET device_id = %s WHERE token = %s", (device_id, token)
             )
+            cur = await conn.execute(
+                "UPDATE network_camera c SET device_id = %s FROM pair_token t"
+                " WHERE t.token = %s AND t.camera_id = c.id AND c.device_id IS NULL RETURNING c.location",
+                (device_id, token),
+            )
+            camera = await cur.fetchone()
+            if camera is not None:  # a network camera's agent: its device takes the camera's place name (D34)
+                await conn.execute("UPDATE device SET location = %s WHERE id = %s", (camera["location"], device_id))
     return {"device_id": device_id, "cert_pem": cert_pem, "fingerprint": fp}
 
 

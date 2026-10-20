@@ -26,6 +26,14 @@ def test_the_golden_set_lives_in_the_data_dir_outside_git(monkeypatch):
     assert Settings().eval_dir == Path("/data/eval")
 
 
+def test_cameras_live_in_the_data_dir_and_reach_caddy_by_its_compose_name(monkeypatch):
+    s = Settings(database_url="postgresql://x")
+    assert s.cameras_dir == Path("/srv/loopi/cameras") and s.camera_brain_url == "https://proxy:8443"
+    monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("LOOPI_CAMERAS_DIR", "/data/cameras")
+    assert Settings().cameras_dir == Path("/data/cameras")
+
+
 def test_pipeline_settings_from_env(monkeypatch):
     monkeypatch.setenv("LOOPI_DATABASE_URL", "postgresql://x")
     monkeypatch.setenv("LOOPI_ASR_LANGUAGES", " ko , en ,")

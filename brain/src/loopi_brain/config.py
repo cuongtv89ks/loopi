@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # OTA bundles (P4a design §8): signed RAUC bundles and their JSON descriptions, put here by
     # os/scripts/publish-bundle.sh; served to paired devices at GET /v1/ota/{bundle}.
     ota_dir: Path = Path("/srv/loopi/ota")
+    # P3c-2: one directory per network camera (loopi.toml + the agent's data), shared with the cameras container.
+    cameras_dir: Path = Path("/srv/loopi/cameras")
+    # How camera agents in the compose network reach Caddy (R2: the agent pins the brain CA, not the host name).
+    camera_brain_url: str = "https://proxy:8443"
     tz: str = "Asia/Seoul"
     min_free_bytes: int = 2 * 1024**3
     max_item_bytes: int = 64 * 1024**2

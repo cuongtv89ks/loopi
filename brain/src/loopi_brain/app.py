@@ -95,6 +95,7 @@ def create_app(
     app.include_router(ota_router)
     app.state.mcp = mcp_server.mount(app, mcp_server.Deps(pool=active_pool, settings=settings, llm=llm))
     settings.media_root.mkdir(parents=True, exist_ok=True)
+    settings.cameras_dir.mkdir(parents=True, exist_ok=True)  # the cameras container mounts it and needs it to exist
     app.mount("/media", StaticFiles(directory=settings.media_root), name="media")
     app.mount(
         "/static", StaticFiles(directory=Path(__file__).parent / "web" / "static"), name="static"
