@@ -16,6 +16,7 @@ NOISE_FLOOR_MIN_DBFS = -70.0  # a noise gate sends digital silence: a floor of ~
 SPEECH_PERCENTILE = 90  # the speech level: the loud frames of a region, whatever its pauses
 GROUP_SLACK = dt.timedelta(seconds=2)  # a network camera's sound reaches its agent about a second late (R1)
 COVERED_SHARE = 0.5  # covered when chosen speech elsewhere overlaps at least half of the region (R2)
+ENVELOPE_HOP_S = 0.1  # S1: one loudness value per 100 ms
 WAIT = dt.timedelta(minutes=3)  # D33: the longest wait for a minute's audio from every microphone (R3)
 
 
@@ -41,6 +42,17 @@ def snr_db(raw: np.ndarray, start_s: float, end_s: float, noise: float) -> float
         return 0.0
     speech = float(np.percentile(rms, SPEECH_PERCENTILE))
     return 20 * math.log10(max(speech, 1e-9) / noise)
+
+
+def envelope(raw: np.ndarray, start_s: float, end_s: float) -> list[float]:
+    """S1: the region's loudness every ENVELOPE_HOP_S (mean of the 20 ms frame RMS), in dBFS, floored at
+    NOISE_FLOOR_MIN_DBFS; only whole steps."""
+    rms = frame_rms(raw[int(start_s * SAMPLE_RATE): int(end_s * SAMPLE_RATE)])
+    per = round(ENVELOPE_HOP_S * SAMPLE_RATE / audio_level.FRAME)  # 5 frames of 20 ms
+    steps = len(rms) // per
+    floor = 10 ** (NOISE_FLOOR_MIN_DBFS / 20)
+    means = rms[: steps * per].reshape(steps, per).mean(axis=1) if steps else np.zeros(0)
+    return [float(20 * np.log10(max(m, floor))) for m in means]
 
 
 @dataclass(frozen=True)

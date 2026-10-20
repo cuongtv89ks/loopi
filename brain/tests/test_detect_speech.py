@@ -37,6 +37,19 @@ async def test_speech_regions_are_stored_with_their_snr_and_the_item_waits(pool,
     assert groupings == [(None, 2)]  # grouping runs right after the detection, and sees its committed regions
 
 
+async def test_detection_stores_each_regions_envelope(pool, pki_settings, monkeypatch):
+    dev = await paired_device(pool, pki_settings)
+    item_id = await _audio(pool, pki_settings, dev["device_id"])
+    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _t: [Region(1.0, 3.5)])
+
+    async def fake_group(pool, now=None):
+        pass
+
+    monkeypatch.setattr(grouping, "group_speech", fake_group)
+    assert await asr.detect_speech(make_ctx(pool, pki_settings), item_id) == 1
+    assert await fetch_one(pool, "SELECT array_length(envelope, 1) AS n FROM speech_region") == {"n": 25}
+
+
 async def test_audio_without_speech_is_done_at_once(pool, pki_settings, monkeypatch):
     dev = await paired_device(pool, pki_settings)
     item_id = await _audio(pool, pki_settings, dev["device_id"])
@@ -128,8 +141,8 @@ def test_regions_are_found_on_the_levelled_audio_and_measured_on_the_raw_audio(t
     found = asr.detect_file(path, 20.0, 0.4)
     raw_peak = float(np.abs(asr.load_audio(path)).max())
     assert heard[0][0] > 2 * raw_peak and heard[0][1] == 0.4  # the VAD hears what Whisper will hear
-    assert [r for r, _snr in found] == [Region(0.5, 1.0), Region(1.5, 2.0)]
-    assert all(25 < snr < 40 for _r, snr in found)  # ~ -37 dBFS over the -70 dBFS floor, not the levelled audio
+    assert [r for r, _snr, _env in found] == [Region(0.5, 1.0), Region(1.5, 2.0)]
+    assert all(25 < snr < 40 for _r, snr, _env in found)  # ~ -37 dBFS over the -70 dBFS floor, not the levelled audio
 
 
 async def test_only_a_pending_audio_item_is_detected(pool, pki_settings, monkeypatch):

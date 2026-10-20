@@ -327,13 +327,14 @@ def transcribe_file(
 
 
 def detect_file(path: Path, max_gain_db: float = audio_level.MAX_GAIN_DB,
-                vad_threshold: float = VAD_THRESHOLD) -> list[tuple[Region, float]]:
+                vad_threshold: float = VAD_THRESHOLD) -> list[tuple[Region, float, list[float]]]:
     """Blocking: decode; find speech on the level-normalised audio (what Whisper will hear); measure each region's
-    SNR on the raw audio against this microphone's own noise (D33, plan R5)."""
+    SNR on the raw audio against this microphone's own noise (D33, plan R5) and take its loudness envelope (S1);
+    returns (region, SNR, envelope)."""
     raw = load_audio(path)
     noise = speech.noise_level(raw)
     regions = speech_regions(normalise(raw, max_gain_db), vad_threshold)
-    return [(r, speech.snr_db(raw, r.start, r.end, noise)) for r in regions]
+    return [(r, speech.snr_db(raw, r.start, r.end, noise), speech.envelope(raw, r.start, r.end)) for r in regions]
 
 
 async def _detect(ctx: PipelineContext, item_id: str) -> int:
@@ -358,12 +359,13 @@ async def _detect(ctx: PipelineContext, item_id: str) -> int:
             return 0
         cur = await conn.execute("SELECT speech_detected_at FROM item WHERE id = %s", (item_id,))
         if (await cur.fetchone())["speech_detected_at"] is None:
-            for region, snr in found:
+            for region, snr, env in found:
                 await conn.execute(
-                    "INSERT INTO speech_region (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO speech_region"
+                    " (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db, envelope)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (devices.new_id(), item_id, item["device_id"], start + dt.timedelta(seconds=region.start),
-                     start + dt.timedelta(seconds=region.end), region.start, region.end - region.start, snr),
+                     start + dt.timedelta(seconds=region.end), region.start, region.end - region.start, snr, env),
                 )
             await conn.execute("UPDATE item SET speech_detected_at = now() WHERE id = %s", (item_id,))
             if not found:
