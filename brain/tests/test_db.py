@@ -13,7 +13,7 @@ EXPECTED_TABLES = {
     "keyframe", "transcript_segment", "moment",
     "chapter", "day_recap", "commitment", "setting", "forget_log", "day_job_error",
     "eval_audio", "eval_caption", "eval_caption_score", "eval_question", "eval_answer", "eval_run",
-    "eval_run_audio", "mcp_token", "vlog", "network_camera",
+    "eval_run_audio", "mcp_token", "vlog", "network_camera", "speech_region",
     "procrastinate_jobs", "procrastinate_events", "procrastinate_workers", "procrastinate_periodic_defers",
 }
 
@@ -29,7 +29,7 @@ def test_migrate_is_idempotent_and_creates_schema(database_url):
     assert EXPECTED_TABLES <= {r[0] for r in rows}
     applied = {"001_init.sql", "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql",
                "005_evaluation.sql", "006_mcp.sql", "007_vlog.sql", "008_ota.sql", "009_one_copy.sql", "010_retention_on.sql",
-               "011_device_location.sql", "012_network_camera.sql"}
+               "011_device_location.sql", "012_network_camera.sql", "013_speech_region.sql"}
     assert applied | {PROCRASTINATE_SCHEMA} <= names
 
 
@@ -68,7 +68,7 @@ def test_p1_rows_become_pending_after_upgrade(database_url):
         assert migrate(url) == [
             "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql", "005_evaluation.sql",
             "006_mcp.sql", "007_vlog.sql", "008_ota.sql", "009_one_copy.sql", "010_retention_on.sql", "011_device_location.sql",
-            "012_network_camera.sql", PROCRASTINATE_SCHEMA,
+            "012_network_camera.sql", "013_speech_region.sql", PROCRASTINATE_SCHEMA,
         ]
         with psycopg.connect(url) as conn:
             state = conn.execute("SELECT analysis_state, analysis_job_id FROM item WHERE id = 'I1'").fetchone()
@@ -96,7 +96,7 @@ def test_concurrent_migrations_apply_each_step_once(database_url):
         [],
         ["001_init.sql", "002_pipeline.sql", "003_understanding.sql", "004_retention_files.sql", "005_evaluation.sql",
          "006_mcp.sql", "007_vlog.sql", "008_ota.sql", "009_one_copy.sql", "010_retention_on.sql", "011_device_location.sql",
-         "012_network_camera.sql", PROCRASTINATE_SCHEMA],
+         "012_network_camera.sql", "013_speech_region.sql", PROCRASTINATE_SCHEMA],
     ]
 
 
