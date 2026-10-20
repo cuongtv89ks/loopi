@@ -51,7 +51,7 @@ async def test_recap_lines_name_the_place_when_two_cameras_recorded(pool, pki_se
     await insert_moment(pool, kitchen, kind="marker", ts=at(40), text="Marked moment")
     material = await recap.recap_material(pool, DAY, pki_settings.zone)
     assert material.speech == ["[S1] 09:10 at Phòng khách (en) Thank you."]
-    assert material.markers[0].startswith("[M1] 09:40 at Bếp the user pressed the mark button")
+    assert material.markers[0].startswith("[M1] 09:40 at Bếp, the user pressed the mark button")
 
 
 async def test_recap_lines_of_one_camera_are_unchanged(pool, pki_settings, two):

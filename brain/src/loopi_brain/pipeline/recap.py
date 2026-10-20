@@ -171,8 +171,8 @@ async def recap_material(pool: AsyncConnectionPool, day: dt.date, zone) -> Mater
     named = places.several(r["device_id"] for r in [*marker_rows, *speech_rows])
     material = Material()
     material.chapters = _chapter_lines(chapter_rows, zone)
-    bodies = [marker_line(hm(r["ts_start"], zone) + places.at(r["location"], named), marker_note(r["item_meta"] or {}))
-              for r in marker_rows]
+    bodies = [marker_line(hm(r["ts_start"], zone) + places.at(r["location"], named, ","),
+                          marker_note(r["item_meta"] or {})) for r in marker_rows]
     # As many marked moments as fit MARKER_BUDGET, spread over the whole day (not the first ones of the morning).
     fit = max(1, MARKER_BUDGET // (max(map(len, bodies), default=0) + len(REF_ROOM) + 1))
     for n, (row, body) in enumerate(spread(list(zip(marker_rows, bodies, strict=True)), fit), start=1):
