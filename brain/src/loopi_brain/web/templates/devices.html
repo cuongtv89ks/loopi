@@ -6,6 +6,22 @@
 <p>Fingerprint CA của brain: <code>{{ ca_fingerprint }}</code></p>
 <button hx-post="/devices/pair-token" hx-target="#pair-token">Tạo token ghép cặp</button>
 <div id="pair-token"></div>
+<section class="card" id="cameras">
+  <h2>Thêm camera mạng</h2>
+  {% include "_camera_form.html" %}
+</section>
+{% if waiting_cameras %}
+<section class="card" id="waiting-cameras">
+  <h2>Camera chờ ghép cặp</h2>
+  {% for c in waiting_cameras %}
+  <div class="card" id="camera-{{ c.id }}">
+    <strong>{{ c.location }}</strong> <span class="muted">{{ kinds[c.kind].label }} · {{ c.video_url }}</span>
+    <button hx-post="/cameras/{{ c.id }}/repair" hx-target="#camera-{{ c.id }}">Ghép cặp lại</button>
+    <button hx-post="/cameras/{{ c.id }}/remove" hx-target="#camera-{{ c.id }}" hx-confirm="Gỡ camera {{ c.location }}?">Gỡ camera</button>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
 {% for d in devices %}
 <div class="card" id="device-{{ d.id }}">
   {% set history = updates.get(d.id, []) %}
@@ -17,6 +33,8 @@
   {% elif d.online %}<span class="online">trực tuyến</span>
   {% else %}<span class="offline">ngoại tuyến</span>{% endif %}
   {% if not d.revoked %}{% include "_location.html" %}{% endif %}
+  {% set c = cameras_by_device.get(d.id) %}
+  {% if c %}<p class="muted">Camera mạng: {{ kinds[c.kind].label }} · {{ c.video_url }}{% if not c.has_audio %} · không ghi âm{% endif %}</p>{% endif %}
   <ul>
     <li>Hệ điều hành: {{ d.hb.get("os_version") or "chưa rõ" }} · bản {{ d.hb.get("os_variant") or "—" }}
         · slot {{ d.hb.get("boot_slot") or "—" }}{% if history %} · cập nhật gần nhất: {{ history[0].state | ota_state }}{% if history[0].error %}: {{ history[0].error }}{% endif %}{% endif %}</li>
@@ -32,9 +50,12 @@
   <div hx-target="#result-{{ d.id }}">
     <button hx-post="/devices/{{ d.id }}/commands/pause">Tạm dừng</button>
     <button hx-post="/devices/{{ d.id }}/commands/resume">Tiếp tục</button>
+    {% if not c or c.has_audio %}
     <button hx-post="/devices/{{ d.id }}/commands/audio-off">Tắt audio</button>
     <button hx-post="/devices/{{ d.id }}/commands/audio-on">Bật audio</button>
+    {% endif %}
     <button hx-post="/devices/{{ d.id }}/revoke" hx-confirm="Thu hồi thiết bị này?">Thu hồi</button>
+    {% if c %}<button hx-post="/cameras/{{ c.id }}/remove" hx-target="#result-{{ d.id }}" hx-confirm="Gỡ camera {{ d.location }}?">Gỡ camera</button>{% endif %}
   </div>
   <div id="result-{{ d.id }}"></div>
   <form hx-post="/devices/{{ d.id }}/update" hx-target="#update-{{ d.id }}" hx-disinherit="hx-confirm"

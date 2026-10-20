@@ -1,0 +1,1 @@
+{% for r in results %}<p class="{{ 'online' if r.ok else 'err' }}">{{ r.message }}</p>{% endfor %}

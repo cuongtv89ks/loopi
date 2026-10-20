@@ -71,7 +71,7 @@ class CameraInput:
         return f"CameraInput(kind={self.kind!r}, location={self.location!r}, video_url={self.video_url!r})"
 
 
-def _clean_url(text: str, *, schemes: tuple[str, ...], what: str) -> str:
+def clean_url(text: str, *, schemes: tuple[str, ...], what: str) -> str:
     url = text.strip()
     if not url.startswith(schemes):
         joined = ", ".join(schemes[:-1]) + f" hoặc {schemes[-1]}"
@@ -98,8 +98,8 @@ def clean_input(*, kind: str, location: str, video_url: str, audio_url: str, use
         place = places.clean_location(location)
     except places.LocationError as exc:
         raise CameraError(str(exc)) from exc
-    video = _clean_url(video_url, schemes=("rtsp://", "http://", "https://"), what="Địa chỉ")
-    audio = _clean_url(audio_url, schemes=("http://", "https://", "rtsp://"), what="Địa chỉ âm thanh") if audio_url.strip() else None
+    video = clean_url(video_url, schemes=("rtsp://", "http://", "https://"), what="Địa chỉ")
+    audio = clean_url(audio_url, schemes=("http://", "https://", "rtsp://"), what="Địa chỉ âm thanh") if audio_url.strip() else None
     user = username.strip()
     if not user.isprintable():
         raise CameraError("Tên đăng nhập có ký tự không hợp lệ.")

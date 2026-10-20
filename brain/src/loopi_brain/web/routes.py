@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Requ
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import audio_level, bundles, devices, media, ota, pki, places
+from .. import audio_level, bundles, cameras, devices, media, ota, pki, places
 from ..days import day_bounds_utc
 from ..pipeline import moments as moment_rules
 from ..pipeline import status
@@ -206,10 +206,16 @@ async def devices_page(request: Request):
             "seen_local": seen.astimezone(zone) if seen else None,
         })
     offered, _ = bundles.scan(settings.ota_dir)
+    from .camera_routes import form_context  # camera_routes imports this module
+
+    cams = await cameras.list_cameras(pool)
     return TEMPLATES.TemplateResponse(
         request,
         "devices.html",
         {
+            **await form_context(request),
+            "cameras_by_device": {c["device_id"]: c for c in cams if c["device_id"]},
+            "waiting_cameras": [c for c in cams if not c["device_id"]],
             "devices": rows,
             "ca_fingerprint": _ca_fingerprint(request),
             "bundles": offered,

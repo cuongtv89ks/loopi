@@ -17,6 +17,7 @@ from .db import make_pool
 from .mcp import server as mcp_server
 from .pipeline.jobs import open_jobs
 from .providers.ollama import DEFAULT_TIMEOUT
+from .web.camera_routes import router as camera_router
 from .web.day_routes import router as day_router
 from .web.eval_routes import router as eval_router
 from .web.ota_routes import router as ota_router
@@ -93,6 +94,7 @@ def create_app(
     app.include_router(eval_router)
     app.include_router(vlog_router)
     app.include_router(ota_router)
+    app.include_router(camera_router)
     app.state.mcp = mcp_server.mount(app, mcp_server.Deps(pool=active_pool, settings=settings, llm=llm))
     settings.media_root.mkdir(parents=True, exist_ok=True)
     settings.cameras_dir.mkdir(parents=True, exist_ok=True)  # the cameras container mounts it and needs it to exist

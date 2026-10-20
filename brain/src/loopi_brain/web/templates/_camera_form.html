@@ -1,0 +1,22 @@
+<form id="camera-form" hx-post="/cameras" hx-target="#camera-form" hx-swap="outerHTML">
+  <p class="muted">Dung lượng ước tính cho {{ capacity.days }} ngày: {{ gb(capacity.total_bytes) }}
+    {% if capacity.free_bytes is not none %}/ còn trống {{ gb(capacity.free_bytes) }}
+    ({{ "%d"|format((capacity.ratio or 0) * 100) }} %){% else %}(chưa rõ chỗ trống){% endif %}.</p>
+  {% if capacity.warn_if_added %}<p class="err">Thêm một camera sẽ cần khoảng {{ gb(capacity.new_camera_bytes) }} cho
+    {{ capacity.days }} ngày, vượt 85 % chỗ trống còn lại.</p>{% endif %}
+  <label>Loại camera
+    <select name="kind" hx-get="/cameras/form" hx-target="#camera-form" hx-swap="outerHTML">
+      {% for key, k in kinds.items() %}<option value="{{ key }}" {% if key == values.kind %}selected{% endif %}>{{ k.label }}</option>{% endfor %}
+    </select></label>
+  <p class="muted">{{ meta.hint }}</p>
+  <label>Vị trí <input name="location" value="{{ values.location }}" maxlength="60" required></label>
+  <label>Địa chỉ luồng hình <input name="video_url" value="{{ values.video_url }}" maxlength="1000" required size="60"></label>
+  <label>Địa chỉ âm thanh riêng (nếu có) <input name="audio_url" value="{{ values.audio_url }}" maxlength="1000" size="60"></label>
+  <label>Tên đăng nhập <input name="username" value="{{ values.username }}" autocomplete="off"></label>
+  <label>Mật khẩu <input name="password" type="password" autocomplete="new-password"></label>
+  <label><input type="checkbox" name="has_audio" {% if values.has_audio %}checked{% endif %}> Ghi âm từ camera này</label>
+  <button type="button" hx-post="/cameras/probe" hx-include="#camera-form" hx-target="#camera-probe">Thử kết nối</button>
+  <button>Lưu camera</button>
+  <div id="camera-probe"></div>
+  {% if error %}<p class="err">{{ error }}</p>{% endif %}
+</form>
