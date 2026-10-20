@@ -4,3 +4,4 @@
   {% if saved %}<span class="muted">Đã lưu.</span>{% endif %}
   {% if error %}<span class="err">{{ error }}</span>{% endif %}
 </form>
+{% if saved %}<strong id="device-title-{{ d.id }}" hx-swap-oob="true">{{ d.location }}</strong>{% endif %}

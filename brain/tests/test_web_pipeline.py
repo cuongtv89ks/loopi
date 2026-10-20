@@ -219,7 +219,7 @@ async def test_retry_all_requeues_every_dead_letter_but_the_embedding_run(web, p
 async def test_the_pipeline_page_says_retention_is_on_by_default(web, pool):
     text = (await web.get("/pipeline")).text  # no setting row yet: retention is on since D32
     card = " ".join(text.split('<h2>Hiểu ngày</h2>')[1].split("</div>")[0].split())
-    assert "đang bật, giữ video thô 7 ngày, audio thô 7 ngày" in card and "đang tắt" not in card
+    assert "đang bật, giữ video 7 ngày, audio thô 7 ngày" in card and "đang tắt" not in card
 
 
 async def test_the_pipeline_page_shows_the_understanding_schedule(web, pool, pki_settings):
@@ -241,7 +241,7 @@ async def test_the_pipeline_page_shows_the_understanding_schedule(web, pool, pki
     card = " ".join(text.split('<h2>Hiểu ngày</h2>')[1].split("</div>")[0].split())
     assert "chương chờ tóm tắt: 1" in card
     assert '<a href="/?day=2026-10-14">2026-10-14</a> (viết lúc 14/10 23:30)' in card
-    assert "1 recap lỗi (xem Job lỗi)" in card and "đang bật, giữ video thô 7 ngày, audio thô 7 ngày" in card
+    assert "1 recap lỗi (xem Job lỗi)" in card and "đang bật, giữ video 7 ngày, audio thô 7 ngày" in card
     assert "vlog lỗi" not in card
     async with pool.connection() as conn:
         await conn.execute("INSERT INTO vlog (day, state, path, generated_at) VALUES (%s, 'rendered', 'vlog/x.mp4',"

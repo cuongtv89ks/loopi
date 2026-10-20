@@ -36,7 +36,7 @@ OptionalDate = Annotated[dt.date | None, BeforeValidator(_blank_is_none)]
 
 def hit_view(hit: search.Hit, zone, *, named: bool = False) -> dict:
     """A moment as a search result or a chat source: time, kind, text, thumbnail, link to its Day page, and its place
-    when ``named`` (the results come from two or more devices)."""
+    when ``named`` (the results come from two or more devices, or two or more cameras are active)."""
     local = hit.ts_start.astimezone(zone)
     text = hit.text
     if hit.kind == "marker":
@@ -72,7 +72,7 @@ async def search_page(
             limit=SEARCH_LIMIT, max_distance=state.settings.search_max_distance,
             min_similarity=state.settings.search_min_similarity,
         )
-    named = places.several(h.device_id for h in result.hits) if result else False
+    named = await places.name_places(state.pool, (h.device_id for h in result.hits)) if result else False
     return TEMPLATES.TemplateResponse(
         request,
         "search.html",
@@ -119,8 +119,7 @@ async def chat_answer(request: Request, q: str = Form(..., max_length=2000)):
         try:
             async for event, payload in chat.chat_events(state.pool, router_, q, state.settings):
                 if event == "sources":
-                    named = places.several(hit.device_id for hit in payload["hits"])
-                    sources = [hit_view(hit, zone, named=named) for hit in payload["hits"]]
+                    sources = [hit_view(hit, zone, named=payload["named"]) for hit in payload["hits"]]
                     payload = {"html": TEMPLATES.get_template("_sources.html").render(hits=sources)}
                 elif event == "answer":
                     payload = {"html": str(render_answer(payload["text"], [] if payload["not_found"] else sources))}

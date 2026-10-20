@@ -1,7 +1,8 @@
 """Where each device stands (P3c design §4.1, §4.4, D34): an editable location name per device ("Phòng khách"),
 shown on the timeline, in search, chat and MCP, and named in the text the chapter and recap models read. It starts
 as the device's name; the owner changes it on the Thiết bị page. Pages and prompts name the place only when the rows
-come from two or more devices, so a brain with a single camera looks and prompts as before."""
+come from two or more devices (search and chat also when two cameras are active), so a brain with a single camera
+looks and prompts as before."""
 from __future__ import annotations
 
 import datetime as dt
@@ -43,6 +44,22 @@ def several(device_ids: Iterable[str | None]) -> bool:
     return len({d for d in device_ids if d is not None}) >= 2
 
 
+async def active_cameras(pool: AsyncConnectionPool) -> int:
+    """Devices that are recording places now: not revoked and heard from in the last 7 days (old pairings left
+    behind do not count)."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT count(*) AS n FROM device WHERE NOT revoked AND last_heartbeat_at > now() - interval '7 days'"
+        )
+        return (await cur.fetchone())["n"]
+
+
+async def name_places(pool: AsyncConnectionPool, device_ids: Iterable[str | None]) -> bool:
+    """Whether search and chat results name their place: when the hits themselves come from two or more devices, or
+    when two or more cameras are active (a camera's results then still need the place to tell it from the other)."""
+    return several(device_ids) or await active_cameras(pool) >= 2
+
+
 def at(location: str | None, named: bool, sep: str = "") -> str:
     """The place in a line of model text (" at Phòng khách" + ``sep``), or nothing when places are not named."""
     return f" at {location}{sep}" if named and location else ""
@@ -62,6 +79,13 @@ async def day_places(pool: AsyncConnectionPool, start: dt.datetime, end: dt.date
             {"start": start, "end": end},
         )
         return await cur.fetchall()
+
+
+async def is_active_device(pool: AsyncConnectionPool, device_id: str) -> bool:
+    """Whether a device that is not revoked has this id: the only kind whose location can be renamed."""
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT 1 FROM device WHERE id = %s AND NOT revoked", (device_id,))
+        return await cur.fetchone() is not None
 
 
 async def known_device(pool: AsyncConnectionPool, device_id: str) -> bool:

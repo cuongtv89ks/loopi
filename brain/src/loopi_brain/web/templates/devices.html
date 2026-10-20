@@ -29,7 +29,7 @@
   {% set busy = history and history[0].finished_at is none %}
   {# A device that reports no boot_slot has no slot A/B (a pre-P4a system): an update could never install there. #}
   {% set no_slot = not d.hb.get("boot_slot") %}
-  <strong>{{ d.location }}</strong> <span class="muted">{{ d.name }}</span>
+  <strong id="device-title-{{ d.id }}">{{ d.location }}</strong> <span class="muted">{{ d.name }}</span>
   {% if d.revoked %}<span class="err">đã thu hồi</span>
   {% elif d.online %}<span class="online">trực tuyến</span>
   {% else %}<span class="offline">ngoại tuyến</span>{% endif %}

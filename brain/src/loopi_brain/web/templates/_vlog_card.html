@@ -6,7 +6,7 @@
       <track kind="subtitles" src="/vlog/{{ day }}.vtt" srclang="vi" label="Phụ đề" default>
     </video>
     {% set facts = [v.title, v.duration, ("dựng lúc " ~ v.at) if v.at else "",
-                    "từ khung hình (video thô đã hết hạn)" if v.source == "keyframes" else ""] | select | list %}
+                    "từ khung hình (video đã hết hạn)" if v.source == "keyframes" else ""] | select | list %}
     <p>{% if facts %}{{ facts | join(" · ") }} · {% endif %}<a href="/vlog/{{ day }}.mp4?download=1">Tải về</a></p>
   {% elif v and v.working %}{# the first build runs: only "Đang dựng vlog…" below #}
   {% elif v and v.state == "empty" %}<p>Không có hoạt động trong ngày này.</p>

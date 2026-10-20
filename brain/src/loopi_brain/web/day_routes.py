@@ -77,6 +77,14 @@ async def day_view(pool, day: dt.date, zone, today: dt.date | None = None, devic
             (start, end, device, device),
         )
         moment_rows = [_moment_view(r, zone, named) for r in await cur.fetchall()]
+        cur = await conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM moment WHERE ts_start >= %s AND ts_start < %s) AS any", (start, end)
+        )
+        has_data = (await cur.fetchone())["any"]  # the whole day, all cameras: a filter does not hide it
+        if device and all(p["id"] != device for p in day_cams):  # a camera with nothing today is still named
+            cur = await conn.execute("SELECT id, location FROM device WHERE id = %s", (device,))
+            if (idle := await cur.fetchone()) is not None:
+                day_cams.append(idle)
         cur = await conn.execute("SELECT * FROM day_recap WHERE day = %s", (day,))
         recap = await cur.fetchone()
         cur = await conn.execute(f"{_COMMITMENTS} WHERE c.day = %s ORDER BY c.created_at, c.id", (day,))
@@ -136,7 +144,7 @@ async def day_view(pool, day: dt.date, zone, today: dt.date | None = None, devic
         "recap_html": render_markdown(recap["markdown"]) if recap else None,
         "recap_at": recap["generated_at"].astimezone(zone).strftime("%d/%m %H:%M") if recap else None,
         "commitments": commitments,
-        "has_data": bool(moment_rows),
+        "has_data": has_data,
         "places": day_cams,
         "device": device,
     }

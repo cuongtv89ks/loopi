@@ -276,14 +276,17 @@ async def revoke(request: Request, device_id: str):
 @router.post("/devices/{device_id}/location", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 async def save_location(request: Request, device_id: str, location: str = Form("")):
     """Rename where a device stands (D34). A refused name is answered with the form and the reason (200, so htmx
-    swaps it in); an unknown or revoked device is a 404."""
+    swaps it in); an unknown or revoked device is a 404, whatever the name."""
+    pool = request.app.state.pool
+    if not await places.is_active_device(pool, device_id):
+        raise HTTPException(status_code=404, detail="unknown device")
     try:
         cleaned = places.clean_location(location)
     except places.LocationError as exc:
         return TEMPLATES.TemplateResponse(
             request, "_location.html", {"d": {"id": device_id, "location": location}, "error": str(exc)}
         )
-    if not await places.set_location(request.app.state.pool, device_id, cleaned):
+    if not await places.set_location(pool, device_id, cleaned):
         raise HTTPException(status_code=404, detail="unknown device")
     return TEMPLATES.TemplateResponse(request, "_location.html", {"d": {"id": device_id, "location": cleaned},
                                                                    "saved": True})

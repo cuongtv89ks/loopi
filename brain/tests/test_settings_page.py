@@ -90,7 +90,7 @@ async def test_a_broken_providers_file_is_shown(pool, pki_settings, jobs_open, t
 async def test_the_retention_form_saves_validated_days(web, pool):
     assert (await web.post("/settings/retention", data={"video_days": "5", "audio_days": "9"})).status_code == 403
     r = await web.post("/settings/retention", data={"video_days": "5", "audio_days": "9"}, headers=HX)
-    assert r.status_code == 200 and "giữ video thô 5 ngày, audio thô 9 ngày" in r.text and "đang tắt" in r.text
+    assert r.status_code == 200 and "giữ video 5 ngày, audio thô 9 ngày" in r.text and "đang tắt" in r.text
     assert await store.get_retention(pool) == store.Retention(video_days=5, audio_days=9, enabled=False)
     for bad in ("0", "3651", "abc", "-2"):
         r = await web.post("/settings/retention", data={"video_days": bad, "audio_days": "9"}, headers=HX)

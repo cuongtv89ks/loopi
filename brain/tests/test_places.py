@@ -66,7 +66,7 @@ async def test_the_owner_renames_a_location_from_the_devices_page(client, pool, 
     assert (await fetch_one(pool, "SELECT location FROM device WHERE id = %s", (dev["device_id"],)))[
         "location"] == "Phòng khách"
     page = (await client.get("/devices")).text
-    assert "<strong>Phòng khách</strong>" in page and f'hx-post="/devices/{dev["device_id"]}/location"' in page
+    assert f'<strong id="device-title-{dev["device_id"]}">Phòng khách</strong>' in page and f'hx-post="/devices/{dev["device_id"]}/location"' in page
 
 
 async def test_a_refused_location_keeps_the_old_one_and_says_why(client, pool, pki_settings):

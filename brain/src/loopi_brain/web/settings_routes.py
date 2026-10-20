@@ -79,7 +79,7 @@ async def save_retention(
     await store.set_retention(request.app.state.pool, chosen)
     state = "đang bật: chạy lúc 03:00" if chosen.enabled else "đang tắt: không xoá gì"
     return HTMLResponse(
-        f"<span>Đã lưu: giữ video thô {chosen.video_days} ngày, audio thô {chosen.audio_days} ngày."
+        f"<span>Đã lưu: giữ video {chosen.video_days} ngày, audio thô {chosen.audio_days} ngày."
         f" Dọn dữ liệu cũ {state}.</span>"
     )
 

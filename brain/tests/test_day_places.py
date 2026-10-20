@@ -115,9 +115,9 @@ async def test_a_known_camera_with_no_recording_that_day_still_filters(client, p
     living, kitchen = two
     await insert_moment(pool, living, kind="speech", ts=NINE, text="Một", lang="vi")
     text = (await client.get("/", params={"day": "2026-10-14", "device": kitchen})).text
-    assert "Một" not in text and "<strong>Bếp</strong>" not in text  # the bar lists the day's cameras only
+    assert "Một" not in text and "<strong>Bếp</strong>" in text  # the bar names the filtered camera (P3c-2)
     assert 'href="/?day=2026-10-14">Tất cả</a>' in text
-    assert "Không có dữ liệu cho ngày này." in text
+    assert "Không có dữ liệu cho ngày này." not in text  # the day has data, only not from this camera
 
 
 async def test_day_places_lists_cameras_with_a_recording_in_range_by_location_then_id(pool, pki_settings, two):

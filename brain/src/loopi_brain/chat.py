@@ -128,8 +128,11 @@ async def time_filter(router: Router, question: str, today: dt.date) -> tuple[dt
     return clean_filter(_date(answer.first), _date(answer.last), today)
 
 
-def source_lines(hits: list[Hit], zone) -> list[str]:
-    named = places.several(hit.device_id for hit in hits)
+def source_lines(hits: list[Hit], zone, named: bool | None = None) -> list[str]:
+    """The numbered sources of the prompt. Each names its place when ``named``; None means: when the hits come from
+    two or more devices."""
+    if named is None:
+        named = places.several(hit.device_id for hit in hits)
     lines = []
     for n, hit in enumerate(hits, start=1):
         kind = KIND_WORDS.get(hit.kind, hit.kind)
@@ -144,9 +147,9 @@ def source_lines(hits: list[Hit], zone) -> list[str]:
     return lines
 
 
-def answer_messages(question: str, hits: list[Hit], zone, now: dt.datetime) -> list[dict]:
+def answer_messages(question: str, hits: list[Hit], zone, now: dt.datetime, named: bool | None = None) -> list[dict]:
     """The prompt: sources and ``now`` (an aware time in ``zone``) are both stated in local time."""
-    sources = "\n".join(source_lines(hits, zone))
+    sources = "\n".join(source_lines(hits, zone, named))
     return [
         {"role": "system", "content": f"{NOW_LINE.format(now=now, zone=zone)} {ANSWER_SYSTEM}"},
         {"role": "user", "content": f"Sources:\n{sources}\n\nQuestion: {question}"},
@@ -177,7 +180,8 @@ async def chat_events(
     settings: Settings,
     now: dt.datetime | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
-    """The steps of one answer, as (event, payload): status, filter, sources (Hit list), token, answer, error, done."""
+    """The steps of one answer, as (event, payload): status, filter, sources (Hit list, and ``named``: whether
+    each names its place), token, answer, error, done."""
     zone = settings.zone
     question = clean_query(question)  # exactly as the search reads it: no control characters, one line, <= 500 chars
     if not question:
@@ -201,7 +205,8 @@ async def chat_events(
         yield "answer", {"text": NOT_FOUND, "not_found": True}
         yield "done", {}
         return
-    yield "sources", {"hits": result.hits}
+    named = await places.name_places(pool, (hit.device_id for hit in result.hits))
+    yield "sources", {"hits": result.hits, "named": named}
     if router is None:
         yield "error", {"text": "Không trả lời được: cấu hình provider lỗi. Các nguồn liên quan ở dưới."}
         yield "done", {}
@@ -209,8 +214,8 @@ async def chat_events(
     yield "status", {"text": "Đang viết câu trả lời…"}
     pieces: list[str] = []
     try:
-        async for piece, _version in router.stream_chat("chat", answer_messages(question, result.hits, zone, local),
-                                                        max_tokens=ANSWER_MAX_TOKENS):
+        messages = answer_messages(question, result.hits, zone, local, named)
+        async for piece, _version in router.stream_chat("chat", messages, max_tokens=ANSWER_MAX_TOKENS):
             pieces.append(piece)
             yield "token", {"text": piece}
     except ProviderError as exc:
