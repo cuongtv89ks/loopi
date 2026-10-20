@@ -253,7 +253,12 @@ mod tests {
                 let mut request = [0u8; 1024];
                 let _ = socket.read(&mut request);
                 let _ = socket.write_all(b"HTTP/1.0 200 OK\r\nContent-Type: multipart/x-mixed-replace;boundary=ffmpeg\r\n\r\n");
-                let _ = socket.write_all(&body);
+                // A camera does not send six seconds of picture at once: paced, the frames get distinct arrival times
+                // (all at once, ffmpeg's wallclock timestamps made the first segment empty about half of the runs).
+                for chunk in body.chunks(body.len() / 20 + 1) {
+                    let _ = socket.write_all(chunk);
+                    std::thread::sleep(Duration::from_millis(100));
+                }
             }
         });
         let run_dir = tmp.path().join("run");
