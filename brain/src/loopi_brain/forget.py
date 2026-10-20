@@ -12,7 +12,8 @@ those recordings (the span): chapters, recaps and the audit row follow the span,
 into the neighbouring day.
 
 The transaction takes every touched day's lock (``state.lock_day``) before anything else, in day order, so a
-summary or recap being stored waits for it — and then sees the new audit row and stores nothing (deliberate
+summary or recap being stored waits for it (then the speech-grouping lock, which the regions that go with the items
+share with ``group_speech``) — and then sees the new audit row and stores nothing (deliberate
 deviation from §9.5, which only marks the recap out of date: here it is deleted and written again from what
 remains, ruling R24). An audit row records the span, the counts and the media paths still to delete, never any
 content. After the commit the media files go: raw files, playback/view copies, keyframes and their thumbnails,
@@ -40,6 +41,7 @@ from .config import Settings
 from .days import local_day
 from .evaluation import golden
 from .pipeline import chapters as chapter_rules
+from .pipeline import grouping
 from .pipeline import recap as recap_rules
 from .pipeline import vlogs as vlog_rules
 from .pipeline.state import lock_day
@@ -214,6 +216,9 @@ async def _delete_rows(
     async with pool.connection() as conn, conn.transaction():
         for day in days:
             await lock_day(conn, day)
+        # group_speech locks regions, then items; deleting the items (their regions cascade) is the opposite order:
+        # the same advisory lock, right after the day locks, keeps the two from meeting in a deadlock.
+        await conn.execute(grouping.LOCK_SQL)
         targets = await _targets(conn, start, end, lock=True)
         span = _span(start, end, targets)
         affected = _affected_days(targets, span, zone)

@@ -115,6 +115,8 @@ async def pipeline_status(pool: AsyncConnectionPool) -> dict:
         failed_total = (await cur.fetchone())["n"]
         cur = await conn.execute(WAITING_KEYFRAMES)
         keyframes_waiting = (await cur.fetchone())["n"]
+        cur = await conn.execute("SELECT count(*) AS n FROM speech_region WHERE state = 'waiting'")
+        speech_waiting = (await cur.fetchone())["n"]
         cur = await conn.execute("SELECT count(*) AS n FROM moment WHERE embedding IS NULL")
         moments_waiting = (await cur.fetchone())["n"]
         latency = {}
@@ -138,6 +140,7 @@ async def pipeline_status(pool: AsyncConnectionPool) -> dict:
     return {
         "pending": pending,
         "keyframes_waiting": keyframes_waiting,
+        "speech_waiting": speech_waiting,
         "moments_waiting": moments_waiting,
         "latency": latency,
         "worker_alive": worker_alive,

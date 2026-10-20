@@ -14,6 +14,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from .days import day_bounds_utc
 from .pipeline import chapters as chapter_rules
+from .pipeline import grouping
 from .pipeline import recap as recap_rules
 from .pipeline.state import lock_day
 
@@ -42,6 +43,9 @@ async def reprocess_day(pool: AsyncConnectionPool, day: dt.date, zone, what: set
         # One writer of a day's derived text at a time: a chapter rebuild or a recap write that read the day before
         # the reset must not write over it, and "Quên khoảng thời gian" relies on the same lock.
         await lock_day(conn, day)
+        # group_speech locks regions, then items; the reset below updates items and deletes regions: the same
+        # advisory lock, taken right after the day lock, keeps the two orders from meeting in a deadlock.
+        await conn.execute(grouping.LOCK_SQL)
         if "captions" in what:
             await conn.execute(
                 "DELETE FROM moment WHERE kind = 'visual' AND keyframe_id IN"
@@ -63,11 +67,13 @@ async def reprocess_day(pool: AsyncConnectionPool, day: dt.date, zone, what: set
             rows = await cur.fetchall()
             redo = [r["id"] for r in rows if r["raw_deleted_at"] is None]
             expired = len(rows) - len(redo)
-            # Moments go with their transcript segments (ON DELETE CASCADE).
+            # Moments go with their transcript segments (ON DELETE CASCADE). The speech regions go too, and the
+            # item's detection is forgotten: the dispatcher detects, groups and transcribes it all again.
             await conn.execute("DELETE FROM transcript_segment WHERE item_id = ANY(%s)", (redo,))
+            await conn.execute("DELETE FROM speech_region WHERE item_id = ANY(%s)", (redo,))
             await conn.execute(
                 "UPDATE item SET analysis_state = 'pending', analysis_job_id = NULL, analysis_error = NULL,"
-                " analyzed_at = NULL WHERE id = ANY(%s)",
+                " analyzed_at = NULL, speech_detected_at = NULL WHERE id = ANY(%s)",
                 (redo,),
             )
             audio_items = len(redo)
