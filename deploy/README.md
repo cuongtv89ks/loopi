@@ -114,6 +114,12 @@ does not reach the disk. Back out by removing both lines from `deploy/.env`.
   how many recordings (and GB) a run would delete, and changes the days or turns it off. A video segment keeps one
   copy, its MP4: the raw H.264 is deleted once the MP4 and the keyframes exist. Keyframes, transcripts, chapters,
   recaps and vlogs stay. The same 03:00 run retries files a "Quên khoảng thời gian" could not delete at once.
+- **Rolling back P3c-1:** migration 011 makes `device.location` NOT NULL with no default, and a brain image from
+  before P3c-1 pairs a device with an INSERT that does not name it, so that image cannot pair a new device after
+  the migration. Before starting the older image, run once:
+  `docker compose exec -T db psql -U loopi -d loopi -c "ALTER TABLE device ALTER COLUMN location SET DEFAULT ''"`.
+  Nothing else breaks on a rollback: raw H.264 files already deleted are not read after the analysis, and
+  retention stays on.
 - Memory: Ollama keeps at most 2 models (`OLLAMA_MAX_LOADED_MODELS`). Measured: minicpm-v ≈ 2.9 GB, qwen3-embedding
   ≈ 1.3 GB; `qwen3:8b` with its 8192-token context ≈ 6.7 GB. Chapter summaries, recaps and chat share that one text
   model (spec D23: with `qwen3:4b` for summaries, a recap loaded `qwen3:8b` while `qwen3:4b` was still in memory and
