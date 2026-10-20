@@ -134,9 +134,13 @@ impl StreamProblem {
 }
 
 /// `line` mentions the number `code` as a whole token: `401` in `failed: 401 Unauthorized` or `error (401)`, not inside
-/// the pointer of `[tcp @ 0x55d4014f8c80]`.
+/// the pointer of `[tcp @ 0x55d4014f8c80]`, and not in an address the line quotes (a port, a password): words that
+/// contain `://` are left out.
 fn has_status_code(line: &str, code: &str) -> bool {
-    line.split(|c: char| !c.is_ascii_alphanumeric()).any(|token| token == code)
+    line.split_whitespace()
+        .filter(|word| !word.contains("://"))
+        .flat_map(|word| word.split(|c: char| !c.is_ascii_alphanumeric()))
+        .any(|token| token == code)
 }
 
 pub fn classify_stream_error(line: &str) -> Option<StreamProblem> {
@@ -241,6 +245,40 @@ mod tests {
         assert_eq!(classify_stream_error("HTTP error (404)"), Some(StreamProblem::NotFound));
         assert_eq!(classify_stream_error("error 4010 while reading"), Some(StreamProblem::Other));
         assert_eq!(classify_stream_error("code 1404"), Some(StreamProblem::Other));
+    }
+
+    #[test]
+    fn an_address_quoted_in_a_line_never_gives_a_status_code() {
+        // ffmpeg quotes the stream address: its port or the credentials may look like a status code.
+        assert_eq!(
+            classify_stream_error("Connection to tcp://192.0.2.10:404 failed: Connection refused"),
+            Some(StreamProblem::Refused)
+        );
+        assert_eq!(
+            classify_stream_error("[tcp @ 0x1] Connection to tcp://192.0.2.10:401 failed: Connection refused"),
+            Some(StreamProblem::Refused)
+        );
+        assert_eq!(
+            classify_stream_error("[tcp @ 0x1] Connection to tcp://192.0.2.10:403 failed: Connection timed out"),
+            Some(StreamProblem::TimedOut)
+        );
+        // A password with a delimited 401/403/404 inside the quoted address, in a line that says nothing specific.
+        for line in [
+            "[rtsp @ 0x1] could not open rtsp://admin:x_403@192.0.2.10/cam",
+            "[rtsp @ 0x1] could not open (rtsp://admin:pw-401@192.0.2.10/cam)",
+            "could not open 'rtsp://admin:404@192.0.2.10/cam' for reading",
+        ] {
+            assert_eq!(classify_stream_error(line), Some(StreamProblem::Other), "{line}");
+        }
+        // The status code outside the address still counts, even when the address is quoted beside it.
+        assert_eq!(
+            classify_stream_error("method DESCRIBE failed: 401 Unauthorized (rtsp://admin:x_404@192.0.2.10/cam)"),
+            Some(StreamProblem::SignInRefused)
+        );
+        assert_eq!(
+            classify_stream_error("Server returned 404 for http://192.0.2.10:403/stream"),
+            Some(StreamProblem::NotFound)
+        );
     }
 
     #[test]

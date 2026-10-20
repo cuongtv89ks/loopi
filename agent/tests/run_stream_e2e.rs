@@ -390,12 +390,14 @@ async fn the_password_never_reaches_the_log_or_the_heartbeat() {
             && beats.iter().any(|hb| hb["last_error"].as_str().is_some_and(|e| e.contains(phrase)))
     })
     .await;
-    // About fifteen more sound retries would fit in this time; the sound waits instead (only the try that started
-    // together with the picture's first one, before its login was refused, is allowed).
+    // About fifteen more sound retries would fit in this time; the sound waits instead (only the tries that start
+    // before the picture's login is refused are allowed).
     tokio::time::sleep(Duration::from_millis(1500)).await;
     agent.stop().await;
     let tries = sound_tries.load(Ordering::SeqCst);
-    assert!(tries <= 2, "the sound kept logging in to a camera that refused the login: {tries} tries");
+    // The sound retries every 100 ms here while the picture's ffmpeg takes about 100-200 ms to fail, so up to three
+    // tries can start before the refused login is known (against about sixteen without the wait).
+    assert!(tries <= 3, "the sound kept logging in to a camera that refused the login: {tries} tries");
 
     let seen = brain.received_requests().await.unwrap();
     let beats = heartbeats(&seen);
