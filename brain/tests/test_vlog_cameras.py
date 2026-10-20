@@ -1,6 +1,8 @@
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+from psycopg.types.json import Jsonb
+
 from helpers import insert_item, insert_keyframe, insert_moment, paired_device
 from loopi_brain import places
 from loopi_brain.vlog import material
@@ -26,6 +28,12 @@ def test_ties_go_to_more_segments_then_the_smaller_id():
     segments = [seg("a1", "a", 1), seg("b1", "b", 2), seg("b2", "b", 3)]
     assert [s.item_id for s in material.choose_cameras(segments, {}, START)] == ["b1", "b2"]
     assert [s.item_id for s in material.choose_cameras([seg("x", "b", 1), seg("y", "a", 2)], {}, START)] == ["y"]
+
+
+def test_a_camera_without_a_segment_in_the_block_cannot_win_it():
+    segments = [seg("p1", "pi", 1), seg("c1", "cam", 2), seg("p2", "pi", 12)]
+    counts = {(0, "door"): 9, (0, "cam"): 2, (0, "pi"): 1, (1, "cam"): 8, (1, "pi"): 1}
+    assert [s.item_id for s in material.choose_cameras(segments, counts, START)] == ["c1", "p2"]
 
 
 def test_one_camera_keeps_every_active_segment():
@@ -73,3 +81,23 @@ async def test_stills_from_any_camera_keep_their_camera_and_name_their_place(poo
 async def test_a_day_without_material_names_no_place(pool):
     got = await material.vlog_material(pool, DAY, ZONE)
     assert got.empty and got.places == {}
+
+
+async def test_a_camera_whose_highlights_were_all_merged_away_is_not_named(pool, pki_settings, monkeypatch):
+    pi, cam = await paired_device(pool, pki_settings), await paired_device(pool, pki_settings)
+    await places.set_location(pool, pi["device_id"], "Bếp")
+    await places.set_location(pool, cam["device_id"], "Phòng khách")
+    monkeypatch.setattr(material, "SLIDES_MAX", 2)  # the day's slides are the two Pi pictures
+    pi_seg = await _video(pool, pi["device_id"], NINE)
+    await insert_keyframe(pool, pki_settings, pi_seg, pi["device_id"], NINE)
+    await insert_keyframe(pool, pki_settings, pi_seg, pi["device_id"], NINE + dt.timedelta(minutes=1))
+    await insert_moment(pool, pi["device_id"], kind="marker", ts=NINE + dt.timedelta(minutes=1), text="đánh dấu")
+    cam_item = await insert_item(pool, cam["device_id"], kind="video", started_at=NINE + dt.timedelta(minutes=2))
+    cam_frame = await insert_keyframe(pool, pki_settings, cam_item, cam["device_id"], NINE + dt.timedelta(minutes=2))
+    async with pool.connection() as conn:  # a notable camera picture a minute after the marker: merged into it
+        await conn.execute("UPDATE keyframe SET caption = %s WHERE id = %s",
+                           (Jsonb({"activity": "đọc sách", "notable": True}), cam_frame))
+    got = await material.vlog_material(pool, DAY, ZONE)
+    assert [c.kind for c in got.candidates] == ["marker"] and got.candidates[0].frame.device_id == pi["device_id"]
+    assert cam["device_id"] not in {f.device_id for f in got.frames}
+    assert got.places == {pi["device_id"]: "Bếp"}  # nothing of the camera is shown: no place, no label

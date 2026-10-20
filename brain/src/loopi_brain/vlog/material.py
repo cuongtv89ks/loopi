@@ -195,8 +195,9 @@ async def vlog_material(pool: AsyncConnectionPool, day: dt.date, zone) -> Materi
         found.append(Candidate("", "talk", centre, frame, clip(longest["text"] or "", TEXT_MAX),
                                SCORE["talk"] + min(len(window), 20) / 10, audio, offset))
     slides = spread(frames, SLIDES_MAX)
+    candidates = merge(found)  # a camera whose candidates were all merged away is not shown: it names no place
     ids = sorted(({s.device_id for s in segments} | {f.device_id for f in slides}
-                  | {c.frame.device_id for c in found}) - {None})
+                  | {c.frame.device_id for c in candidates}) - {None})
     async with pool.connection() as conn:
         found_places = await (await conn.execute(_PLACES, (ids,))).fetchall()
-    return Material(day, segments, slides, merge(found), {r["id"]: r["location"] for r in found_places})
+    return Material(day, segments, slides, candidates, {r["id"]: r["location"] for r in found_places})
