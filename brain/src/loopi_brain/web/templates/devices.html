@@ -36,6 +36,10 @@
   {% if not d.revoked %}{% include "_location.html" %}{% endif %}
   {% set c = cameras_by_device.get(d.id) %}
   {% if c %}<p class="muted">Camera mạng: {{ kinds[c.kind].label }} · {{ c.video_url }}{% if not c.has_audio %} · không ghi âm{% endif %}</p>{% endif %}
+  {# The agent waits 10 minutes after a refused login (Imou/Dahua lock logins after about 5 tries): the owner must fix the password. #}
+  {% if not d.revoked and "refused the user name or password" in (d.hb.get("last_error") or "") %}
+  <p class="err">Camera từ chối tên đăng nhập hoặc mật khẩu. Loopi chờ 10 phút giữa hai lần thử để camera không tự khoá đăng nhập. Để sửa: gỡ camera rồi thêm lại với mật khẩu đúng (bấm "Thử kết nối" trước khi lưu).</p>
+  {% endif %}
   <ul>
     <li>Hệ điều hành: {{ d.hb.get("os_version") or "chưa rõ" }} · bản {{ d.hb.get("os_variant") or "—" }}
         · slot {{ d.hb.get("boot_slot") or "—" }}{% if history %} · cập nhật gần nhất: {{ history[0].state | ota_state }}{% if history[0].error %}: {{ history[0].error }}{% endif %}{% endif %}</li>
