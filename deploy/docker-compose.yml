@@ -131,6 +131,25 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Network cameras (P3c-2): one agent per camera directory the brain writes under <data>/cameras. Only that directory
+  # is mounted (never the pki keys); the host's timesync flag tells the agents the clock is synced, as on the Pi.
+  cameras:
+    build:
+      context: ..
+      dockerfile: deploy/cameras.Dockerfile
+    user: "${LOOPI_UID:-1000}:${LOOPI_GID:-1000}"
+    init: true
+    volumes:
+      - ${LOOPI_DATA_DIR:-/srv/loopi}/cameras:/srv/loopi/cameras
+      - /run/systemd/timesync:/run/systemd/timesync:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    # loopi-cameras drains each agent for up to 15 s on SIGTERM; Docker's default 10 s would SIGKILL a slow drain
+    # in the middle of a segment.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
 volumes:
   db: {}
   caddy_data: {}

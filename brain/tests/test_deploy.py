@@ -226,3 +226,28 @@ def test_media_may_live_on_their_own_disk_and_are_written_only_while_it_is_mount
     assert "--exclude=/lost+found" in section  # mkfs's root-owned directory exists only on the new disk
     assert r"After=mnt-loopi\x2dmedia.mount" in section  # a nofail mount is not ordered before Docker by itself
     assert "docker compose restart api worker" in section  # up -d keeps a running container on the bare mount point
+
+
+def test_the_cameras_service_runs_the_agents_with_only_their_directory():
+    service = SERVICES["cameras"]
+    assert service["build"] == {"context": "..", "dockerfile": "deploy/cameras.Dockerfile"}
+    assert service["user"] == "${LOOPI_UID:-1000}:${LOOPI_GID:-1000}"
+    assert service["init"] is True
+    assert service["volumes"] == [
+        "${LOOPI_DATA_DIR:-/srv/loopi}/cameras:/srv/loopi/cameras",
+        "/run/systemd/timesync:/run/systemd/timesync:ro",
+    ]
+    assert service["depends_on"] == {"api": {"condition": "service_healthy"}}
+    assert service["restart"] == "unless-stopped"
+    # loopi-cameras drains each agent for up to 15 s on SIGTERM; Docker's default 10 s would SIGKILL a slow drain
+    assert service["stop_grace_period"] == "30s"
+    assert "ports" not in service and "environment" not in service
+
+
+def test_the_cameras_image_builds_both_binaries_and_runs_as_the_data_owner():
+    text = (DEPLOY / "cameras.Dockerfile").read_text()
+    assert "cargo build --release --locked --bin loopi-agent --bin loopi-cameras" in text
+    assert "ffmpeg" in text and "USER loopi" in text
+    assert 'CMD ["loopi-cameras", "--root", "/srv/loopi/cameras"]' in text
+    ignore = (DEPLOY.parent / ".dockerignore").read_text().split()
+    assert ignore[:2] == ["*", "!agent/"] and "agent/target/" in ignore
