@@ -250,7 +250,7 @@ async fn agent_main(config_path: PathBuf) -> Result<()> {
     tracing::info!(version = ?os.version, variant = ?os.variant, slot = ?os.slot, "system");
     let probe: Arc<dyn SysProbe> = if stream { Arc::new(NoProbe) } else { Arc::new(LinuxProbe) };
     let deps = Deps {
-        clock: Arc::new(SystemClock::new(config.paths.sync_flag.clone())),
+        clock: Arc::new(SystemClock::from_config(&config)),
         disk: Arc::new(StatvfsUsage::new(&config.paths.data_dir)?),
         transport,
         audio_factory: if stream {

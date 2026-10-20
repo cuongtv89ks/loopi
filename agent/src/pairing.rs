@@ -162,7 +162,7 @@ pub fn retry_delay(error: &PairError) -> std::time::Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BrainConfig, CaptureConfig, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
+    use crate::config::{BrainConfig, CaptureConfig, ClockConfig, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
     use crate::tls::tests::test_pki;
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
@@ -179,6 +179,7 @@ mod tests {
             schedule: ScheduleConfig::default(),
             led: LedConfig::default(),
             gpio: GpioConfig::default(),
+            clock: ClockConfig::default(),
             paths: PathsConfig::default(),
         }
     }

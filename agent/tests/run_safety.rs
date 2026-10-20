@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use loopi_agent::config::{BrainConfig, CaptureConfig, Config, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
+use loopi_agent::config::{BrainConfig, CaptureConfig, ClockConfig, Config, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
 use loopi_agent::led::{LedDriver, LED_UNAVAILABLE_ERROR};
 use loopi_agent::osinfo::OsInfo;
 use loopi_agent::recorder::audio::{AudioSource, AudioSourceFactory};
@@ -142,6 +142,7 @@ impl Harness {
             schedule: ScheduleConfig::default(),
             led: LedConfig::default(),
             gpio: GpioConfig::default(),
+            clock: ClockConfig::default(),
             paths: PathsConfig { data_dir: self.data_dir.clone(), sync_flag: self.data_dir.join("unused") },
         };
         let (open, opens) = (self.mic_open.clone(), self.mic_opens.clone());

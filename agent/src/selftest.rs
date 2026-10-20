@@ -2,7 +2,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::config::Config;
+use crate::clock::{Clock, SystemClock};
+use crate::config::{ClockSource, Config};
 use crate::disk::{DiskUsage, StatvfsUsage, DROP_ABOVE_PCT};
 #[cfg(any(test, target_os = "linux"))]
 use crate::led::{while_solid, LedDriver};
@@ -136,6 +137,16 @@ fn mic_check(_config: &Config) -> Check {
     Check::fail("microphone", "audio capture needs Linux/ALSA")
 }
 
+/// The clock line: the check `[clock] source` names (a camera agent has no flag file, so it never fails for that).
+pub fn clock_check(source: ClockSource, synced: bool) -> Check {
+    match (source, synced) {
+        (ClockSource::Flag, true) => Check::pass("clock", "NTP synchronised"),
+        (ClockSource::Flag, false) => Check::fail("clock", "waiting for NTP"),
+        (ClockSource::Kernel, true) => Check::pass("clock", "kernel clock synced"),
+        (ClockSource::Kernel, false) => Check::fail("clock", "kernel clock not synced"),
+    }
+}
+
 pub async fn run_selftest(config_path: &Path) -> Vec<Check> {
     let config = match Config::load(config_path) {
         Ok(config) => config,
@@ -148,11 +159,7 @@ pub async fn run_selftest(config_path: &Path) -> Vec<Check> {
         Ok(None) => Check::fail("pairing", "not paired yet"),
         Err(e) => Check::fail("pairing", e.to_string()),
     });
-    checks.push(if config.paths.sync_flag.exists() {
-        Check::pass("clock", "NTP synchronised")
-    } else {
-        Check::fail("clock", "waiting for NTP")
-    });
+    checks.push(clock_check(config.clock.source, SystemClock::from_config(&config).is_synced()));
     checks.push(camera_check(&config.capture.camera_cmd).await);
     checks.push(mic_check(&config));
     checks.push(match StatvfsUsage::new(data).and_then(|d| d.used_pct()) {
@@ -240,6 +247,31 @@ mod tests {
         assert!(by_name("disk").detail.ends_with("% used"));
         std::fs::write(dir.path().join("synced"), "").unwrap();
         assert!(run_selftest(&path).await.iter().any(|c| c.name == "clock" && c.ok));
+    }
+
+    #[test]
+    fn the_clock_line_names_the_configured_check() {
+        assert_eq!(clock_check(ClockSource::Flag, true), Check::pass("clock", "NTP synchronised"));
+        assert_eq!(clock_check(ClockSource::Flag, false), Check::fail("clock", "waiting for NTP"));
+        assert_eq!(clock_check(ClockSource::Kernel, true), Check::pass("clock", "kernel clock synced"));
+        assert_eq!(clock_check(ClockSource::Kernel, false), Check::fail("clock", "kernel clock not synced"));
+    }
+
+    /// A camera agent has no flag file: the kernel answers, and a missing flag is never the reason it fails.
+    #[tokio::test]
+    async fn a_kernel_clock_ignores_the_missing_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("loopi.toml");
+        let toml = format!(
+            "[brain]\nurl = \"https://192.168.1.10:8443\"\n[capture]\ncamera_cmd = \"/nonexistent/rpicam-vid\"\n\
+             [clock]\nsource = \"kernel\"\n[paths]\ndata_dir = {:?}\nsync_flag = {:?}\n",
+            dir.path(),
+            dir.path().join("missing")
+        );
+        std::fs::write(&path, toml).unwrap();
+        let checks = run_selftest(&path).await;
+        let clock = checks.iter().find(|c| c.name == "clock").unwrap();
+        assert_eq!(*clock, clock_check(ClockSource::Kernel, crate::clock::kernel_clock_synced()));
     }
 
     #[test]

@@ -106,6 +106,9 @@ pub struct Config {
     pub led: LedConfig,
     #[serde(default)]
     pub gpio: GpioConfig,
+    // Written only when not the default, as the P3c-2 keys of `[capture]`: a Pi's file keeps the tables it always had.
+    #[serde(default, skip_serializing_if = "ClockConfig::is_default")]
+    pub clock: ClockConfig,
     #[serde(default)]
     pub paths: PathsConfig,
 }
@@ -254,6 +257,31 @@ impl Default for GpioConfig {
     }
 }
 
+/// How the agent learns that the wall clock is synchronised: it records nothing before (`crate::clock`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClockSource {
+    /// `paths.sync_flag` exists: systemd-timesyncd creates it (the Pi).
+    #[default]
+    Flag,
+    /// The kernel's NTP state (`adjtimex`), as `timedatectl` reports it: a network camera's agent in the cameras
+    /// container, which has no timesyncd of its own and mounts nothing of the host's but its directory.
+    Kernel,
+}
+
+/// `[clock]`: which check says the clock is synced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClockConfig {
+    pub source: ClockSource,
+}
+
+impl ClockConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PathsConfig {
@@ -371,17 +399,54 @@ pub fn normalize_fingerprint(raw: &str) -> Option<String> {
 }
 
 /// A TOML error as "line N: message". `toml::de::Error` is neither displayed nor kept: its Display quotes the source line
-/// and its Debug holds the whole file, and the file holds `capture.stream_password`. A message about the password's own
-/// line is replaced too, as a type error quotes the value (`invalid type: integer `12345``).
+/// and its Debug holds the whole file, and the file holds `capture.stream_password`, `wifi.psk` and `brain.pair_token`.
+/// The message itself keeps no quoted span (`without_quoted`): a type error quotes the value
+/// (`invalid type: integer `12345``). A message about the password's own line is replaced altogether.
 fn toml_error(text: &str, e: &toml::de::Error) -> ConfigError {
     let Some(span) = e.span() else {
-        return ConfigError::Toml(e.message().to_string());
+        return ConfigError::Toml(without_quoted(e.message()));
     };
     let before = text.as_bytes().get(..span.start).unwrap_or(text.as_bytes());
     let line = before.iter().filter(|b| **b == b'\n').count();
     let on_password_line = text.lines().nth(line).is_some_and(|l| l.contains("stream_password"));
-    let message = if on_password_line { "capture.stream_password is not valid (its value is not shown)" } else { e.message() };
+    let message = if on_password_line {
+        "capture.stream_password is not valid (its value is not shown)".to_string()
+    } else {
+        without_quoted(e.message())
+    };
     ConfigError::Toml(format!("line {}: {message}", line + 1))
+}
+
+/// toml's message without anything it quotes: a backtick span (`integer `12345678``, `unknown variant `x``) or a
+/// double-quoted string (serde's `string "S3cr3t"`), an unclosed one up to the end. Any of them can be a value from the
+/// file, a secret's included, so only the kind of error is left; the line number tells where to look.
+fn without_quoted(message: &str) -> String {
+    let drop_dangling = |kept: &mut String| kept.truncate(kept.trim_end_matches(|c: char| c.is_whitespace() || c == ',').len());
+    let mut kept = String::with_capacity(message.len());
+    let mut chars = message.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '`' => {
+                let _ = chars.find(|&c| c == '`');
+                drop_dangling(&mut kept);
+            }
+            '"' => {
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+                drop_dangling(&mut kept);
+            }
+            _ => kept.push(c),
+        }
+    }
+    let lines: Vec<String> = kept.lines().map(|l| l.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
+    lines.into_iter().filter(|l| !l.is_empty()).collect::<Vec<_>>().join("; ")
 }
 
 const STREAM_URL_MAX: usize = 1000;
@@ -843,6 +908,32 @@ data_dir = "/srv/loopi/cameras/01J0000000000000000000000A/data"
     }
 
     #[test]
+    fn the_clock_check_defaults_to_the_flag_file_and_a_pi_config_writes_no_clock_table() {
+        let c = Config::parse(MINIMAL).unwrap();
+        assert_eq!(c.clock, ClockConfig { source: ClockSource::Flag });
+        let written = toml::to_string(&c).unwrap();
+        assert!(!written.contains("[clock]"), "an older agent refuses a table it does not know: {written}");
+        let flag = Config::parse(&format!("{MINIMAL}[clock]\nsource = \"flag\"\n")).unwrap();
+        assert_eq!(flag, c);
+    }
+
+    #[test]
+    fn a_network_camera_asks_the_kernel_and_says_so_in_its_file() {
+        let c = Config::parse(&format!("{STREAM}[clock]\nsource = \"kernel\"\n")).unwrap();
+        assert_eq!(c.clock.source, ClockSource::Kernel);
+        let written = toml::to_string(&c).unwrap();
+        assert!(written.contains("[clock]\nsource = \"kernel\""), "{written}");
+        assert_eq!(Config::parse(&written).unwrap(), c);
+    }
+
+    #[test]
+    fn an_unknown_clock_source_or_key_is_refused() {
+        for body in ["source = \"ntp\"", "source = \"Kernel\"", "source = \"kernel\"\npath = \"/x\"", "source = 1"] {
+            assert!(Config::parse(&format!("{MINIMAL}[clock]\n{body}\n")).is_err(), "{body}");
+        }
+    }
+
+    #[test]
     fn a_custom_camera_cmd_wins_for_a_stream() {
         let mut c = Config::parse(STREAM).unwrap();
         c.capture.camera_cmd = "/opt/ffmpeg/bin/ffmpeg".into();
@@ -873,12 +964,45 @@ data_dir = "/srv/loopi/cameras/01J0000000000000000000000A/data"
         }
     }
 
+    /// A type error quotes the value (toml: "invalid type: integer `12345678`, expected a string"); on any line holding a
+    /// secret that is the secret itself.
+    #[test]
+    fn a_wrongly_typed_secret_is_reported_without_its_value_or_its_line() {
+        let head = "[brain]\nurl = \"https://proxy:8443\"\n";
+        let stream = "[capture]\nsource = \"stream\"\nstream_url = \"rtsp://192.0.2.10/x\"\n";
+        for (text, line, number) in [
+            (format!("{head}{stream}stream_password = 12345678\n[led]\nsource = \"none\"\n"), "stream_password = 12345678", 6),
+            (format!("[wifi]\nssid = \"x\"\npsk = 12345678\n{MINIMAL}"), "psk = 12345678", 3),
+            (format!("{head}pair_token = 12345678\n"), "pair_token = 12345678", 3),
+        ] {
+            let err = Config::parse(&text).unwrap_err();
+            let anyhow_err = anyhow::Error::new(Config::parse(&text).unwrap_err());
+            for shown in [err.to_string(), format!("{err:?}"), format!("{anyhow_err:#}"), format!("{anyhow_err:?}")] {
+                assert!(!shown.contains("12345678") && !shown.contains(line), "{line:?} leaks: {shown}");
+                assert!(shown.contains(&format!("line {number}:")), "{line:?} names no line: {shown}");
+            }
+        }
+    }
+
+    #[test]
+    fn toml_messages_keep_the_kind_of_error_without_any_quoted_span() {
+        let wrong_type = "invalid type: integer `12345678`, expected a string";
+        assert_eq!(without_quoted(wrong_type), "invalid type: integer, expected a string");
+        assert_eq!(without_quoted("invalid type: string \"S3\\\"cr`3t\", expected u32"), "invalid type: string, expected u32");
+        assert_eq!(without_quoted("unknown variant `S3cr3t`, expected `csi` or `stream`"), "unknown variant, expected or");
+        assert_eq!(without_quoted("invalid string\nexpected `\"`, `'`"), "invalid string; expected");
+        assert_eq!(without_quoted("unclosed `S3cr3t"), "unclosed");
+        assert_eq!(without_quoted("unclosed \"S3cr3t\\"), "unclosed");
+        assert_eq!(without_quoted("value is out of range"), "value is out of range");
+    }
+
     #[test]
     fn other_toml_errors_keep_their_message_and_line() {
         let err = Config::parse("[brain]\nurl = \"https://proxy:8443\"\n[capture]\nvideo_fps = \"fast\"\n").unwrap_err().to_string();
-        assert!(err.contains("line 4") && err.contains("invalid type"), "{err}");
+        assert!(err.contains("line 4") && err.contains("invalid type") && !err.contains("fast"), "{err}");
+        // A key's name goes too: the rule keeps no quoted span at all.
         let err = Config::parse("[capture]\n").unwrap_err().to_string();
-        assert!(err.contains("line 1") && err.contains("brain"), "{err}");
+        assert_eq!(err, "invalid TOML: line 1: missing field");
         // An error without a position (serde's `custom`) is the message alone.
         let positionless = toml_error("[brain]\n", &<toml::de::Error as serde::de::Error>::custom("boom"));
         assert_eq!(positionless.to_string(), "invalid TOML: boom");

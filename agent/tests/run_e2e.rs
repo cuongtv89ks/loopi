@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::DateTime;
-use loopi_agent::config::{BrainConfig, CaptureConfig, Config, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
+use loopi_agent::config::{BrainConfig, CaptureConfig, ClockConfig, Config, GpioConfig, LedConfig, PathsConfig, ScheduleConfig};
 use loopi_agent::recorder::audio::{AudioSource, AudioSourceFactory};
 use loopi_agent::osinfo::OsInfo;
 use loopi_agent::ota::task::OtaTimings;
@@ -196,6 +196,7 @@ async fn records_uploads_and_obeys_a_remote_pause() {
         schedule: ScheduleConfig::default(),
         led: LedConfig::default(),
         gpio: GpioConfig::default(),
+        clock: ClockConfig::default(),
         paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
     };
     let led = RecordingLed::default();
@@ -319,6 +320,7 @@ async fn an_update_on_a_system_without_ota_support_is_reported_failed() {
         schedule: ScheduleConfig::default(),
         led: LedConfig::default(),
         gpio: GpioConfig::default(),
+        clock: ClockConfig::default(),
         paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
     };
     let factory: AudioSourceFactory = Box::new(|| Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>));
@@ -415,6 +417,7 @@ async fn an_update_is_installed_reported_and_followed_by_a_trial_reboot() {
         schedule: ScheduleConfig::default(),
         led: LedConfig::default(),
         gpio: GpioConfig::default(),
+        clock: ClockConfig::default(),
         paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
     };
     let (rauc, rebooter) = (Arc::new(FakeRauc::default()), Arc::new(FakeRebooter::default()));
@@ -548,6 +551,7 @@ async fn unconfirmed_trial_waits_for_a_heartbeat(pending_json: &[u8]) {
         schedule: ScheduleConfig::default(),
         led: LedConfig::default(),
         gpio: GpioConfig::default(),
+        clock: ClockConfig::default(),
         paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
     };
     let rauc = Arc::new(FakeRauc::default());
@@ -650,6 +654,7 @@ async fn a_second_update_during_a_download_is_acked_noted_and_never_started() {
         schedule: ScheduleConfig::default(),
         led: LedConfig::default(),
         gpio: GpioConfig::default(),
+        clock: ClockConfig::default(),
         paths: PathsConfig { data_dir: data_dir.clone(), sync_flag: tmp.path().join("unused") },
     };
     let (rauc, rebooter) = (Arc::new(FakeRauc::default()), Arc::new(FakeRebooter::default()));

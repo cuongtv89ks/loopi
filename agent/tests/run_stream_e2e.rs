@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use chrono::DateTime;
 use loopi_agent::config::{
-    BrainConfig, CaptureConfig, CaptureSource, Config, GpioConfig, LedConfig, LedSource, PathsConfig, ScheduleConfig, Secret,
+    BrainConfig, CaptureConfig, CaptureSource, ClockConfig, Config, GpioConfig, LedConfig, LedSource, PathsConfig, ScheduleConfig, Secret,
 };
 use loopi_agent::led::NullLed;
 use loopi_agent::osinfo::OsInfo;
@@ -268,6 +268,7 @@ fn stream_config(brain: &MockServer, tmp: &Path, camera: &str, audio_enabled: bo
         schedule: ScheduleConfig::default(),
         led: LedConfig { source: LedSource::None, ..LedConfig::default() },
         gpio: GpioConfig::default(),
+        clock: ClockConfig::default(),
         paths: PathsConfig { data_dir: tmp.join("data"), sync_flag: tmp.join("unused") },
     }
 }
