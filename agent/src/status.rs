@@ -29,6 +29,9 @@ pub struct AgentStatus {
     pub led: LedHealth,
     pub last_error: Option<String>,
     pub dropped_since_heartbeat: u32,
+    /// Internal, never sent in a heartbeat: the video recorder's last ending was a network camera refusing the login.
+    /// The sound stream waits while it is set, so no other login attempt keeps the camera locked.
+    pub sign_in_refused: bool,
     /// The current or latest update, until the brain has heard its outcome (P4a design §6).
     pub ota: Option<crate::ota::OtaReport>,
 }

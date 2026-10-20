@@ -34,6 +34,9 @@ pub struct AudioOptions {
     /// A network camera: while the camera itself is failing (`camera_failures > 0`) the video recorder's reason is
     /// the one worth showing, so a sound error leaves `last_error` alone (it still sets `mic_missing` and logs).
     pub keep_camera_error: bool,
+    /// A network camera: while the video recorder says the camera refused the login (`sign_in_refused`), the sound does
+    /// not try the stream either (every try is one more failed login).
+    pub wait_while_sign_in_refused: bool,
 }
 
 /// First USB audio card in `/proc/asound/cards` (" 1 [Device ]: USB-Audio - ...").
@@ -277,6 +280,12 @@ pub fn run_audio_blocking(
             std::thread::sleep(GATE_POLL);
             continue;
         }
+        // The video recorder's login was refused: every try of the sound stream is one more failed login.
+        if opts.wait_while_sign_in_refused && status.borrow().sign_in_refused {
+            status.send_modify(|s| s.mic_missing = true);
+            sleep_unless_shutdown(opts.retry, &shutdown);
+            continue;
+        }
         status.send_modify(|s| s.recording_audio = true);
         let result = match factory() {
             Ok(mut source) => {
@@ -398,7 +407,7 @@ mod tests {
         let t0 = Utc.with_ymd_and_hms(2026, 10, 14, 1, 0, 0).unwrap();
         let clock = Arc::new(ManualClock::new(t0));
         let mut source = ToneSource::stepping(clock.clone(), 120);
-        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10), keep_camera_error: false };
+        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10), keep_camera_error: false, wait_while_sign_in_refused: false };
         let (_gate_tx, gate) = watch::channel(true);
         let (_stop_tx, stop) = watch::channel(false);
 
@@ -447,7 +456,7 @@ mod tests {
                 Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>)
             }
         });
-        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(50), keep_camera_error: false };
+        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(50), keep_camera_error: false, wait_while_sign_in_refused: false };
         let (q, s) = (queue.clone(), status.clone());
         let worker = std::thread::spawn(move || run_audio_blocking(factory, opts, q, Arc::new(SyncedClock), gate, s, stop));
 
@@ -519,7 +528,7 @@ mod tests {
         let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
         let clock = Arc::new(ManualClock::new(Utc.with_ymd_and_hms(2026, 10, 14, 1, 0, 0).unwrap()));
         let mut source = JumpSource { clock: clock.clone(), jump, done: false };
-        let opts = AudioOptions { segment: Duration::from_secs(60), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10), keep_camera_error: false };
+        let opts = AudioOptions { segment: Duration::from_secs(60), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10), keep_camera_error: false, wait_while_sign_in_refused: false };
         let (_g, gate) = watch::channel(true);
         let (_s, stop) = watch::channel(false);
         assert!(record_segments(&mut source, &opts, &queue, clock.as_ref(), &gate, &stop).is_err());
@@ -590,7 +599,7 @@ mod tests {
             seen.lock().unwrap().push(st.borrow().recording_audio);
             Err(io::Error::new(io::ErrorKind::NotFound, "no USB microphone found"))
         });
-        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(20), keep_camera_error: false };
+        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(20), keep_camera_error: false, wait_while_sign_in_refused: false };
         let (q, s) = (Arc::new(queue), status.clone());
         let worker = std::thread::spawn(move || run_audio_blocking(factory, opts, q, Arc::new(SyncedClock), gate, s, stop));
         std::thread::sleep(Duration::from_millis(150));
@@ -636,6 +645,7 @@ mod tests {
             incoming_dir: tmp.path().join("in"),
             retry: Duration::from_millis(20),
             keep_camera_error: true,
+            wait_while_sign_in_refused: false,
         };
         let (q, s) = (Arc::new(queue), status.clone());
         let worker = std::thread::spawn(move || run_audio_blocking(factory, opts, q, Arc::new(SyncedClock), gate, s, stop));
@@ -644,6 +654,75 @@ mod tests {
         worker.join().unwrap();
         assert!(status.borrow().mic_missing);
         assert_eq!(status.borrow().last_error.as_deref(), Some("camera says why"));
+    }
+
+    /// The sound worker on its own thread, with a factory that counts its calls and always fails.
+    fn spawn_counting_worker(
+        tmp: &Path,
+        status: &StatusTx,
+        wait_while_sign_in_refused: bool,
+    ) -> (Arc<AtomicU32>, watch::Sender<bool>, std::thread::JoinHandle<()>) {
+        let (queue, _) = Queue::open(&tmp.join("q")).unwrap();
+        let (gate_tx, gate) = watch::channel(true);
+        std::mem::forget(gate_tx);
+        let (stop_tx, stop) = watch::channel(false);
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls_in = calls.clone();
+        let factory: AudioSourceFactory = Box::new(move || {
+            calls_in.fetch_add(1, Ordering::SeqCst);
+            Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the camera's sound stream ended"))
+        });
+        let opts = AudioOptions {
+            segment: Duration::from_secs(1),
+            incoming_dir: tmp.join("in"),
+            retry: Duration::from_millis(20),
+            keep_camera_error: true,
+            wait_while_sign_in_refused,
+        };
+        let s = status.clone();
+        let worker = std::thread::spawn(move || run_audio_blocking(factory, opts, Arc::new(queue), Arc::new(SyncedClock), gate, s, stop));
+        (calls, stop_tx, worker)
+    }
+
+    #[test]
+    fn the_sound_does_not_touch_the_camera_while_its_login_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let status = status_channel(AgentStatus {
+            sign_in_refused: true,
+            camera_failures: 1,
+            last_error: Some("camera says why".into()),
+            ..AgentStatus::default()
+        });
+        let (calls, stop_tx, worker) = spawn_counting_worker(tmp.path(), &status, true);
+
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "no login attempt while the video's login is refused");
+        let seen = status.borrow().clone();
+        assert!(seen.mic_missing, "the sound is reported missing");
+        assert!(!seen.recording_audio, "nothing records, so the flag stays down");
+        assert_eq!(seen.last_error.as_deref(), Some("camera says why"), "the video's reason stays");
+
+        status.send_modify(|s| s.sign_in_refused = false);
+        for _ in 0..100 {
+            if calls.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        assert!(calls.load(Ordering::SeqCst) >= 1, "the sound tries again once the login is no longer refused");
+        stop_tx.send(true).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn without_the_option_the_sound_keeps_trying_whatever_the_video_says() {
+        let tmp = tempfile::tempdir().unwrap();
+        let status = status_channel(AgentStatus { sign_in_refused: true, ..AgentStatus::default() });
+        let (calls, stop_tx, worker) = spawn_counting_worker(tmp.path(), &status, false);
+        std::thread::sleep(Duration::from_millis(300));
+        stop_tx.send(true).unwrap();
+        worker.join().unwrap();
+        assert!(calls.load(Ordering::SeqCst) >= 2, "the Pi's microphone is unaffected: {}", calls.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -655,7 +734,7 @@ mod tests {
             let (gate_tx, gate) = watch::channel(true);
             let (stop_tx, stop) = watch::channel(false);
             let factory: AudioSourceFactory = Box::new(|| Ok(Box::new(ToneSource::realtime()) as Box<dyn AudioSource>));
-            let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(20), keep_camera_error: false };
+            let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(20), keep_camera_error: false, wait_while_sign_in_refused: false };
             let (q, s) = (Arc::new(queue), status.clone());
             let worker = std::thread::spawn(move || run_audio_blocking(factory, opts, q, Arc::new(SyncedClock), gate, s, stop));
             std::thread::sleep(Duration::from_millis(100));
@@ -679,7 +758,7 @@ mod tests {
         let t0 = Utc.with_ymd_and_hms(2026, 10, 14, 1, 0, 0).unwrap();
         let clock = Arc::new(ManualClock::new(t0));
         let mut source = ToneSource::stepping(clock.clone(), 120);
-        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10), keep_camera_error: false };
+        let opts = AudioOptions { segment: Duration::from_secs(1), incoming_dir: tmp.path().join("in"), retry: Duration::from_millis(10), keep_camera_error: false, wait_while_sign_in_refused: false };
         let (_g, gate) = watch::channel(true);
         let (_s, stop) = watch::channel(false);
         let finished = AtomicU64::new(0);

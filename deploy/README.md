@@ -71,6 +71,9 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - "Ghép cặp lại" refuses, with a message, when the stored password cannot be read; then remove the camera and add it
   again.
 - "Thử kết nối" checks the address and the login the same way "Lưu camera" does before it runs ffprobe.
+- After a refused login (wrong password) the camera's agent waits 10 minutes before it tries again, picture and sound
+  alike, and the card says so: Imou/Dahua cameras lock logins for about 30 minutes after about 5 failed tries. Check the
+  login with "Thử kết nối" before "Lưu camera"; to change a camera's password, remove it and add it again.
 - Logs: `docker compose -p deploy logs cameras` (each agent line starts with `[<camera id>]`; stream errors are
   named, never quoted, so no address or password appears).
 - Clock and isolation: the camera agents ask the PC's kernel whether its clock is synced (as `timedatectl` does) and

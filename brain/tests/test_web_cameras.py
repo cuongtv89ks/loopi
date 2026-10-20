@@ -206,6 +206,51 @@ async def test_a_camera_with_sound_keeps_its_audio_buttons_and_an_ordinary_devic
     assert f"/devices/{pi['device_id']}/revoke" in page and f"/devices/{device_id}/revoke" not in page
 
 
+SIGN_IN_ADVICE = (
+    '<p class="err">Camera từ chối tên đăng nhập hoặc mật khẩu. Loopi chờ 10 phút giữa hai lần thử để camera không tự '
+    'khoá đăng nhập. Để sửa: gỡ camera rồi thêm lại với mật khẩu đúng (bấm "Thử kết nối" trước khi lưu).</p>'
+)
+
+
+async def test_a_camera_that_refuses_the_login_says_how_to_fix_it_on_its_card(client, pool, pki_settings):
+    _, device_id = await _pair(client, pool, pki_settings)
+    other = await paired_device(pool, pki_settings)
+    refused = "ffmpeg exited with Some(1) after 0 s: the camera refused the user name or password; next try in 10 min"
+    await devices.record_heartbeat(pool, device_id, {"camera_failures": 1, "last_error": refused}, [])
+    await devices.record_heartbeat(pool, other["device_id"], {"last_error": "microphone: no USB microphone found"}, [])
+    page = (await client.get("/devices")).text
+    assert page.count(SIGN_IN_ADVICE) == 1, "one card, the camera's"
+    card = page.split(f'<div class="card" id="device-{device_id}">')[1].split('<div class="card" id="device-')[0]
+    assert SIGN_IN_ADVICE in card and "Camera mạng:" in card
+    assert card.index("Camera mạng:") < card.index(SIGN_IN_ADVICE) < card.index("Đang ghi hình")  # under the header
+
+    # Any other trouble (or none) shows no such line.
+    for error in ("ffmpeg exited with Some(1) after 0 s: the camera did not answer (network or address)", None):
+        await devices.record_heartbeat(pool, device_id, {"camera_failures": 3, "last_error": error}, [])
+        assert "Camera từ chối tên đăng nhập" not in (await client.get("/devices")).text
+
+
+async def test_a_camera_that_works_again_gets_no_advice_from_its_old_error(client, pool, pki_settings):
+    # The agent never clears last_error: after the camera recovers (no failures now) the old text stays in the heartbeat.
+    _, device_id = await _pair(client, pool, pki_settings)
+    refused = "ffmpeg exited with Some(1) after 0 s: the camera refused the user name or password; next try in 10 min"
+    await devices.record_heartbeat(pool, device_id, {"camera_failures": 0, "last_error": refused}, [])
+    assert "Camera từ chối tên đăng nhập" not in (await client.get("/devices")).text
+    await devices.record_heartbeat(pool, device_id, {"last_error": refused}, [])  # no failure count at all
+    assert "Camera từ chối tên đăng nhập" not in (await client.get("/devices")).text
+    await devices.record_heartbeat(pool, device_id, {"camera_failures": 1, "last_error": refused}, [])
+    assert SIGN_IN_ADVICE in (await client.get("/devices")).text  # failing again: the advice is back
+
+
+async def test_a_revoked_devices_old_refused_login_gives_no_advice(client, pool, pki_settings):
+    _, device_id = await _pair(client, pool, pki_settings)
+    refused = "ffmpeg exited with Some(1) after 0 s: the camera refused the user name or password; next try in 10 min"
+    await devices.record_heartbeat(pool, device_id, {"camera_failures": 1, "last_error": refused}, [])
+    assert (await client.post(f"/devices/{device_id}/revoke", headers=HX)).status_code == 200
+    page = (await client.get("/devices")).text
+    assert "đã thu hồi" in page and "Camera từ chối tên đăng nhập" not in page
+
+
 async def test_removing_a_camera_from_its_paired_devices_card(client, pool, pki_settings):
     camera_id, device_id = await _pair(client, pool, pki_settings)
     r = await client.post(f"/cameras/{camera_id}/remove", headers=HX)

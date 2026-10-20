@@ -369,9 +369,18 @@ async fn the_password_never_reaches_the_log_or_the_heartbeat() {
     // Both the picture's and the sound's ffmpeg fail at once and print the address with the password.
     let ffmpeg = failing_ffmpeg(tmp.path(), &fake);
     let config = stream_config(&brain, tmp.path(), &ffmpeg, true);
-    let factory = sound_factory(&config, &ffmpeg);
-    // The sound retries every 100 ms: its generic "microphone: ... ended" must not bury the camera's reason in
-    // `last_error` (a network camera keeps the camera's error while the camera is failing).
+    let real_factory = sound_factory(&config, &ffmpeg);
+    let sound_tries = Arc::new(AtomicUsize::new(0));
+    let factory: AudioSourceFactory = {
+        let tries = sound_tries.clone();
+        Box::new(move || {
+            tries.fetch_add(1, Ordering::SeqCst);
+            real_factory()
+        })
+    };
+    // The sound would retry every 100 ms: its generic "microphone: ... ended" must not bury the camera's reason in
+    // `last_error` (a network camera keeps the camera's error while the camera is failing), and each of its tries is
+    // one more refused login, so it waits for the camera's login to be accepted.
     let agent = start_agent(&brain, config, factory, Duration::from_millis(100));
 
     let phrase = "refused the user name or password";
@@ -381,9 +390,14 @@ async fn the_password_never_reaches_the_log_or_the_heartbeat() {
             && beats.iter().any(|hb| hb["last_error"].as_str().is_some_and(|e| e.contains(phrase)))
     })
     .await;
-    // Many more sound retries (about fifteen) on top of the one that came with the first failure.
+    // About fifteen more sound retries would fit in this time; the sound waits instead (only the tries that start
+    // before the picture's login is refused are allowed).
     tokio::time::sleep(Duration::from_millis(1500)).await;
     agent.stop().await;
+    let tries = sound_tries.load(Ordering::SeqCst);
+    // The sound retries every 100 ms here while the picture's ffmpeg takes about 100-200 ms to fail, so up to three
+    // tries can start before the refused login is known (against about sixteen without the wait).
+    assert!(tries <= 3, "the sound kept logging in to a camera that refused the login: {tries} tries");
 
     let seen = brain.received_requests().await.unwrap();
     let beats = heartbeats(&seen);

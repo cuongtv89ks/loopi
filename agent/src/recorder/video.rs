@@ -44,6 +44,8 @@ pub struct VideoOptions {
     pub poll: Duration,
     pub stop_grace: Duration,
     pub max_backoff: Duration,
+    /// The wait after a network camera refused the login (Imou/Dahua lock logins for about 30 minutes after about 5).
+    pub sign_in_backoff: Duration,
     pub healthy_run: Duration,
     pub source: VideoSource,
 }
@@ -61,6 +63,7 @@ impl VideoOptions {
             poll: Duration::from_secs(2),
             stop_grace: Duration::from_secs(5),
             max_backoff: Duration::from_secs(60),
+            sign_in_backoff: Duration::from_secs(600),
             healthy_run: Duration::from_secs(60),
             source: match capture.source {
                 CaptureSource::Stream => VideoSource::Stream(stream::video_input(capture)),
@@ -244,6 +247,11 @@ fn recover_run_dir(run_dir: &Path, queue: &Queue, segment: chrono::Duration, fps
     let _ = fs::remove_dir(run_dir);
 }
 
+/// The tail of `last_error` after a refused login: how long until the camera is tried again.
+fn wait_words(wait: Duration) -> String {
+    format!("next try in {} min", (wait.as_secs() / 60).max(1))
+}
+
 pub fn camera_backoff(failures: u32, max: Duration) -> Duration {
     Duration::from_secs(1u64 << failures.min(6)).min(max)
 }
@@ -369,7 +377,10 @@ async fn record_once(
             }
             _ = &mut healthy, if !healthy_seen => {
                 healthy_seen = true;
-                status.send_modify(|s| s.camera_failures = 0);
+                status.send_modify(|s| {
+                    s.camera_failures = 0;
+                    s.sign_in_refused = false;
+                });
             }
             exit = child.wait() => {
                 break RunEnd::Exited { ran_for: started.elapsed(), code: exit.ok().and_then(|s| s.code()), problem: None };
@@ -443,35 +454,48 @@ pub async fn run_video(
         if !wait_for_gate(&mut gate, &mut shutdown).await {
             return;
         }
-        let message = match record_once(&opts, &queue, clock.as_ref(), &mut gate, &status, &mut shutdown).await {
+        let (message, sign_in_refused) = match record_once(&opts, &queue, clock.as_ref(), &mut gate, &status, &mut shutdown).await {
             Ok(RunEnd::Shutdown) => return,
             Ok(RunEnd::GateClosed) => {
                 failures = 0;
-                status.send_modify(|s| s.camera_failures = 0);
+                status.send_modify(|s| {
+                    s.camera_failures = 0;
+                    s.sign_in_refused = false;
+                });
                 continue;
             }
             Ok(RunEnd::Exited { ran_for, code, problem }) => {
                 failures = if ran_for >= opts.healthy_run { 1 } else { failures.saturating_add(1) };
                 let secs = ran_for.as_secs();
-                match opts.source {
+                let refused = problem == Some(StreamProblem::SignInRefused);
+                let message = match opts.source {
                     VideoSource::Rpicam => format!("rpicam-vid exited with {code:?} after {secs} s"),
                     VideoSource::Stream(_) => {
                         let why = problem.unwrap_or(StreamProblem::Other).describe();
                         format!("ffmpeg exited with {code:?} after {secs} s: {why}")
                     }
+                };
+                // Imou/Dahua cameras lock logins for about 30 minutes after about 5 failures: a retry every few
+                // seconds would keep the camera locked, so a refused login waits long (and the sound waits with it).
+                if refused {
+                    (format!("{message}; {}", wait_words(opts.sign_in_backoff)), true)
+                } else {
+                    (message, false)
                 }
             }
             Err(e) => {
                 failures = failures.saturating_add(1);
-                format!("video recorder: {e}")
+                (format!("video recorder: {e}"), false)
             }
         };
-        tracing::warn!(%message, failures, "camera problem");
+        tracing::warn!(%message, failures, sign_in_refused, "camera problem");
         status.send_modify(|s| {
             s.camera_failures = failures;
             s.last_error = Some(message);
+            s.sign_in_refused = sign_in_refused;
         });
-        if !sleep_or_shutdown(camera_backoff(failures, opts.max_backoff), &mut shutdown).await {
+        let wait = if sign_in_refused { opts.sign_in_backoff } else { camera_backoff(failures, opts.max_backoff) };
+        if !sleep_or_shutdown(wait, &mut shutdown).await {
             return;
         }
     }
@@ -511,6 +535,7 @@ mod tests {
             poll: Duration::from_millis(50),
             stop_grace: Duration::from_secs(2),
             max_backoff: Duration::from_millis(50),
+            sign_in_backoff: Duration::from_millis(50),
             healthy_run: Duration::from_secs(60),
             source: VideoSource::Rpicam,
         }
@@ -828,6 +853,136 @@ mod tests {
         let options = VideoOptions { healthy_run: Duration::from_millis(300), ..opts(tmp.path(), fake_camera(tmp.path())) };
         let task = tokio::spawn(run_video(options, Arc::new(queue), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
         assert!(eventually(|| status.borrow().recording_video && status.borrow().camera_failures == 0).await);
+        stop_tx.send(true).unwrap();
+        task.await.unwrap();
+    }
+
+    /// A network camera's recorder that logs every start to `spawns` and then fails with `line` on stderr.
+    fn counting_failing_ffmpeg(dir: &Path, spawns: &Path, line: &str) -> String {
+        let script = format!("#!/bin/sh\necho x >> '{}'\necho '{line}' >&2\nexit 1\n", spawns.display());
+        executable(dir, "counting-failing-ffmpeg.sh", script.as_bytes())
+    }
+
+    fn starts(spawns: &Path) -> usize {
+        fs::read_to_string(spawns).map(|text| text.lines().count()).unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn a_refused_login_waits_long_before_the_next_try() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let status = status_channel(AgentStatus::default());
+        let (_gate_tx, gate_rx) = watch::channel(true);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let spawns = tmp.path().join("spawns");
+        let camera = counting_failing_ffmpeg(tmp.path(), &spawns, "[rtsp @ 0x55] method DESCRIBE failed: 401 Unauthorized");
+        let options = VideoOptions {
+            sign_in_backoff: Duration::from_secs(2),
+            max_backoff: Duration::from_millis(50),
+            ..stream_opts(tmp.path(), camera)
+        };
+        let task = tokio::spawn(run_video(options, Arc::new(queue), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
+
+        assert!(eventually(|| status.borrow().sign_in_refused).await, "the refused login is remembered");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(starts(&spawns), 1, "no second try while the long wait lasts");
+        let seen = status.borrow().clone();
+        let error = seen.last_error.unwrap();
+        assert!(error.contains("refused the user name or password"), "{error}");
+        assert!(error.contains("next try in"), "{error}");
+        assert_eq!(seen.camera_failures, 1);
+
+        stop_tx.send(true).unwrap();
+        let finished = tokio::time::timeout(Duration::from_secs(1), task).await;
+        assert!(matches!(finished, Ok(Ok(()))), "shutdown does not wait for the long sleep");
+    }
+
+    #[test]
+    fn the_wait_is_told_in_whole_minutes_and_at_least_one() {
+        assert_eq!(wait_words(Duration::from_secs(600)), "next try in 10 min");
+        assert_eq!(wait_words(Duration::from_secs(90)), "next try in 1 min");
+        assert_eq!(wait_words(Duration::from_secs(2)), "next try in 1 min");
+        assert_eq!(wait_words(Duration::from_secs(3600)), "next try in 60 min");
+    }
+
+    #[test]
+    fn a_refused_login_waits_ten_minutes_by_default() {
+        let options = VideoOptions::from_config(&CaptureConfig::default(), PathBuf::from("/tmp/incoming"));
+        assert_eq!(options.sign_in_backoff, Duration::from_secs(600));
+    }
+
+    #[tokio::test]
+    async fn another_failure_still_retries_within_the_short_backoff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let status = status_channel(AgentStatus::default());
+        let (_gate_tx, gate_rx) = watch::channel(true);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let spawns = tmp.path().join("spawns");
+        // A refused connection whose pointer contains "401": it is not a refused login.
+        let camera = counting_failing_ffmpeg(
+            tmp.path(),
+            &spawns,
+            "[tcp @ 0x55d4014f8c80] Connection to tcp://192.0.2.10:554 failed: Connection refused",
+        );
+        let options = VideoOptions { sign_in_backoff: Duration::from_secs(30), ..stream_opts(tmp.path(), camera) };
+        let task = tokio::spawn(run_video(options, Arc::new(queue), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
+
+        assert!(eventually(|| starts(&spawns) >= 2).await, "the recorder retries quickly");
+        let seen = status.borrow().clone();
+        assert!(!seen.sign_in_refused);
+        let error = seen.last_error.unwrap();
+        assert!(error.contains("refused the connection") && !error.contains("next try in"), "{error}");
+
+        stop_tx.send(true).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_healthy_run_clears_the_refused_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let status = status_channel(AgentStatus { sign_in_refused: true, ..AgentStatus::default() });
+        let (_gate_tx, gate_rx) = watch::channel(true);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let options = VideoOptions { healthy_run: Duration::from_millis(300), ..opts(tmp.path(), fake_camera(tmp.path())) };
+        let task = tokio::spawn(run_video(options, Arc::new(queue), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
+        assert!(eventually(|| status.borrow().recording_video).await);
+        assert!(status.borrow().sign_in_refused, "still remembered until the run has lasted");
+        assert!(eventually(|| !status.borrow().sign_in_refused).await, "cleared with the failure count");
+        stop_tx.send(true).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn any_other_ending_clears_the_refused_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let broken = executable(tmp.path(), "broken-camera.sh", b"#!/bin/sh\nexit 1\n");
+        let missing = tmp.path().join("no-such-camera").to_string_lossy().into_owned();
+        for (n, (name, camera)) in [("exits", broken), ("cannot start", missing)].into_iter().enumerate() {
+            let (queue, _) = Queue::open(&tmp.path().join(format!("q{n}"))).unwrap();
+            let status = status_channel(AgentStatus { sign_in_refused: true, ..AgentStatus::default() });
+            let (_gate_tx, gate_rx) = watch::channel(true);
+            let (stop_tx, stop_rx) = watch::channel(false);
+            let task = tokio::spawn(run_video(opts(tmp.path(), camera), Arc::new(queue), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
+            assert!(eventually(|| status.borrow().camera_failures >= 1 && !status.borrow().sign_in_refused).await, "{name}");
+            stop_tx.send(true).unwrap();
+            task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_the_gate_clears_the_refused_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let status = status_channel(AgentStatus { sign_in_refused: true, ..AgentStatus::default() });
+        let (gate_tx, gate_rx) = watch::channel(true);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let options = opts(tmp.path(), fake_camera(tmp.path()));
+        let task = tokio::spawn(run_video(options, Arc::new(queue), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
+        assert!(eventually(|| status.borrow().recording_video).await);
+        gate_tx.send(false).unwrap();
+        assert!(eventually(|| !status.borrow().recording_video && !status.borrow().sign_in_refused).await);
         stop_tx.send(true).unwrap();
         task.await.unwrap();
     }
