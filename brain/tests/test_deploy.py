@@ -233,21 +233,34 @@ def test_the_cameras_service_runs_the_agents_with_only_their_directory():
     assert service["build"] == {"context": "..", "dockerfile": "deploy/cameras.Dockerfile"}
     assert service["user"] == "${LOOPI_UID:-1000}:${LOOPI_GID:-1000}"
     assert service["init"] is True
-    assert service["volumes"] == [
-        "${LOOPI_DATA_DIR:-/srv/loopi}/cameras:/srv/loopi/cameras",
-        "/run/systemd/timesync:/run/systemd/timesync:ro",
-    ]
+    # The agents ask the kernel whether the clock is synced ([clock] source = "kernel"): no host directory but theirs.
+    assert service["volumes"] == ["${LOOPI_DATA_DIR:-/srv/loopi}/cameras:/srv/loopi/cameras"]
     assert service["depends_on"] == {"api": {"condition": "service_healthy"}}
     assert service["restart"] == "unless-stopped"
     # loopi-cameras drains each agent for up to 15 s on SIGTERM; Docker's default 10 s would SIGKILL a slow drain
     assert service["stop_grace_period"] == "30s"
     assert "ports" not in service and "environment" not in service
+    # The chattiest logger (a camera with sound but a silent stream logs every ~10 s): the local driver, rotated.
+    assert service["logging"] == {"driver": "local", "options": {"max-size": "10m", "max-file": "3"}}
+
+
+def test_the_cameras_container_shares_a_network_with_the_proxy_only():
+    # ffmpeg parses bytes from the LAN in there: it must not reach the api (no basic auth behind Caddy), db or models.
+    assert COMPOSE["networks"] == {"cameras": {}}
+    assert SERVICES["cameras"]["networks"] == ["cameras"]
+    assert SERVICES["proxy"]["networks"] == ["default", "cameras"]
+    for name in ("api", "db", "worker", "models"):
+        assert "cameras" not in SERVICES[name].get("networks", ["default"]), name
+    assert set(SERVICES) == {"db", "api", "worker", "models", "proxy", "cameras"}
 
 
 def test_the_cameras_image_builds_both_binaries_and_runs_as_the_data_owner():
     text = (DEPLOY / "cameras.Dockerfile").read_text()
     assert "cargo build --release --locked --bin loopi-agent --bin loopi-cameras" in text
     assert "ffmpeg" in text and "USER loopi" in text
+    runtime = text.split("\nFROM ")[2]  # the stage after the build stage
+    installed = re.search(r"apt-get install -y --no-install-recommends ([^&\\]+)", runtime).group(1).split()
+    assert {"ffmpeg", "libasound2", "libopus0"} <= set(installed), installed  # the agent links ALSA and Opus
     assert 'CMD ["loopi-cameras", "--root", "/srv/loopi/cameras"]' in text
     ignore = (DEPLOY.parent / ".dockerignore").read_text().split()
     assert ignore[:2] == ["*", "!agent/"] and "agent/target/" in ignore

@@ -126,13 +126,17 @@ services:
       - ${LOOPI_DATA_DIR:-/srv/loopi}/pki/server.key:/pki/server.key:ro
       - ${LOOPI_DATA_DIR:-/srv/loopi}/pki/ca.crt:/pki/ca.crt:ro
       - caddy_data:/data
+    # default: the api; cameras: the camera agents reach https://proxy:8443 and nothing else of the stack.
+    networks: [default, cameras]
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
 
   # Network cameras (P3c-2): one agent per camera directory the brain writes under <data>/cameras. Only that directory
-  # is mounted (never the pki keys); the host's timesync flag tells the agents the clock is synced, as on the Pi.
+  # is mounted (never the pki keys); the agents ask the PC's kernel whether the clock is synced ([clock] source =
+  # "kernel"), as timedatectl does. ffmpeg parses what the cameras send, so the container shares a network with the
+  # proxy only: it cannot reach the api (whose web pages have no auth behind Caddy), db or models.
   cameras:
     build:
       context: ..
@@ -141,7 +145,13 @@ services:
     init: true
     volumes:
       - ${LOOPI_DATA_DIR:-/srv/loopi}/cameras:/srv/loopi/cameras
-      - /run/systemd/timesync:/run/systemd/timesync:ro
+    networks: [cameras]
+    # The host keeps Docker's default unrotated json-file logs; a camera can log every few seconds for good.
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       api:
         condition: service_healthy
@@ -149,6 +159,10 @@ services:
     # in the middle of a segment.
     stop_grace_period: 30s
     restart: unless-stopped
+
+networks:
+  # A normal bridge (not internal): the camera agents must reach the cameras on the LAN.
+  cameras: {}
 
 volumes:
   db: {}
