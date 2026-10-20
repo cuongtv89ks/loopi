@@ -4,9 +4,11 @@ image's ffmpeg 7.1.5 (240 real 1080p 2 fps segments + 10 stills: 152 s wall, 212
 Pipeline (every ffmpeg call is built by a pure function returning its argv):
   0. inputs are checked in pure Python — MP4 frame/keyframe counts (moov parse), Ogg Opus duration, JPEG decode
      (Pillow); a bad input is skipped here, before any ffmpeg runs.
-  1. base track: ONE ffmpeg over a concat-demuxer list of the day's segments, keeping exactly N = T*24 frames (uniform
-     select), split into chunks at the stills' positions (forced keyframes + the segment muxer). Without segments: a
-     keyframe slideshow (Pillow -> rawvideo pipe), 0.25 s per JPEG, split the same way.
+  1. base track: ONE ffmpeg per run (consecutive segments of one camera; a single camera is one run) over a
+     concat-demuxer list of its segments, keeping exactly its share of N = T*24 frames (uniform select; every segment
+     the same share, ruling R12), split into chunks at the stills' positions (forced keyframes + the segment muxer).
+     Without segments: a keyframe slideshow (Pillow -> rawvideo pipe), 0.25 s per JPEG, split the same way.
+     With two or more cameras each run and still carries its place (drawtext, ruling R13).
   2. Ken Burns stills: Pillow -> one 1920x1080 rawvideo frame on stdin -> pre-scale x4 -> zoompan, D s at 24 fps.
   3. assembly: concat demuxer over [chunk, still, chunk, still, ...] with -c:v copy, one AAC track (silence + clips cut
      from the normalised Opus copies, faded, delayed to their stills) and a mov_text track from an SRT the code writes;
@@ -22,10 +24,11 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import struct
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -65,6 +68,10 @@ NORMALISE = (
 # (older ffmpeg emits 1 frame for it); `-frames:v N` stops the infinite clone. NOT used for the timelapse:
 # there it would hide a truncated day (see timelapse_argv).
 PAD_TAIL = "tpad=stop_mode=clone:stop=-1"
+# Place labels (R13), drawn only when the vlog shows two or more devices.
+LABEL_FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")  # in the brain image (Debian fonts-dejavu-core)
+LABEL_STYLE = "fontsize=30:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=10:x=28:y=h-th-28:expansion=none"
+_PLAIN_PATH = re.compile(r"[\w./-]+")
 
 
 class RenderError(RuntimeError):
@@ -254,6 +261,15 @@ def vtt_text(cues: Sequence[Cue]) -> str:
 
 # --------------------------------------------------------------------------------------------- argv builders
 
+def label_filter(textfile: Path) -> str:
+    """drawtext reading the place from ``textfile`` (no text escaping; expansion off so '%' is shown as it is).
+    Paths are used unquoted, so one that would need filtergraph quoting is refused."""
+    for p in (LABEL_FONT.as_posix(), textfile.as_posix()):
+        if not _PLAIN_PATH.fullmatch(p):
+            raise InvalidMedia(f"label path {p!r} would need quoting")
+    return f"drawtext=fontfile={LABEL_FONT.as_posix()}:textfile={textfile.as_posix()}:{LABEL_STYLE}"
+
+
 def uniform_select(n_out: int, n_in: int) -> str:
     """select expression keeping exactly n_out of n_in frames, evenly spread: frame k kept iff
     (k*n_out mod n_in) < n_out. Quoted so the commas survive filtergraph parsing."""
@@ -271,14 +287,17 @@ def _split_args(out_pattern: Path, boundaries: Sequence[int]) -> list[str]:
 
 
 def timelapse_argv(list_path: Path, out_pattern: Path, *, n_out: int, n_in: int, keyframes_only: bool,
-                   boundaries: Sequence[int] = (), decode_threads: int = 2) -> list[str]:
+                   boundaries: Sequence[int] = (), decode_threads: int = 2, label: Path | None = None) -> list[str]:
     """One ffmpeg over the concat list. n_in = frames (or keyframes when keyframes_only) in the list.
     setpts=N/(24*TB) repacks the kept frames at 1/24 s; `fps=24` then only sets the link frame rate (no
     dup/drop because timestamps already sit on the grid). Do NOT use `-r 24` instead: frames keep their 0.5 s
     duration and ffmpeg's cfr logic duplicated 11 of 144 frames and dropped the end of the day (measured).
     No tpad here: the concat demuxer treats a file it cannot open as END OF INPUT with exit code 0, so a short
-    output must stay short and be caught by the frame-count check, not padded over."""
-    vf = f"{uniform_select(n_out, n_in)},setpts=N/({FPS}*TB),fps={FPS},{NORMALISE}"
+    output must stay short and be caught by the frame-count check, not padded over.
+    The list holds ONE camera: a resolution change makes ffmpeg rebuild the filtergraph, which restarts select's and
+    setpts's frame counter (measured, ffmpeg 9.0). ``label``: the place drawn on every frame (R13)."""
+    vf = f"{uniform_select(n_out, n_in)},setpts=N/({FPS}*TB),fps={FPS},{NORMALISE}" + (
+        f",{label_filter(label)}" if label else "")
     return [*BASE, "-nostdin", "-threads", str(decode_threads),
             *(["-skip_frame", "nokey"] if keyframes_only else []),
             "-f", "concat", "-safe", "0", "-i", str(list_path),
@@ -297,7 +316,8 @@ def slideshow_argv(out_pattern: Path, *, n_images: int, boundaries: Sequence[int
             *X264, *_split_args(out_pattern, boundaries)]
 
 
-def kenburns_argv(out: Path, *, seconds: float = 3.0, zoom_from: float = 1.0, zoom_to: float = 1.1) -> list[str]:
+def kenburns_argv(out: Path, *, seconds: float = 3.0, zoom_from: float = 1.0, zoom_to: float = 1.1,
+                  label: Path | None = None) -> list[str]:
     """One rgb24 KB_SRC_W x KB_SRC_H frame on stdin -> `seconds` of centred zoom at 24 fps.
     zoompan: d = output frames PER INPUT FRAME (input is exactly one frame), fps defaults to 25 (set it),
     zoom is driven by the output frame number `on` so it is linear and ends exactly at zoom_to."""
@@ -306,7 +326,7 @@ def kenburns_argv(out: Path, *, seconds: float = 3.0, zoom_from: float = 1.0, zo
     z = f"{zoom_from}+({zoom_to}-{zoom_from})*on/{max(nf - 1, 1)}"
     vf = (f"scale={big_w}:{big_h}:flags=bicubic:out_range=tv:out_color_matrix=bt709,format=yuv420p,"
           f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={nf}:s={OUT_W}x{OUT_H}:fps={FPS},"
-          f"setsar=1,format=yuv420p")
+          f"setsar=1,format=yuv420p") + (f",{label_filter(label)}" if label else "")
     return [*BASE, "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{KB_SRC_W}x{KB_SRC_H}", "-framerate", str(FPS),
             "-i", "pipe:0", "-vf", vf, "-frames:v", str(nf), *X264, str(out)]
 
@@ -402,6 +422,8 @@ async def run_step(step: str, argv: list[str], feed: Feed = None, *, timeout: fl
 class Segment:
     path: Path
     start: datetime  # wall-clock start of the recording
+    label: str | None = None  # its place, drawn on it (R13); None: no label
+    camera: str | None = None  # its device: consecutive segments of one camera (and one label) form a run (R12)
 
 
 @dataclass(frozen=True)
@@ -411,6 +433,7 @@ class Still:
     caption: str
     clip_ogg: Path | None = None
     clip_offset: float = 0.0
+    label: str | None = None  # its place, drawn on it (R13); None: no label
 
 
 @dataclass(frozen=True)
@@ -427,6 +450,12 @@ class RenderResult:
     seconds: float
     mode: str
     skipped: list[str] = field(default_factory=list)
+
+
+def segment_shares(n_segments: int, n_out: int) -> list[int]:
+    """Output frames per segment: every segment the same share of the timelapse, the first ones one more (R12)."""
+    base, extra = divmod(n_out, n_segments)
+    return [base + (1 if k < extra else 0) for k in range(n_segments)]
 
 
 def chunk_boundaries(cum_units_before: Sequence[int], n_in: int, n_out: int) -> list[int]:
@@ -480,17 +509,31 @@ async def render(*, segments: Sequence[Segment], stills: Sequence[Still], keyfra
         except InvalidMedia as exc:
             skipped.append(f"still {exc}")
 
-    # ---- 1. base track, split at the stills' positions
+    # ---- 1. base track, one ffmpeg per run, split at the stills' positions
     chunk_pat = workdir / "chunk_%03d.mp4"
+    run_chunks: list[tuple[list[Path], list[int]]]  # per run: its chunk files and their output-frame edges
+    placed: list[tuple[int, int]]  # per still: (run, output-frame boundary in that run)
     if good:
-        frames = sum(t.samples for _, t in good)
-        keys = sum(t.sync_samples for _, t in good)
-        keyframes_only = allow_keyframes_only and keys >= KEYFRAMES_PER_OUTPUT_MIN * n_out
-        units = [(s, t.sync_samples if keyframes_only else t.samples, t.seconds) for s, t in good]
-        n_in = keys if keyframes_only else frames
-        n_out = min(n_out, n_in)
+        runs: list[list[tuple[Segment, Track]]] = []
+        for s, t in good:  # consecutive segments of one camera (one label) form a run (R12)
+            if runs and (runs[-1][-1][0].camera, runs[-1][-1][0].label) == (s.camera, s.label):
+                runs[-1].append((s, t))
+            else:
+                runs.append([(s, t)])
+        shares = segment_shares(len(good), n_out)
+        plans = []  # per run: (units, n_in, n_out, keyframes_only)
+        k = 0
+        for run in runs:
+            want = sum(shares[k:k + len(run)])
+            k += len(run)
+            keys = sum(t.sync_samples for _, t in run)
+            frames_in = sum(t.samples for _, t in run)
+            kf_only = allow_keyframes_only and keys >= KEYFRAMES_PER_OUTPUT_MIN * want
+            units = [(s, t.sync_samples if kf_only else t.samples, t.seconds) for s, t in run]
+            r_in = keys if kf_only else frames_in
+            plans.append((units, r_in, min(want, r_in), kf_only))
 
-        def units_before(at: datetime) -> int:
+        def units_before(units, at: datetime) -> int:
             m = 0
             for s, u, secs in units:
                 into = (at - s.start).total_seconds()
@@ -500,13 +543,39 @@ async def render(*, segments: Sequence[Segment], stills: Sequence[Still], keyfra
                     m += math.ceil(u * into / secs)
             return m
 
-        bounds = chunk_boundaries([units_before(st.at) for st, _ in ok_stills], n_in, n_out)
-        lst = workdir / "segments.ffconcat"
-        await asyncio.to_thread(_write_concat, lst, [s.path for s, _ in good])
-        cut = sorted({b for b in bounds if 0 < b < n_out})
-        await runner("timelapse", timelapse_argv(lst, chunk_pat, n_out=n_out, n_in=n_in,
-                                                 keyframes_only=keyframes_only, boundaries=cut), None)
-        mode = "timelapse-keyframes" if keyframes_only else "timelapse-full"
+        def run_of(at: datetime) -> int:
+            for r, run in enumerate(runs):
+                last, track = run[-1]
+                if at < last.start + timedelta(seconds=track.seconds):
+                    return r
+            return len(runs) - 1
+
+        placed = []
+        for st, _ in ok_stills:
+            r = run_of(st.at)
+            units, r_in, r_out, _ = plans[r]
+            placed.append((r, chunk_boundaries([units_before(units, st.at)], r_in, r_out)[0] if r_out else 0))
+        run_chunks = []
+        for r, (run, (units, r_in, r_out, kf_only)) in enumerate(zip(runs, plans)):
+            if r_out == 0:
+                run_chunks.append(([], [0]))
+                continue
+            prefix = "" if r == 0 else f"run{r}_"
+            lst = workdir / ("segments.ffconcat" if r == 0 else f"segments_{r}.ffconcat")
+            pat = workdir / f"{prefix}chunk_%03d.mp4"
+            await asyncio.to_thread(_write_concat, lst, [s.path for s, _ in run])
+            label = None
+            if run[0][0].label:
+                label = workdir / f"label_{r}.txt"
+                label.write_text(run[0][0].label, encoding="utf-8")
+            cut = sorted({b for rr, b in placed if rr == r and 0 < b < r_out})
+            await runner("timelapse" if r == 0 else f"timelapse[{r}]",
+                         timelapse_argv(lst, pat, n_out=r_out, n_in=r_in, keyframes_only=kf_only, boundaries=cut,
+                                        label=label), None)
+            edges = [0, *cut, r_out]
+            run_chunks.append(([Path(str(pat).replace("%03d", f"{i:03d}")) for i in range(len(edges) - 1)], edges))
+        n_out = sum(p[2] for p in plans)
+        mode = "timelapse-keyframes" if all(p[3] for p in plans) else "timelapse-full"
     else:
         ok_kf: list[Keyframe] = []
         for k in sorted(keyframes, key=lambda k: k.at):
@@ -525,15 +594,18 @@ async def render(*, segments: Sequence[Segment], stills: Sequence[Still], keyfra
             await runner("slideshow", slideshow_argv(chunk_pat, n_images=len(ok_kf), boundaries=cut),
                          _slides([k.jpeg for k in ok_kf]))
         mode = "slideshow"
-    chunk_edges = [0, *cut, n_out] if n_out else [0]
-    chunks = [Path(str(chunk_pat).replace("%03d", f"{i:03d}")) for i in range(len(chunk_edges) - 1)]
-    for c, (a, b) in zip(chunks, zip(chunk_edges, chunk_edges[1:])):
-        try:
-            got = video_track(c).samples
-        except InvalidMedia:
-            got = 0
-        if got != b - a:  # e.g. a segment vanished/corrupted after inspection: concat stops there, rc 0
-            raise RenderError(mode, 0, f"{c.name}: {got} frames, expected {b - a}")
+        chunk_edges = [0, *cut, n_out] if n_out else [0]
+        run_chunks = [([Path(str(chunk_pat).replace("%03d", f"{i:03d}")) for i in range(len(chunk_edges) - 1)],
+                       chunk_edges)]
+        placed = [(0, b) for b in bounds]
+    for chunks_r, edges in run_chunks:
+        for c, (a, b) in zip(chunks_r, zip(edges, edges[1:])):
+            try:
+                got = video_track(c).samples
+            except InvalidMedia:
+                got = 0
+            if got != b - a:  # e.g. a segment vanished/corrupted after inspection: concat stops there, rc 0
+                raise RenderError(mode, 0, f"{c.name}: {got} frames, expected {b - a}")
 
     # ---- 2. Ken Burns stills
     kb_frames = round(still_seconds * FPS)
@@ -541,20 +613,24 @@ async def render(*, segments: Sequence[Segment], stills: Sequence[Still], keyfra
     for i, (st, _) in enumerate(ok_stills):
         p = workdir / f"still_{i:03d}.mp4"
         canvas = await asyncio.to_thread(jpeg_canvas, st.jpeg, KB_SRC_W, KB_SRC_H)
-        await runner(f"kenburns[{i}]", kenburns_argv(p, seconds=still_seconds), _bytes_once(canvas))
+        label = None
+        if st.label:
+            label = workdir / f"label_still_{i}.txt"
+            label.write_text(st.label, encoding="utf-8")
+        await runner(f"kenburns[{i}]", kenburns_argv(p, seconds=still_seconds, label=label), _bytes_once(canvas))
         if video_track(p).samples != kb_frames:
             raise RenderError(f"kenburns[{i}]", 0, f"{p.name}: wrong frame count")
         still_parts.append(p)
 
     # ---- 3. interleave, cues, audio clips, assemble
     order: list[tuple[Path, int, Still | None]] = []
-    for ci, c in enumerate(chunks):
-        if ci == 0:
-            order += [(still_parts[j], kb_frames, ok_stills[j][0]) for j, b in enumerate(bounds) if b == 0]
-        order.append((c, chunk_edges[ci + 1] - chunk_edges[ci], None))
-        order += [(still_parts[j], kb_frames, ok_stills[j][0])
-                  for j, b in enumerate(bounds) if b == chunk_edges[ci + 1] and b > 0]
-    if not chunks:
+    for r, (chunks_r, edges) in enumerate(run_chunks):
+        order += [(still_parts[j], kb_frames, ok_stills[j][0]) for j, (rr, b) in enumerate(placed) if rr == r and b == 0]
+        for ci, c in enumerate(chunks_r):
+            order.append((c, edges[ci + 1] - edges[ci], None))
+            order += [(still_parts[j], kb_frames, ok_stills[j][0])
+                      for j, (rr, b) in enumerate(placed) if rr == r and b == edges[ci + 1] and b > 0]
+    if not any(chunks_r for chunks_r, _ in run_chunks):
         order = [(still_parts[j], kb_frames, ok_stills[j][0]) for j in range(len(ok_stills))]
     total_frames = sum(n for _, n, _ in order)
     total = total_frames / FPS

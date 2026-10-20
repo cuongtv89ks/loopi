@@ -19,7 +19,7 @@ from psycopg import AsyncConnection
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from .. import media
+from .. import media, places
 from ..days import day_bounds_utc, local_now
 from ..vlog import render
 from ..vlog.material import vlog_material
@@ -201,7 +201,11 @@ async def _sound(pool: AsyncConnectionPool, root: Path, item_id: str) -> Path | 
     return view
 
 
-async def _stills(pool: AsyncConnectionPool, root: Path, script: dict) -> list[render.Still]:
+async def _stills(pool: AsyncConnectionPool, root: Path, script: dict,
+                  labels: dict[str, str] | None = None) -> list[render.Still]:
+    """The script's highlights whose picture is still there; ``labels`` (device id -> place, R13) names each one's
+    place, the highlight's camera read from the script (scripts written before P3c-3 have none: no label)."""
+    labels = labels or {}
     stills = []
     for h in script.get("highlights", []):
         jpeg = _inside(root, h.get("jpeg"))
@@ -212,7 +216,8 @@ async def _stills(pool: AsyncConnectionPool, root: Path, script: dict) -> list[r
         # line is the sentence itself: shown once).
         speech = h.get("speech")
         caption = h["line"] if not speech or speech.strip() == h["line"].strip() else f"{h['line']}\n“{speech[:SPEECH_MAX]}”"
-        stills.append(render.Still(jpeg, dt.datetime.fromisoformat(h["at"]), caption, clip, h.get("audio_offset", 0.0)))
+        stills.append(render.Still(jpeg, dt.datetime.fromisoformat(h["at"]), caption, clip, h.get("audio_offset", 0.0),
+                                   labels.get(h.get("device_id"))))
     return stills
 
 
@@ -268,8 +273,15 @@ async def render_vlog(ctx: PipelineContext, day: dt.date) -> bool:
     work = root / TMP_DIR / f"{day.isoformat()}-{uuid.uuid4().hex}"
     try:
         material = await vlog_material(pool, day, zone)
-        stills = await _stills(pool, root, row["script"] or {})
-        segments = [render.Segment(p, s.start) for s in material.segments if (p := _inside(root, s.path))]
+        script = row["script"] or {}
+        # R13: each scene names its place only when the vlog shows two or more devices; the names are read now, so a
+        # renamed place shows in the next render.
+        named = places.several([s.device_id for s in material.segments]
+                               + [h.get("device_id") for h in script.get("highlights", [])])
+        labels = material.places if named else {}
+        stills = await _stills(pool, root, script, labels)
+        segments = [render.Segment(p, s.start, labels.get(s.device_id), s.device_id)
+                    for s in material.segments if (p := _inside(root, s.path))]
         # Always passed: the renderer uses them only when no segment is usable (missing or broken MP4 files).
         frames = [render.Keyframe(p, f.at) for f in material.frames if (p := _inside(root, f.path))]
         timelapse, still_seconds = plan_seconds(len(segments), len(stills))
