@@ -341,6 +341,17 @@ mod tests {
     }
 
     #[test]
+    fn the_internal_sign_in_flag_is_not_on_the_wire() {
+        let control = ControlState { paused: false, audio_enabled: true };
+        let wire = |sign_in_refused| {
+            let status = AgentStatus { paired: true, camera_failures: 1, sign_in_refused, ..AgentStatus::default() };
+            serde_json::to_value(build_request(&status, &control, 0, 1, &FixedProbe, vec![], &OsInfo::default())).unwrap()
+        };
+        assert_eq!(wire(true), wire(false), "the protocol carries no sign-in field");
+        assert_matches("Heartbeat", &wire(true));
+    }
+
+    #[test]
     fn invalid_commands_are_acked_and_reported() {
         let t = translate(vec![remote("pause", json!({})), remote("reboot", json!({}))]);
         assert_eq!(t.commands, vec![Command::Pause]);

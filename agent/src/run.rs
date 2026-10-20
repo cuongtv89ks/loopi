@@ -353,6 +353,7 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
         incoming_dir: paths.audio_incoming.clone(),
         retry: timings.audio_retry,
         keep_camera_error: config.capture.source == CaptureSource::Stream,
+        wait_while_sign_in_refused: config.capture.source == CaptureSource::Stream,
     };
     // Every frame is amplified before encoding (spec D19); the raw ALSA level is far too quiet.
     let audio_factory = gain::with_gain(audio_factory, config.capture.audio_gain_db);
