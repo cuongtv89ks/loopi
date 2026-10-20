@@ -17,7 +17,7 @@ SPEECH_PERCENTILE = 90  # the speech level: the loud frames of a region, whateve
 GROUP_SLACK = dt.timedelta(seconds=2)  # a network camera's sound reaches its agent about a second late (R1)
 COVERED_SHARE = 0.5  # covered when chosen speech elsewhere overlaps at least half of the region (R2)
 ENVELOPE_HOP_S = 0.1  # S1: one loudness value per 100 ms
-SAME_SOUND_MIN = 0.5  # S2: the correlation two copies of one sentence reach; tuned at acceptance §8.2
+SAME_SOUND_MIN = 0.7  # S2: no unrelated synthetic pair of seeds 1-39 reaches it; tuned at acceptance §8.2
 SAME_SOUND_MIN_FRAMES = 10  # S2: at least 1 s in common to compare at all
 WAIT = dt.timedelta(minutes=3)  # D33: the longest wait for a minute's audio from every microphone (R3)
 
@@ -95,12 +95,12 @@ def _heard_together(a: Span, others: list[Span], slack: dt.timedelta) -> float:
     return heard
 
 
-def same_sound(a: Span, b: Span, slack: dt.timedelta = GROUP_SLACK) -> bool:
-    """S2: do ``a`` and ``b`` (two microphones) hold the same sound? The best Pearson correlation of their loudness
-    envelopes over the lags within ±slack, on the frames both cover. True when either has no envelope (stored before
-    the check existed) or they share under SAME_SOUND_MIN_FRAMES at every lag — today's time-only rule."""
+def best_correlation(a: Span, b: Span, slack: dt.timedelta = GROUP_SLACK) -> float | None:
+    """S2: the best Pearson correlation of the loudness envelopes of ``a`` and ``b`` over the lags within ±slack, on
+    the frames both cover; -1 when every lag compared is flat (no shape to match). None when either has no envelope
+    or they share under SAME_SOUND_MIN_FRAMES at every lag: nothing to compare."""
     if not a.envelope or not b.envelope:
-        return True
+        return None
     ea, eb = np.asarray(a.envelope), np.asarray(b.envelope)
     shift = round((b.start - a.start).total_seconds() / ENVELOPE_HOP_S)  # b's frame 0 sits at a's frame `shift`
     reach = round(slack.total_seconds() / ENVELOPE_HOP_S)
@@ -112,10 +112,19 @@ def same_sound(a: Span, b: Span, slack: dt.timedelta = GROUP_SLACK) -> bool:
             continue
         compared = True
         x, y = ea[lo:hi], eb[lo - off:hi - off]
-        if x.std() == 0 or y.std() == 0:
+        if np.ptp(x) == 0 or np.ptp(y) == 0:
             continue  # a flat stretch has no shape to match
-        best = max(best, float(np.corrcoef(x, y)[0, 1]))
-    return best >= SAME_SOUND_MIN if compared else True
+        x, y = x - x.mean(), y - y.mean()
+        best = max(best, float(x @ y / math.sqrt((x @ x) * (y @ y))))  # Pearson, without corrcoef's overhead
+    return best if compared else None
+
+
+def same_sound(a: Span, b: Span, slack: dt.timedelta = GROUP_SLACK) -> bool:
+    """S2: do ``a`` and ``b`` (two microphones) hold the same sound? Their best envelope correlation reaches
+    SAME_SOUND_MIN. True when there is nothing to compare (no envelope, stored before the check existed, or under
+    SAME_SOUND_MIN_FRAMES in common at every lag) — today's time-only rule."""
+    best = best_correlation(a, b, slack)
+    return best is None or best >= SAME_SOUND_MIN
 
 
 def groups(spans: list[Span], slack: dt.timedelta = GROUP_SLACK) -> list[list[Span]]:

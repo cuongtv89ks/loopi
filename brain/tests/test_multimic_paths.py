@@ -42,7 +42,7 @@ async def test_one_sentence_heard_by_two_microphones_gives_one_transcript(pool, 
             await conn.execute("UPDATE device SET last_heartbeat = %s, last_heartbeat_at = now() WHERE id = %s",
                                (Jsonb({"recording_audio": True}), dev["device_id"]))
     monkeypatch.setattr(asr, "speech_regions", lambda _audio, _t: [Region(10.0, 13.0)])
-    # both hear the same sound, with a loudness shape to compare (silence has none: a flat envelope matches nothing)
+    # the input has a shape: two flat (silent) envelopes stay "different" (a duplicate beats a lost transcript)
     items = [await _recorded(pool, pki_settings, d["device_id"], source=QUIET_SPEECH) for d in (pi, cam)]
     for item_id in items:
         await dispatch.defer_item(pool, item_id)
