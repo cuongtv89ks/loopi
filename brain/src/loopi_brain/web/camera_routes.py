@@ -1,6 +1,8 @@
 """Network cameras on the Thiết bị page (P3c design §4.1, §4.5, D36)."""
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
@@ -41,11 +43,15 @@ async def probe(request: Request, video_url: str = Form(""), audio_url: str = Fo
     except cameras.CameraError as exc:
         return TEMPLATES.TemplateResponse(request, "_camera_probe.html",
                                           {"results": [camera_probe.ProbeResult(False, str(exc))]})
-    results = [await camera_probe.probe(video, user, secret)]
+    # With a separate sound address both are probed together, so "Thử kết nối" waits for one probe (10 s at most), not
+    # two; the video's answer stays first.
     if audio:
-        sound = await camera_probe.probe(audio, user, secret)
+        video_result, sound = await asyncio.gather(camera_probe.probe(video, user, secret),
+                                                   camera_probe.probe(audio, user, secret))
         message = "Âm thanh: có." if sound.has_audio else "Âm thanh: " + (sound.message if not sound.ok else "không có.")
-        results.append(camera_probe.ProbeResult(sound.has_audio is True, message))
+        results = [video_result, camera_probe.ProbeResult(sound.has_audio is True, message)]
+    else:
+        results = [await camera_probe.probe(video, user, secret)]
     return TEMPLATES.TemplateResponse(request, "_camera_probe.html", {"results": results})
 
 

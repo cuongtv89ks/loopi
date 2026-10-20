@@ -1,4 +1,7 @@
 
+import asyncio
+import time
+
 from helpers import fetch_one, make_csr_pem, paired_device
 from loopi_brain import camera_probe, cameras, devices, pki
 
@@ -113,6 +116,28 @@ async def test_a_separate_sound_address_is_probed_for_sound_only(client, monkeyp
     page = (await client.post("/cameras/probe", data=data | {"audio_url": "http://192.0.2.20/mic"}, headers=HX)).text
     assert "Âm thanh: Không kết nối được tới camera." in page and 'class="err"' in page
     assert "S3cr3t" not in page
+
+
+async def test_the_video_and_the_sound_are_probed_together_so_the_button_waits_at_most_one_probe(client, monkeypatch):
+    started = []
+
+    async def slow_probe(url, username, password, **_):
+        started.append(url)
+        await asyncio.sleep(0.3)
+        if url.endswith("/audio"):
+            return camera_probe.ProbeResult(False, "Luồng này không có hình.", has_audio=True)
+        return camera_probe.ProbeResult(True, "Kết nối được: mjpeg 640×480, 10 khung hình/giây, không có âm thanh.",
+                                        has_audio=False)
+    monkeypatch.setattr(camera_probe, "probe", slow_probe)
+    data = FORM | {"video_url": "http://192.0.2.20/stream", "audio_url": "http://192.0.2.20/audio"}
+    begun = time.perf_counter()
+    page = (await client.post("/cameras/probe", data=data, headers=HX)).text
+    took = time.perf_counter() - begun
+    assert took < 0.5, f"the probes ran one after the other: {took:.2f} s"
+    assert sorted(started) == ["http://192.0.2.20/audio", "http://192.0.2.20/stream"]
+    # Both answers, the video's first.
+    assert "Kết nối được: mjpeg 640×480" in page and "Âm thanh: có." in page
+    assert page.index("Kết nối được: mjpeg") < page.index("Âm thanh: có.")
 
 
 async def test_repairing_and_removing_a_waiting_camera(client, pool, pki_settings):

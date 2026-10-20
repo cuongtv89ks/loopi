@@ -63,8 +63,9 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - Logs: `docker compose -p deploy logs cameras` (each agent line starts with `[<camera id>]`; stream errors are
   named, never quoted, so no address or password appears).
 - Clock and isolation: the camera agents ask the PC's kernel whether its clock is synced (as `timedatectl` does) and
-  record only while it is. The container mounts only `<data>/cameras` and sits on a network of its own with the proxy:
-  it cannot reach the api, db or models directly.
+  record only while it is (latched once synced: a long outage without NTP does not stop a camera that has synced).
+  The container mounts only `<data>/cameras` and sits on a network of its own with the proxy: it cannot reach the api,
+  db or models directly.
 - Known limitation: ffmpeg and ffprobe take RTSP credentials only inside the URL, so a user logged in on the PC can see
   a camera's password with `ps` while it records (and for up to 10 s during "Thử kết nối"). A separate sound address
   must serve WAV.

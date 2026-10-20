@@ -29,7 +29,7 @@ Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của các phase P3c
 - Thư mục cấu hình dùng chung với brain: `<LOOPI_DATA_DIR>/cameras/<camera_id>/` (trong container là `/srv/loopi/cameras/…`). Mỗi camera có `loopi.toml` (brain viết, quyền 600) và `data/` (hàng đợi, khoá, `state.json` của agent đó).
 - Bên trong là một bộ giám sát nhỏ (`loopi-cameras`, binary thứ hai trong crate agent): đọc thư mục, chạy `loopi-agent run --config <dir>/loopi.toml` cho mỗi camera, khởi động lại khi agent thoát (thời gian chờ tăng dần, như systemd làm cho Pi), dừng agent khi thư mục camera bị xoá hoặc có file `disabled`.
 - Agent của camera mạng nói chuyện với brain đúng như Pi: qua Caddy, mTLS, ở `https://proxy:8443` trong mạng compose (agent kiểm CA của brain, không kiểm tên máy) (R2); ghép cặp bằng token một lần mà brain ghi vào `loopi.toml`.
-- Giờ: agent của camera hỏi thẳng kernel của PC (adjtimex, như `timedatectl`); camera chỉ ghi khi đồng hồ PC đã đồng bộ, như Pi; container không gắn thư mục nào của PC ngoài `cameras/` (R3, sửa sau review cuối: thư mục `/run/systemd/timesync` bị tạo lại mỗi lần timesyncd khởi động lại).
+- Giờ: agent của camera hỏi thẳng kernel của PC (adjtimex, như `timedatectl`); camera chỉ ghi khi đồng hồ PC đã đồng bộ, như Pi (đã đồng bộ một lần thì giữ); container không gắn thư mục nào của PC ngoài `cameras/` (R3, sửa sau review cuối: thư mục `/run/systemd/timesync` bị tạo lại mỗi lần timesyncd khởi động lại).
 - Container `cameras` ở mạng riêng chỉ chung với proxy: không gọi thẳng được api, db, models.
 - Hàng đợi của camera mạng nằm trên SSD của PC. Ngưỡng 85 %/95 % của agent áp dụng cho đĩa đó.
 
