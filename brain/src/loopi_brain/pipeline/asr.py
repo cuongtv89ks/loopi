@@ -344,28 +344,33 @@ async def _detect(ctx: PipelineContext, item_id: str) -> int:
     async with pool.connection() as conn, conn.transaction():
         if not await lock_pending_item(conn, item_id):
             return 0
-        await conn.execute("DELETE FROM speech_region WHERE item_id = %s", (item_id,))
-        for region, snr in found:
-            await conn.execute(
-                "INSERT INTO speech_region (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                (devices.new_id(), item_id, item["device_id"], start + dt.timedelta(seconds=region.start),
-                 start + dt.timedelta(seconds=region.end), region.start, region.end - region.start, snr),
-            )
-        await conn.execute("UPDATE item SET speech_detected_at = now() WHERE id = %s", (item_id,))
-        if not found:
-            await mark_item_done(conn, item_id)
-    if found:
-        try:
-            await grouping.group_speech(pool)
-        except Exception:  # the periodic group_speech tick tries again within a minute
-            log.exception("grouping after the detection of item %s failed", item_id)
-    log.info("item %s: %d speech regions", item_id, len(found))
-    return len(found)
+        cur = await conn.execute("SELECT speech_detected_at FROM item WHERE id = %s", (item_id,))
+        if (await cur.fetchone())["speech_detected_at"] is None:
+            for region, snr in found:
+                await conn.execute(
+                    "INSERT INTO speech_region (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (devices.new_id(), item_id, item["device_id"], start + dt.timedelta(seconds=region.start),
+                     start + dt.timedelta(seconds=region.end), region.start, region.end - region.start, snr),
+                )
+            await conn.execute("UPDATE item SET speech_detected_at = now() WHERE id = %s", (item_id,))
+            if not found:
+                await mark_item_done(conn, item_id)
+            stored = len(found)
+        else:  # a recovered or duplicate run: keep the regions already found (grouping may have decided them)
+            cur = await conn.execute("SELECT count(*) AS n FROM speech_region WHERE item_id = %s", (item_id,))
+            stored = (await cur.fetchone())["n"]
+    try:  # after every detection: a silent microphone may be the last one another minute was waiting for
+        await grouping.group_speech(pool)
+    except Exception:  # the periodic group_speech tick tries again within a minute
+        log.exception("grouping after the detection of item %s failed", item_id)
+    log.info("item %s: %d speech regions", item_id, stored)
+    return stored
 
 
 async def detect_speech(ctx: PipelineContext, item_id: str) -> int:
-    """Find and measure the speech of a pending audio item; return the number of regions stored."""
+    """Find and measure the speech of a pending audio item (once: a second run keeps what was found); return the
+    number of regions the item has."""
     try:
         return await _detect(ctx, item_id)
     except Exception as exc:

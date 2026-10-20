@@ -23,7 +23,8 @@ async def test_speech_regions_are_stored_with_their_snr_and_the_item_waits(pool,
     groupings = []
 
     async def fake_group(pool, now=None):
-        groupings.append(now)
+        stored = await fetch_one(pool, "SELECT count(*) AS n FROM speech_region")
+        groupings.append((now, stored["n"]))
 
     monkeypatch.setattr(grouping, "group_speech", fake_group)
     assert await asr.detect_speech(make_ctx(pool, pki_settings), item_id) == 2
@@ -33,7 +34,7 @@ async def test_speech_regions_are_stored_with_their_snr_and_the_item_waits(pool,
     assert rows[0]["start_ts"] == T0 + dt.timedelta(seconds=1) and rows[0]["device_id"] == dev["device_id"]
     item = await fetch_one(pool, "SELECT analysis_state, speech_detected_at FROM item WHERE id = %s", (item_id,))
     assert item["analysis_state"] == "pending" and item["speech_detected_at"] is not None
-    assert groupings == [None]  # grouping runs right after the detection
+    assert groupings == [(None, 2)]  # grouping runs right after the detection, and sees its committed regions
 
 
 async def test_audio_without_speech_is_done_at_once(pool, pki_settings, monkeypatch):
@@ -44,14 +45,44 @@ async def test_audio_without_speech_is_done_at_once(pool, pki_settings, monkeypa
     assert (await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (item_id,)))["analysis_state"] == "done"
 
 
-async def test_detecting_again_replaces_the_regions(pool, pki_settings, monkeypatch):
+async def test_detecting_again_keeps_the_regions_already_found(pool, pki_settings, monkeypatch):
     dev = await paired_device(pool, pki_settings)
     item_id = await _audio(pool, pki_settings, dev["device_id"])
     monkeypatch.setattr(asr, "speech_regions", lambda _audio, _t: [Region(1.0, 3.0)])
+    groupings = []
+
+    async def fake_group(pool, now=None):
+        groupings.append(now)
+
+    monkeypatch.setattr(grouping, "group_speech", fake_group)
     ctx = make_ctx(pool, pki_settings)
-    await asr.detect_speech(ctx, item_id)
-    await asr.detect_speech(ctx, item_id)
-    assert (await fetch_one(pool, "SELECT count(*) AS n FROM speech_region"))["n"] == 1
+    assert await asr.detect_speech(ctx, item_id) == 1
+    [first] = await fetch_all(pool, "SELECT id FROM speech_region")
+    async with pool.connection() as conn:  # grouping decided it between the two runs
+        await conn.execute("UPDATE speech_region SET state = 'chosen', decided_at = now()")
+    detected = (await fetch_one(pool, "SELECT speech_detected_at FROM item WHERE id = %s", (item_id,)))["speech_detected_at"]
+    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _t: [Region(2.0, 4.0), Region(6.0, 8.0)])  # not read again
+    assert await asr.detect_speech(ctx, item_id) == 1  # the regions already found, not the new ones
+    rows = await fetch_all(pool, "SELECT id, state, offset_s FROM speech_region")
+    assert [(r["id"], r["state"], r["offset_s"]) for r in rows] == [(first["id"], "chosen", 1.0)]
+    item = await fetch_one(pool, "SELECT analysis_state, speech_detected_at FROM item WHERE id = %s", (item_id,))
+    assert item == {"analysis_state": "pending", "speech_detected_at": detected}
+    assert groupings == [None, None]  # grouping still runs after the duplicate detection
+
+
+async def test_grouping_runs_after_a_detection_without_speech_too(pool, pki_settings, monkeypatch):
+    dev = await paired_device(pool, pki_settings)  # a silent microphone may be the last one another minute waits for
+    item_id = await _audio(pool, pki_settings, dev["device_id"])
+    monkeypatch.setattr(asr, "speech_regions", lambda _audio, _t: [])
+    groupings = []
+
+    async def fake_group(pool, now=None):
+        item = await fetch_one(pool, "SELECT analysis_state, speech_detected_at FROM item WHERE id = %s", (item_id,))
+        groupings.append((now, item["analysis_state"], item["speech_detected_at"] is not None))
+
+    monkeypatch.setattr(grouping, "group_speech", fake_group)
+    assert await asr.detect_speech(make_ctx(pool, pki_settings), item_id) == 0
+    assert groupings == [(None, "done", True)]  # it sees the item already detected
 
 
 async def test_a_missing_file_skips_the_item(pool, pki_settings):
@@ -71,6 +102,8 @@ async def test_a_grouping_failure_does_not_fail_the_detection(pool, pki_settings
 
     monkeypatch.setattr(grouping, "group_speech", broken)
     assert await asr.detect_speech(make_ctx(pool, pki_settings), item_id) == 1
+    assert (await fetch_one(pool, "SELECT count(*) AS n FROM speech_region"))["n"] == 1  # the detection stays stored
+    assert (await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (item_id,)))["analysis_state"] == "pending"
 
 
 async def test_the_dispatcher_starts_audio_with_detection(pool, pki_settings, jobs_open):
