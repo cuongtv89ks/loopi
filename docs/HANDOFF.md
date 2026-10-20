@@ -28,6 +28,7 @@ HDD is not on the bus (it dropped off on 2026-10-18); unplug it if it is still c
 | P3c-1: storage and display | `plans/2026-10-19-p3c1-storage-display.md` | **complete, live since 2026-10-20 16:22 KST**: one copy per segment (the raw H.264 goes once the MP4 and the keyframes exist), retention on 7/7 days, an editable location name per device, the merged timeline with a camera filter, places in search/chat/MCP and in the model text; acceptance 6 (stable SSD) is measured on the mornings of 10-21 and 10-22; ledger `ledgers/p3c1-progress.md` | `feat/p3c1` (worktree `/home/soul/loopi-p3c`); live through `feat/phase2` f5fd9a2 |
 | P3c-2: network cameras | `plans/2026-10-20-p3c2-network-cameras.md` | **deployed 2026-10-20 22:22 KST, acceptance waits for the owner's cameras**: the agent's `stream` source (ffmpeg pulls RTSP/MJPEG; a separate WAV sound address), `[led] source = "none"`, `[clock] source = "kernel"` (adjtimex, latched once synced), `loopi-cameras` in the `cameras` container (own network with the proxy only, one mount `<data>/cameras`), the Thiết bị camera form (Thử kết nối, Ghép cặp lại, Gỡ camera), the 7-day capacity estimate, "Đang ghi: N camera" on every page, the P3c-1 leftovers M2/M7/M8; ledger `ledgers/p3c2-progress.md`, final review `ledgers/p3c2-final-review.md` | `feat/p3c2` (worktree `/home/soul/loopi-p3c2`); live through `feat/phase2` |
 | P3c-3: multi-camera understanding | `plans/2026-10-21-p3c3-multicam-understanding.md` | **deployed 2026-10-21 06:22 KST**: one transcript per sentence across microphones (D33: `detect_speech` → `group_speech` (waits up to 3 min, minute by minute) → `transcribe_audio` on the chosen regions; migration 013 `speech_region`), chapter signatures with place names and a rename that refreshes the days still holding video, the vlog with one camera per 10-minute block, a run per camera and top-left place labels (D35). Acceptance §8.2/§8.5 waits for a second camera with sound; ledger `ledgers/p3c3-progress.md`, final review `ledgers/p3c3-final-review.md` | `feat/p3c3` (worktree `/home/soul/loopi-p3c3`); live through `feat/phase2` |
+| P3c-3b: same-sound check | `plans/2026-10-21-p3c3b-same-sound.md` | **deployed 2026-10-21 08:2x KST** (the owner's I3 ruling): migration 014 `speech_region.envelope`, `speech.same_sound` in the decision; ledger `ledgers/p3c3b-progress.md`, final review `ledgers/p3c3b-final-review.md` | `feat/p3c3b` (worktree `/home/soul/loopi-p3c3`); live through `feat/phase2` |
 | P4a: prod image + OTA | `specs/2026-10-18-p4a-prod-ota-design.md` (D26–D29), `plans/2026-10-18-p4a-prod-ota.md` | **complete**: all seven device acceptance steps (§13) passed on 2026-10-19 at 383581c; ledger `ledgers/p4a-progress.md` | `feat/p4` (worktree `/home/soul/loopi-p4`); the brain part is live through `feat/phase2` e0045ee |
 
 All plan paths are under `docs/superpowers/`. Execution ledgers are under `docs/superpowers/ledgers/`. They record every
@@ -209,9 +210,12 @@ From now on, pushing is still outward-facing: ask the owner first.
      device password / ONVIF setting in the Imou Life app, then one "Thử kết nối".
    - P3c-3 is live: when a camera with sound records next to the Pi, check §8.2 (one sentence between two
      microphones gives one transcript; the other region is `covered`) and, on a day with two active cameras, §8.5
-     (the vlog shows both, each scene labelled). **Owner's decision pending (I3):** two different conversations at
-     the same time in two rooms — today the louder one covers the other (D33 groups by time only); a same-sound
-     check would keep both. P3c-3 backlog: the ledger's last lines.
+     (the vlog shows both, each scene labelled). **I3 (the owner's ruling 2026-10-21) is live as P3c-3b**
+     (`plans/2026-10-21-p3c3b-same-sound.md`, deployed 08:2x KST): a region is covered only by the same sound on
+     another microphone (loudness envelopes, correlation ≥ 0.7); very short phrases (< ~3 s) can still be taken
+     for the same sound — at §8.2 record per-length correlations and each camera's lag from the stored
+     envelopes and tune with the owner. Ask the owner whether §8 gets an item for two simultaneous
+     conversations (M3). Backlogs: the ledgers `p3c3-progress.md` and `p3c3b-progress.md`, last lines.
    - Then P3c-4 (Loopi ESP32 firmware), when the owner has the board.
 4. **P3b acceptance:** the vlogs of 10-19 and 10-20 appear by themselves; the owner watches one.
 5. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
