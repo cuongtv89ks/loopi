@@ -17,7 +17,7 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
-from .. import devices
+from .. import devices, places
 from ..days import day_bounds_utc, hm, local_now
 from ..llm import ASR_CAVEAT, PICTURE_NOTE, AnswerInvalid, clip, clipped, marker_line, parse_answer, spread, within
 from ..providers.base import ProviderError, ProviderUnavailable
@@ -190,24 +190,26 @@ async def rebuild_chapters(
 
 
 async def chapter_lines(pool: AsyncConnectionPool, first: dt.datetime, last: dt.datetime, zone) -> list[str]:
-    """What happened in a chapter, one line per moment, bounded: at most 40 picture lines (repeats dropped),
-    60 speech lines and 20 markers, spread over the chapter, within PROMPT_BUDGET characters."""
+    """What happened in a chapter, one line per moment, bounded: at most 40 picture lines (repeats dropped, per
+    camera), 60 speech lines and 20 markers, spread over the chapter, within PROMPT_BUDGET characters. When two or
+    more cameras recorded the chapter, each line names its camera's place after the time (D34)."""
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT m.kind, m.ts_start, m.text, m.lang, i.meta AS item_meta FROM moment m"
-            " LEFT JOIN item i ON i.id = m.item_id"
+            "SELECT m.kind, m.ts_start, m.text, m.lang, m.device_id, d.location, i.meta AS item_meta FROM moment m"
+            " LEFT JOIN item i ON i.id = m.item_id LEFT JOIN device d ON d.id = m.device_id"
             " WHERE m.ts_start >= %s AND m.ts_start <= %s ORDER BY m.ts_start, m.id",
             (first, last),
         )
         rows = await cur.fetchall()
+    named = places.several(r["device_id"] for r in rows)
     pictures, speech, markers = [], [], []
-    previous_picture = None
+    previous_picture: dict[str | None, str] = {}  # the last caption of each camera
     for r in rows:
-        at = hm(r["ts_start"], zone)
+        at = hm(r["ts_start"], zone) + places.at(r["location"], named, ",")
         if r["kind"] == "visual":
-            if r["text"] != previous_picture:
+            if r["text"] != previous_picture.get(r["device_id"]):
                 pictures.append((r["ts_start"], f"{at} picture: {clip(r['text'], 200)}"))
-            previous_picture = r["text"]
+            previous_picture[r["device_id"]] = r["text"]
         elif r["kind"] == "speech":
             speech.append((r["ts_start"], f"{at} speech ({r['lang'] or '?'}): {clip(r['text'], 300)}"))
         else:

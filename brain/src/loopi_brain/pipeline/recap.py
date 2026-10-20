@@ -21,7 +21,7 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, field_validator
 
-from .. import devices
+from .. import devices, places
 from ..days import day_bounds_utc, hm, local_now
 from ..llm import ASR_CAVEAT, clip, clipped, marker_line, parse_answer, spread
 from ..providers.base import ProviderUnavailable
@@ -154,20 +154,25 @@ async def recap_material(pool: AsyncConnectionPool, day: dt.date, zone) -> Mater
         )
         chapter_rows = await cur.fetchall()
         cur = await conn.execute(
-            "SELECT m.id, m.ts_start, i.meta AS item_meta FROM moment m LEFT JOIN item i ON i.id = m.item_id"
+            "SELECT m.id, m.ts_start, m.device_id, d.location, i.meta AS item_meta FROM moment m"
+            " LEFT JOIN item i ON i.id = m.item_id LEFT JOIN device d ON d.id = m.device_id"
             " WHERE m.kind = 'marker' AND m.ts_start >= %s AND m.ts_start < %s ORDER BY m.ts_start, m.id",
             (start, end),
         )
         marker_rows = await cur.fetchall()
         cur = await conn.execute(
-            "SELECT id, ts_start, lang, text FROM moment"
-            " WHERE kind = 'speech' AND ts_start >= %s AND ts_start < %s ORDER BY ts_start, id",
+            "SELECT m.id, m.ts_start, m.lang, m.text, m.device_id, d.location FROM moment m"
+            " LEFT JOIN device d ON d.id = m.device_id"
+            " WHERE m.kind = 'speech' AND m.ts_start >= %s AND m.ts_start < %s ORDER BY m.ts_start, m.id",
             (start, end),
         )
         speech_rows = await cur.fetchall()
+    # With two or more cameras among the lines, each names its place right after the time (D34).
+    named = places.several(r["device_id"] for r in [*marker_rows, *speech_rows])
     material = Material()
     material.chapters = _chapter_lines(chapter_rows, zone)
-    bodies = [marker_line(hm(r["ts_start"], zone), marker_note(r["item_meta"] or {})) for r in marker_rows]
+    bodies = [marker_line(hm(r["ts_start"], zone) + places.at(r["location"], named), marker_note(r["item_meta"] or {}))
+              for r in marker_rows]
     # As many marked moments as fit MARKER_BUDGET, spread over the whole day (not the first ones of the morning).
     fit = max(1, MARKER_BUDGET // (max(map(len, bodies), default=0) + len(REF_ROOM) + 1))
     for n, (row, body) in enumerate(spread(list(zip(marker_rows, bodies, strict=True)), fit), start=1):
@@ -177,7 +182,8 @@ async def recap_material(pool: AsyncConnectionPool, day: dt.date, zone) -> Mater
     budget = PROMPT_BUDGET - sum(len(line) + 1 for line in material.chapters + material.markers)
     chosen = []
     for row in sorted(speech_rows, key=lambda r: (-len(r["text"].split()), r["ts_start"], r["id"])):
-        body = f"{hm(row['ts_start'], zone)} ({row['lang'] or '?'}) {clip(row['text'], 250)}"
+        body = (f"{hm(row['ts_start'], zone)}{places.at(row['location'], named)} ({row['lang'] or '?'})"
+                f" {clip(row['text'], 250)}")
         budget -= len(REF_ROOM) + len(body) + 1
         if len(chosen) == MAX_SPEECH_LINES or budget < 0:
             break
