@@ -83,13 +83,13 @@ async def test_the_pipeline_page_counts_speech_waiting_for_another_microphone(cl
             "INSERT INTO speech_region (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db)"
             " VALUES ('r1', %s, %s, %s, %s, 1, 2, 20)",
             (item_id, dev["device_id"], NINE + dt.timedelta(seconds=1), NINE + dt.timedelta(seconds=3)))
-    assert "Tiếng nói chờ mic khác: 1 đoạn" in (await client.get("/pipeline")).text
+    assert "Tiếng nói chờ ghép (mic khác hoặc phút sau): 1 đoạn" in (await client.get("/pipeline")).text
 
 
 async def test_the_pipeline_page_does_not_count_decided_regions(client, pool, pki_settings):
     dev = await paired_device(pool, pki_settings)
     await _done_with_region(pool, dev["device_id"])  # chosen: decided
-    assert "Tiếng nói chờ mic khác: 0 đoạn" in (await client.get("/pipeline")).text
+    assert "Tiếng nói chờ ghép (mic khác hoặc phút sau): 0 đoạn" in (await client.get("/pipeline")).text
 
 
 async def test_reprocessing_waits_for_the_grouping_lock(pool, pki_settings):
