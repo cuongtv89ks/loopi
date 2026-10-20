@@ -44,7 +44,7 @@ Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của các phase P3c
   - Camera có âm thanh dùng hai kết nối (hình, tiếng); app chỉ nhận một kết nối thì mất tiếng (`mic_missing`) (R5).
   - Camera mất kết nối: ffmpeg thoát, agent thử lại với thời gian chờ tăng dần, heartbeat báo `camera_failures` và `last_error`; sai mật khẩu ghi rõ trong `last_error` (không kèm URL có mật khẩu).
 - `[led] source = "none"`: không có LED phần cứng; chỉ hợp lệ khi `capture.source = "stream"` (D31). Cấu hình sai thì agent từ chối chạy.
-- `[clock] source = "flag"` (mặc định, Pi: có file `paths.sync_flag` thì đồng hồ đã đồng bộ) hoặc `"kernel"` (camera mạng: hỏi kernel bằng adjtimex, đồng bộ khi sai số tối đa dưới 16 s, như `timedatectl`). Brain ghi `"kernel"` cho mọi camera mạng; file của Pi không có bảng `[clock]`.
+- `[clock] source = "flag"` (mặc định, Pi: có file `paths.sync_flag` thì đồng hồ đã đồng bộ) hoặc `"kernel"` (camera mạng: hỏi kernel bằng adjtimex, đồng bộ khi sai số tối đa dưới 16 s, như `timedatectl`; đã đồng bộ một lần thì giữ tới khi agent dừng). Brain ghi `"kernel"` cho mọi camera mạng; file của Pi không có bảng `[clock]`.
 - Phiên bản agent và protocol không đổi.
 
 ## 4. Thay đổi ở brain

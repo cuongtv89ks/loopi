@@ -1,4 +1,4 @@
-# Loopi — handoff (2026-10-19)
+# Loopi — handoff (2026-10-20)
 
 Context memory for whoever continues this project, whether that is the owner or a Claude Code session on the brain PC
 (Linux). Read this file first, then `CLAUDE.md`, then the plan you are about to execute.
@@ -26,6 +26,7 @@ HDD is not on the bus (it dropped off on 2026-10-18); unplug it if it is still c
 | P3c decisions (multi-camera) | `specs/2026-10-18-p3c-multicam-decisions.md` | the owner's first decisions; superseded by the P3c design below | `feat/p3b` 400e4b1 |
 | P3c design (multi-camera) | `specs/2026-10-19-p3c-multicam-design.md` | approved 2026-10-19 (D30–D36): any LAN camera can be added in the brain (IP camera, iPhone/Android, ESP32 with camera and a separate audio URL, Loopi ESP32 firmware in P3c-4). Plans P3c-1 … P3c-4 are written **after P4** | `feat/p3c` 88ddc06 (worktree `/home/soul/loopi-p3`) |
 | P3c-1: storage and display | `plans/2026-10-19-p3c1-storage-display.md` | **complete, live since 2026-10-20 16:22 KST**: one copy per segment (the raw H.264 goes once the MP4 and the keyframes exist), retention on 7/7 days, an editable location name per device, the merged timeline with a camera filter, places in search/chat/MCP and in the model text; acceptance 6 (stable SSD) is measured on the mornings of 10-21 and 10-22; ledger `ledgers/p3c1-progress.md` | `feat/p3c1` (worktree `/home/soul/loopi-p3c`); live through `feat/phase2` f5fd9a2 |
+| P3c-2: network cameras | `plans/2026-10-20-p3c2-network-cameras.md` | **deployed 2026-10-20 22:22 KST, acceptance waits for the owner's cameras**: the agent's `stream` source (ffmpeg pulls RTSP/MJPEG; a separate WAV sound address), `[led] source = "none"`, `[clock] source = "kernel"` (adjtimex, latched once synced), `loopi-cameras` in the `cameras` container (own network with the proxy only, one mount `<data>/cameras`), the Thiết bị camera form (Thử kết nối, Ghép cặp lại, Gỡ camera), the 7-day capacity estimate, "Đang ghi: N camera" on every page, the P3c-1 leftovers M2/M7/M8; ledger `ledgers/p3c2-progress.md`, final review `ledgers/p3c2-final-review.md` | `feat/p3c2` (worktree `/home/soul/loopi-p3c2`); live through `feat/phase2` |
 | P4a: prod image + OTA | `specs/2026-10-18-p4a-prod-ota-design.md` (D26–D29), `plans/2026-10-18-p4a-prod-ota.md` | **complete**: all seven device acceptance steps (§13) passed on 2026-10-19 at 383581c; ledger `ledgers/p4a-progress.md` | `feat/p4` (worktree `/home/soul/loopi-p4`); the brain part is live through `feat/phase2` e0045ee |
 
 All plan paths are under `docs/superpowers/`. Execution ledgers are under `docs/superpowers/ledgers/`. They record every
@@ -167,6 +168,9 @@ image and OTA; WiFi by QR with a captive portal and BLE presence move to the bac
 - `feat/p3` / `feat/p3a` / `feat/p3b` / `feat/media-volume`: P3 work in the worktree `/home/soul/loopi-p3`.
 - `feat/p3c`: the P3c design (worktree `/home/soul/loopi-p3`).
 - `feat/p4`: P4a (worktree `/home/soul/loopi-p4`); `feat/phase2` is at its e0045ee, the rest are agent/OS/docs commits.
+- `feat/p3c1`: P3c-1 (worktree `/home/soul/loopi-p3c`), merged into `main` (PR #3).
+- `feat/p3c2`: P3c-2 (worktree `/home/soul/loopi-p3c2`); `feat/phase2` was fast-forwarded to it for the deploy. Not
+  yet merged into `main` or pushed (ask the owner).
 
 On 2026-10-19 every branch was merged into `main` (a fast-forward: each branch is an ancestor of `feat/p3c1`) and
 `main`, `feat/phase2` and every work branch were pushed. `feat/phase2` (the live worktree's branch) was
@@ -183,12 +187,23 @@ From now on, pushing is still outward-facing: ask the owner first.
    the old pairings `loopi-57s1`, `loopi-qh07` and `loopi-f9cn` (10-14 and 10-15 hold items of the old pairings, so
    those two Day pages show a camera filter with their names). Still open from P4a: the rpicam demo programs and the
    UART root console in prod, and an offline backup of the signing keys.
-3. **P3c-2 plan** (add any camera: the `stream` source and `[led] source = "none"` in the agent, `loopi-cameras`, the
-   `cameras` container, the add/test/remove camera form, the capacity estimate, "Đang ghi: N camera"). Carry into it
-   the P3c-1 items left for it (ledger): search/chat label by the brain's device count instead of the result set (M2),
-   the card title after a rename and an invalid name for an unknown device (M7), `has_data` under a camera filter (M8),
-   the remaining "video thô" wording (Cài đặt saved line, Xử lý page, vlog card), and putting moment locations into the
-   chapter signature (P3c-3) so a rename refreshes multi-camera summaries. Then P3c-3, P3c-4.
+3. **P3c-2 acceptance with the owner's cameras** (P3c design §8; plan Task 12):
+   - **Owner:** on Thiết bị → "Thêm camera mạng", add the Imou camera (type the IP and the safety code yourself;
+     nobody else sees or prints it) and each old iPhone running an RTSP app (charging, Guided Access); press
+     "Thử kết nối", then "Lưu camera".
+   - Then check: §8.1 the camera pairs and its first segment is on the timeline with its place within 2 minutes (its
+     heartbeat says `clock_synced: true`, which proves adjtimex inside the container); §8.3 "Tạm dừng" stops it
+     within 15 s and the header count drops; §8.4 over 24 h: storage ≤ about 22 GB a day, caption/transcript
+     latency ≤ 15 min between 08:00 and 22:00, no agent restarting in a loop (`docker compose -p deploy logs
+     cameras`); §8.7 when an Android phone or an ESP32 is added. Record the numbers in `ledgers/p3c2-progress.md`.
+   - **Owner:** the web password was printed once in a Claude Code session on 2026-10-20 (a shell slip, local
+     only); to change it, put a new bcrypt hash in `LOOPI_WEB_PASSWORD_HASH` in `deploy/.env` (see `.env.example`),
+     update `/home/soul/loopi-data/web-password.txt`, and recreate the proxy
+     (`docker compose -p deploy up -d proxy`).
+   - Backlog from the P3c-2 reviews (ledger): refuse a login in the URL path (XMEye style), show a waiting
+     camera's token expiry, retention-off in the capacity estimate, the supervisor's serial stop waits.
+   - Then P3c-3 (one transcript per sentence across cameras, moment locations in the chapter signature, the vlog
+     with two cameras) and P3c-4 (Loopi ESP32 firmware).
 4. **P3b acceptance:** the vlogs of 10-19 and 10-20 appear by themselves; the owner watches one.
 5. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
    - the owner labels about 22 clips, 30 keyframes and 25 questions;
@@ -201,6 +216,6 @@ From now on, pushing is still outward-facing: ask the owner first.
 ## 7. How to resume with Claude Code
 
 ```
-Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P3c-1 acceptance measurements, then the P3c-2 plan, unless a
-P3c-2 plan already exists under docs/superpowers/; then resume from its ledger.
+Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P3c-1 acceptance measurements and the P3c-2 acceptance
+(ledger `docs/superpowers/ledgers/p3c2-progress.md`), then the P3c-3 plan.
 ```
