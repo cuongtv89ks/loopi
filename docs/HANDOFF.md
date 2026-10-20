@@ -5,10 +5,9 @@ Context memory for whoever continues this project, whether that is the owner or 
 
 ## 1. Where things stand
 
-**Paused since 2026-10-19 (owner's request).** The live stack is stopped (`docker compose -p deploy stop`; containers,
-volumes, media and database kept) and the Pi was asked to pause recording. Start everything again with
-`/home/soul/loopi-p2/deploy/resume.sh` (`deploy/README.md`, "Pause and resume"); `pause.sh` next to it pauses again.
-The 1 TB HDD is not on the bus (it dropped off on 2026-10-18); unplug it if it is still connected.
+**Running again since 2026-10-20 13:56 KST** (paused 2026-10-19 → 2026-10-20 at the owner's request). Pause and
+resume with `/home/soul/loopi-p2/deploy/pause.sh` and `resume.sh` (`deploy/README.md`, "Pause and resume"). The 1 TB
+HDD is not on the bus (it dropped off on 2026-10-18); unplug it if it is still connected.
 
 | Plan | File | State | Branch / commits |
 |---|---|---|---|
@@ -26,7 +25,7 @@ The 1 TB HDD is not on the bus (it dropped off on 2026-10-18); unplug it if it i
 | Media on their own disk | — (bounded change, owner's yes 2026-10-18) | **on `feat/phase2`, not in use**: `LOOPI_MEDIA_DIR` + a required `.loopi-media` marker; with the marker missing the brain writes and forgets nothing. The 1 TB HDD dropped off the bus during the first copy (§3, Storage); media stay on the SSD | `feat/media-volume` e4861ce, bef6df5 → `feat/phase2` |
 | P3c decisions (multi-camera) | `specs/2026-10-18-p3c-multicam-decisions.md` | the owner's first decisions; superseded by the P3c design below | `feat/p3b` 400e4b1 |
 | P3c design (multi-camera) | `specs/2026-10-19-p3c-multicam-design.md` | approved 2026-10-19 (D30–D36): any LAN camera can be added in the brain (IP camera, iPhone/Android, ESP32 with camera and a separate audio URL, Loopi ESP32 firmware in P3c-4). Plans P3c-1 … P3c-4 are written **after P4** | `feat/p3c` 88ddc06 (worktree `/home/soul/loopi-p3`) |
-| P3c-1: storage and display | `plans/2026-10-19-p3c1-storage-display.md` | written 2026-10-19, **waits for the owner's review**; then SDD; its Task 8 (deploy) deletes the raw H.264 copies and turns retention on, so it asks first | `feat/p3c1` (worktree `/home/soul/loopi-p3c`) |
+| P3c-1: storage and display | `plans/2026-10-19-p3c1-storage-display.md` | **complete, live since 2026-10-20 16:22 KST**: one copy per segment (the raw H.264 goes once the MP4 and the keyframes exist), retention on 7/7 days, an editable location name per device, the merged timeline with a camera filter, places in search/chat/MCP and in the model text; acceptance 6 (stable SSD) is measured on the mornings of 10-21 and 10-22; ledger `ledgers/p3c1-progress.md` | `feat/p3c1` (worktree `/home/soul/loopi-p3c`); live through `feat/phase2` f5fd9a2 |
 | P4a: prod image + OTA | `specs/2026-10-18-p4a-prod-ota-design.md` (D26–D29), `plans/2026-10-18-p4a-prod-ota.md` | **complete**: all seven device acceptance steps (§13) passed on 2026-10-19 at 383581c; ledger `ledgers/p4a-progress.md` | `feat/p4` (worktree `/home/soul/loopi-p4`); the brain part is live through `feat/phase2` e0045ee |
 
 All plan paths are under `docs/superpowers/`. Execution ledgers are under `docs/superpowers/ledgers/`. They record every
@@ -72,7 +71,7 @@ int8, Silero VAD, brain normalisation ≤ 30 dB with a −40 dBFS noise-floor ca
 - chapters (hourly at minute 5), the day recap (23:30) and commitments;
 - hybrid search and chat with sources (streams through Caddy, checked in the browser);
 - "Quên khoảng thời gian" and reprocess by day;
-- retention, which **ships off** (D20: 7/7 days when enabled);
+- retention (D20: 7/7 days; **on by default since D32**, P3c-1);
 - the "Hiểu ngày" card on Xử lý.
 
 Deploy notes:
@@ -90,7 +89,7 @@ Deploy notes:
   the recap prompt budget must shrink, test-first).
 - **First results.** 52 chapters (10-14 … 10-17), recaps for 10-14/15/16 (each ≈ 5 min on `qwen3:8b`), 0 failed
   jobs. Latency while the recaps caught up: video→caption p95 2.7 min, audio→transcript p95 2.0 min.
-- **Retention.** Still off (D20: 7/7 days once enabled); see Storage below.
+- **Retention.** On since 2026-10-20 (D32, P3c-1); see Storage below.
 
 **P3b (since 2026-10-18 07:21 KST).** The vlog planner runs every 15 minutes and builds yesterday's vlog after 23:30
 (script on `qwen3:8b`, then the ffmpeg render). Backup before the deploy: `~/loopi-backups/p3a-2026-10-18-0720.dump`;
@@ -99,8 +98,10 @@ rollback commit 22f523c. Ledger: `docs/superpowers/ledgers/p3b-progress.md`.
 **Storage (2026-10-18).**
 - One Pi camera at 1080p/2 fps writes **≈ 15 GB a day**. Each segment is kept twice: raw H.264 ≈ 7.5 GB and its
   `-c copy` MP4 for playback ≈ 7.3 GB. Audio adds ≈ 240 MB.
-- The SSD had 202 GB free (media 58 GB). With retention off it **fills around 2026-10-31**; uploads then get 507 and
-  the device queues. **Ask the owner by about 10-25**: enable retention, or keep only one copy of each segment.
+- The SSD had 202 GB free (media 58 GB) on 10-18. **P3c-1 settled it (2026-10-20):** one copy per segment deleted
+  7 019 raw H.264 files (39 GB; SSD free 143 → 181 GB) and retention is on: from 03:00 on 10-22 each night deletes the
+  MP4 and audio of recordings older than 7 days (keyframes, transcripts, captions, chapters, recaps, vlogs stay).
+  Audio older than 7 days can no longer be added to the golden set on Đánh giá.
 - Four cameras (P3c) at this rate need ≈ 60 GB a day: 7 days of retention is ≈ 420 GB, more than the SSD holds. The
   P3c design must halve this (one copy per segment) or shorten retention.
 - **The 1 TB HDD is not usable as is.** On 2026-10-18 the owner formatted it (ext4 `loopi-media`, fstab `nofail`,
@@ -145,7 +146,8 @@ P2a ignores the P2b tables. To go back to P2b afterwards: `git -C /home/soul/loo
 ## 4. Decisions taken after the first spec (D16–D23)
 
 D16: kit CSI camera + USB OTG mic. D17: USB gadget bring-up. D18: the ACT LED is the privacy LED. D19: device gain
-+20 dB and brain normalisation. D20: raw audio kept 7 days like video, retention off until the owner enables it.
++20 dB and brain normalisation. D20: raw audio kept 7 days like video (retention off until the owner enables it; D32
+made it on by default in P3c-1).
 D21: the golden set stays out of git (`/home/soul/loopi-data/eval` + DB) and the owner labels it on the "Đánh giá"
 page. D22: §14's recall@5 is hit@5, and the 30 % rule uses CER for Korean and WER for vi/en. D23: one local text
 model (`qwen3:8b`). D21/D22 are on `feat/p2c`; D23 is on `feat/p2b`/`feat/phase2`.
@@ -173,17 +175,21 @@ From now on, pushing is still outward-facing: ask the owner first.
 
 ## 6. Next
 
-1. **Resume when the owner says so** (`deploy/resume.sh`), then **P3c-1**: the owner reviews
-   `plans/2026-10-19-p3c1-storage-display.md`, then it runs with SDD. The SSD clock restarts with the stack: with
-   retention off it fills in about 10 days of recording; P3c-1 fixes that (one copy per segment, retention on).
-   Then plans P3c-2 … P3c-4.
-2. **P3c plans (multi-camera), context:** P4 is complete. On 2026-10-19 the owner moved WiFi by QR (P4b) and BLE presence
-   (P4c) to the backlog (D37): WiFi stays on `loopi.toml`, and audio is not limited by phones nearby. Write plans
-   P3c-1 … P3c-4 from `specs/2026-10-19-p3c-multicam-design.md` (branch `feat/p3c`). Still open for the owner from
-   P4a: keep or drop the rpicam demo programs in prod; keep or close the prod UART root console; back up the signing
-   keys.
-3. **P3b acceptance:** the vlogs of 10-19 and 10-20 appear by themselves; the owner watches one.
-4. **Storage decision**: settled by P3c-1 (D32) once it is deployed (§3, Storage).
+1. **P3c-1 acceptance 6** (P3c design §8): on the mornings of 10-21 and 10-22 record `df -h /home/soul/loopi-data`,
+   `du -sh` of `media/raw` and `media/view`, the GB added in the last 24 h, and after the 03:00 run of 10-22 (its first
+   deletions: recordings of 10-14) that no video or audio file is older than 7 days. It passes when the SSD's free
+   space holds steady from one morning to the next.
+2. **For the owner (P3c-1):** name the Pi's location on Thiết bị (it is still "loopi-ve1y"); decide whether to revoke
+   the old pairings `loopi-57s1`, `loopi-qh07` and `loopi-f9cn` (10-14 and 10-15 hold items of the old pairings, so
+   those two Day pages show a camera filter with their names). Still open from P4a: the rpicam demo programs and the
+   UART root console in prod, and an offline backup of the signing keys.
+3. **P3c-2 plan** (add any camera: the `stream` source and `led.kind = "none"` in the agent, `loopi-cameras`, the
+   `cameras` container, the add/test/remove camera form, the capacity estimate, "Đang ghi: N camera"). Carry into it
+   the P3c-1 items left for it (ledger): search/chat label by the brain's device count instead of the result set (M2),
+   the card title after a rename and an invalid name for an unknown device (M7), `has_data` under a camera filter (M8),
+   the remaining "video thô" wording (Cài đặt saved line, Xử lý page, vlog card), and putting moment locations into the
+   chapter signature (P3c-3) so a rename refreshes multi-camera summaries. Then P3c-3, P3c-4.
+4. **P3b acceptance:** the vlogs of 10-19 and 10-20 appear by themselves; the owner watches one.
 5. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
    - the owner labels about 22 clips, 30 keyframes and 25 questions;
    - a baseline run, twice, for the noise floor;
@@ -195,6 +201,6 @@ From now on, pushing is still outward-facing: ask the owner first.
 ## 7. How to resume with Claude Code
 
 ```
-Read CLAUDE.md and docs/HANDOFF.md. Loopi is paused (§1): ask the owner before resuming it. Then continue with §6:
-P3c-1 (plan written, waiting for the owner's review), unless its ledger shows it started; then resume from it.
+Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P3c-1 acceptance measurements, then the P3c-2 plan, unless a
+P3c-2 plan already exists under docs/superpowers/; then resume from its ledger.
 ```
