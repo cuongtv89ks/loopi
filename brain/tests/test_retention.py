@@ -446,7 +446,8 @@ async def test_the_settings_page_shows_what_retention_would_delete(pool, pki_set
     app = create_app(pki_settings, pool=pool, http_client=FakeOllama().client(), llm_client=FakeOllama().client())
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://brain.test") as c:
         text = (await c.get("/settings")).text
-    assert "Nếu chạy bây giờ sẽ xoá: video thô 1 đoạn (0.0 GB)" in text and "audio thô 0 đoạn" in text
+    assert "Nếu chạy bây giờ sẽ xoá: video 1 đoạn (0.0 GB), audio thô 0 đoạn (0.0 GB)." in text
+    assert "video thô" not in text
 
 
 async def test_a_failed_retention_run_waits_for_its_schedule(pool, jobs_open):
@@ -459,17 +460,27 @@ async def test_a_failed_retention_run_waits_for_its_schedule(pool, jobs_open):
 
 async def test_turning_retention_on_asks_first_and_says_what_the_next_run_deletes(pool, pki_settings, dev, jobs_open):
     await _recording(pool, pki_settings, dev["device_id"], "video", dt.datetime.now(dt.UTC) - dt.timedelta(days=30))
-    await store.set_retention(pool, store.Retention(video_days=9, audio_days=5))
+    await store.set_retention(pool, store.Retention(video_days=9, audio_days=5, enabled=False))
     app = create_app(pki_settings, pool=pool, http_client=FakeOllama().client(), llm_client=FakeOllama().client())
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://brain.test") as c:
         text = (await c.get("/settings")).text
     [form] = [part for part in text.split("<form") if 'hx-post="/settings/retention"' in part]
     form = form.split(">", 1)[0]
-    assert ('hx-confirm="Bật dọn dữ liệu cũ? Lúc 03:00 lần chạy tới sẽ xoá vĩnh viễn ít nhất: video thô 1 đoạn '
+    assert ('hx-confirm="Bật dọn dữ liệu cũ? Lúc 03:00 lần chạy tới sẽ xoá vĩnh viễn ít nhất: video 1 đoạn '
             '(0.0 GB), audio thô 0 đoạn (0.0 GB) (đếm lúc mở trang, theo số ngày đã lưu: video 9, audio 5; đoạn quá hạn '
             'thêm từ lúc đó cũng bị xoá). Không thể hoàn tác."') in form
     # switched off (or only the days changed with it off), the save needs no question
     assert "hx-on::confirm=" in form and "this.elements.enabled.checked" in form and "issueRequest(true)" in form
+
+
+async def test_saving_while_retention_is_already_on_asks_nothing(pool, pki_settings, jobs_open):
+    await store.set_retention(pool, store.Retention(video_days=9, audio_days=5, enabled=True))
+    app = create_app(pki_settings, pool=pool, http_client=FakeOllama().client(), llm_client=FakeOllama().client())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://brain.test") as c:
+        text = (await c.get("/settings")).text
+    [form] = [part for part in text.split("<form") if 'hx-post="/settings/retention"' in part]
+    form = form.split(">", 1)[0]
+    assert "hx-confirm" not in form and 'hx-post="/settings/retention"' in form
 
 
 async def test_keyframes_and_their_thumbnails_are_still_served_after_retention(pool, pki_settings, dev, on, jobs_open):

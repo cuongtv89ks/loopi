@@ -64,7 +64,10 @@ async def test_the_settings_page_shows_providers_privacy_health_and_retention(we
     assert "<td>Nhận dạng giọng nói</td><td><code>local:faster-whisper/large-v3-turbo-int8</code></td>" in text
     assert "Ảnh gửi lên cloud: không" in text and "âm thanh gửi lên cloud: không" in text
     assert "Thiếu model: qwen3:8b." in text and "Asia/Seoul" in text
-    assert 'name="video_days" min="1" max="3650" required value="7"' in text
+    assert '<label>Giữ video <input type="number" name="video_days" min="1" max="3650" required value="7"> ngày</label>' in text
+    assert '<label>Giữ audio thô <input type="number" name="audio_days"' in text and "Giữ video thô" not in text
+    assert ("Bản H.264 thô bị xoá ngay khi đã có MP4 và keyframe (D32); MP4 và audio giữ theo số ngày ở đây."
+            ) in text.split('id="retention"')[1].split("</section>")[0]
     assert 'name="audio_days" min="1" max="3650" required value="7"' in text
     assert '<input type="checkbox" name="enabled" checked> Bật dọn dữ liệu cũ' in text  # on by default (D32)
     assert "Dọn dữ liệu cũ: <strong>đang bật</strong>." in text
