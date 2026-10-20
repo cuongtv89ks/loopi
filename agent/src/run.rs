@@ -386,11 +386,11 @@ pub async fn run(deps: Deps, mut shutdown: watch::Receiver<bool>) -> anyhow::Res
                     None => refuse_update(&status, &request, UPDATES_UNSUPPORTED),
                 },
                 command => {
-                    let audio_allowed = config.capture.audio_enabled;
-                    if matches!(command, Command::SetAudio(true)) && !audio_allowed {
+                    let capped = control::cap_audio(command.clone(), config.capture.audio_enabled);
+                    if capped != command {
                         tracing::info!("audio stays off: capture.audio_enabled = false in the config file is a ceiling");
                     }
-                    apply_command(&control_tx, &paths.state, &status, &control::cap_audio(command, audio_allowed))
+                    apply_command(&control_tx, &paths.state, &status, &capped)
                 }
             },
             Some(press) = presses.recv() => handle_press(press, &queue, clock.as_ref(), &control_tx, &paths.state, &status),

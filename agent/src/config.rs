@@ -52,9 +52,19 @@ pub enum CaptureSource {
 #[serde(transparent)]
 pub struct Secret(pub String);
 
+impl CaptureSource {
+    fn is_csi(&self) -> bool {
+        *self == CaptureSource::Csi
+    }
+}
+
 impl Secret {
     pub fn expose(&self) -> &str {
         &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
@@ -68,8 +78,10 @@ impl std::fmt::Debug for Secret {
 pub enum ConfigError {
     #[error("cannot access {path}: {source}")]
     Io { path: PathBuf, source: std::io::Error },
+    /// The message and the line only, never toml's own text: that quotes the failing line of the file, and a line may hold
+    /// the stream password (see `toml_error`).
     #[error("invalid TOML: {0}")]
-    Toml(#[from] toml::de::Error),
+    Toml(String),
     #[error("cannot serialise config: {0}")]
     Serialize(#[from] toml::ser::Error),
     #[error("invalid config: {0}")]
@@ -130,10 +142,16 @@ pub struct CaptureConfig {
     pub audio_device: String,
     pub audio_gain_db: f32,
     pub camera_cmd: String,
+    // The keys below are written only when set: an older agent (after an A/B rollback) refuses keys it does not know,
+    // so a Pi config keeps exactly the keys it always had.
+    #[serde(skip_serializing_if = "CaptureSource::is_csi")]
     pub source: CaptureSource,
     /// `stream`: the camera's address without credentials (rtsp://, http:// or https://).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub stream_url: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub stream_username: String,
+    #[serde(skip_serializing_if = "Secret::is_empty")]
     pub stream_password: Secret,
     /// `stream`: a separate sound stream (WAV or PCM over HTTP, as the Loopi ESP32 firmware serves); the camera's
     /// stream itself when absent.
@@ -258,7 +276,7 @@ pub enum ImportOutcome {
 
 impl Config {
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
-        let config: Config = toml::from_str(text)?;
+        let config: Config = toml::from_str(text).map_err(|e| toml_error(text, &e))?;
         config.validate()?;
         Ok(config)
     }
@@ -352,6 +370,20 @@ pub fn normalize_fingerprint(raw: &str) -> Option<String> {
     is_hex64(&cleaned).then_some(cleaned)
 }
 
+/// A TOML error as "line N: message". `toml::de::Error` is neither displayed nor kept: its Display quotes the source line
+/// and its Debug holds the whole file, and the file holds `capture.stream_password`. A message about the password's own
+/// line is replaced too, as a type error quotes the value (`invalid type: integer `12345``).
+fn toml_error(text: &str, e: &toml::de::Error) -> ConfigError {
+    let Some(span) = e.span() else {
+        return ConfigError::Toml(e.message().to_string());
+    };
+    let before = text.as_bytes().get(..span.start).unwrap_or(text.as_bytes());
+    let line = before.iter().filter(|b| **b == b'\n').count();
+    let on_password_line = text.lines().nth(line).is_some_and(|l| l.contains("stream_password"));
+    let message = if on_password_line { "capture.stream_password is not valid (its value is not shown)" } else { e.message() };
+    ConfigError::Toml(format!("line {}: {message}", line + 1))
+}
+
 const STREAM_URL_MAX: usize = 1000;
 
 /// A network camera's address: rtsp://, http:// or https://, a host, no spaces or control characters, and no
@@ -419,13 +451,14 @@ pub(crate) fn render_wpa_conf(wifi: &WifiConfig) -> String {
     out
 }
 
-/// Copy of `config` without the WiFi passphrase and the pairing token.
+/// Copy of `config` without the WiFi passphrase, the pairing token and the stream password.
 pub fn scrub_secrets(config: &Config) -> Config {
     let mut scrubbed = config.clone();
     if let Some(wifi) = scrubbed.wifi.as_mut() {
         wifi.psk.clear();
     }
     scrubbed.brain.pair_token = None;
+    scrubbed.capture.stream_password = Secret::default();
     scrubbed
 }
 
@@ -441,7 +474,8 @@ pub fn import_boot_config(boot_toml: &Path, data_dir: &Path) -> Result<ImportOut
     let data_config = config_dir.join(CONFIG_FILE);
     // Fresh = still holds a secret, or was never imported (covers open-network first boot).
     let has_secret = config.wifi.as_ref().is_some_and(|w| !w.psk.is_empty())
-        || config.brain.pair_token.as_deref().is_some_and(|t| !t.is_empty());
+        || config.brain.pair_token.as_deref().is_some_and(|t| !t.is_empty())
+        || !config.capture.stream_password.is_empty();
     if !has_secret && data_config.exists() {
         return Ok(ImportOutcome::AlreadyImported);
     }
@@ -690,6 +724,27 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_password_is_a_secret_of_the_boot_copy_like_the_wifi_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (boot, data) = (dir.path().join("loopi.toml"), dir.path().join("data"));
+        let data_config = data.join("config").join(CONFIG_FILE);
+        std::fs::write(&boot, STREAM).unwrap();
+        assert_eq!(scrub_secrets(&Config::parse(STREAM).unwrap()).capture.stream_password, Secret::default());
+
+        assert_eq!(import_boot_config(&boot, &data).unwrap(), ImportOutcome::Imported);
+        assert_eq!(Config::load(&data_config).unwrap().capture.stream_password.expose(), "S3cr3t");
+        let boot_after = std::fs::read_to_string(&boot).unwrap();
+        assert!(!boot_after.contains("S3cr3t") && boot_after.contains("stream_url"), "{boot_after}");
+        assert_eq!(import_boot_config(&boot, &data).unwrap(), ImportOutcome::AlreadyImported);
+
+        // A password put on the boot partition again is a fresh secret: imported, then scrubbed once more.
+        std::fs::write(&boot, STREAM.replace("S3cr3t", "N3wPass")).unwrap();
+        assert_eq!(import_boot_config(&boot, &data).unwrap(), ImportOutcome::Imported);
+        assert_eq!(Config::load(&data_config).unwrap().capture.stream_password.expose(), "N3wPass");
+        assert!(!std::fs::read_to_string(&boot).unwrap().contains("N3wPass"));
+    }
+
+    #[test]
     fn missing_boot_config_is_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let outcome = import_boot_config(&dir.path().join("none.toml"), dir.path()).unwrap();
@@ -769,7 +824,22 @@ data_dir = "/srv/loopi/cameras/01J0000000000000000000000A/data"
         let c = Config::parse("[brain]\nurl = \"https://brain.lan:8443\"\n").unwrap();
         assert_eq!(c.capture.source, CaptureSource::Csi);
         assert_eq!(c.capture.recorder_cmd(), "rpicam-vid");
-        assert!(!toml::to_string(&c).unwrap().contains("audio_url"));
+        // An older agent (after an A/B rollback) refuses keys it does not know: a Pi config must not write any of them.
+        let written = toml::to_string(&c).unwrap();
+        let capture = written.split("[capture]").nth(1).and_then(|t| t.split("\n[").next()).expect("a [capture] table");
+        for key in ["source", "stream_url", "stream_username", "stream_password", "audio_url"] {
+            assert!(!capture.contains(key), "{key} in {capture}");
+        }
+        assert_eq!(Config::parse(&written).unwrap(), c);
+    }
+
+    #[test]
+    fn a_network_camera_config_writes_only_the_keys_it_sets() {
+        let c = Config::parse(&STREAM.replace("stream_username = \"admin\"\n", "")).unwrap();
+        let written = toml::to_string(&c).unwrap();
+        assert!(written.contains("source = \"stream\"") && written.contains("stream_password = \"S3cr3t\""), "{written}");
+        assert!(!written.contains("stream_username") && !written.contains("audio_url"), "{written}");
+        assert_eq!(Config::parse(&written).unwrap(), c);
     }
 
     #[test]
@@ -777,6 +847,41 @@ data_dir = "/srv/loopi/cameras/01J0000000000000000000000A/data"
         let mut c = Config::parse(STREAM).unwrap();
         c.capture.camera_cmd = "/opt/ffmpeg/bin/ffmpeg".into();
         assert_eq!(c.capture.recorder_cmd(), "/opt/ffmpeg/bin/ffmpeg");
+    }
+
+    /// toml's own error text quotes the line it failed on: the stream password must not reach a log that way.
+    #[test]
+    fn a_malformed_password_line_is_reported_by_line_number_without_the_password() {
+        let tail = "[led]\nsource = \"none\"\n";
+        let head = "[brain]\nurl = \"https://proxy:8443\"\n[capture]\nsource = \"stream\"\nstream_url = \"rtsp://192.0.2.10/x\"\n";
+        for bad in [
+            r#"stream_password = "S3cr3t\q""#,
+            r#"stream_password = "S3cr3t"#,
+            r#"stream_password = S3cr3t"#,
+            r#"stream_password = "S3cr3t" "S3cr3t""#,
+            "stream_password = 99887766",
+            "stream_password = [\"S3cr3t\"]",
+        ] {
+            let text = format!("{head}{bad}\n{tail}");
+            let err = Config::parse(&text).unwrap_err();
+            let secret = if bad.contains("99887766") { "99887766" } else { "S3cr3t" };
+            let anyhow_err = anyhow::Error::new(Config::parse(&text).unwrap_err());
+            for shown in [err.to_string(), format!("{err:?}"), format!("{anyhow_err:#}"), format!("{anyhow_err:?}")] {
+                assert!(!shown.contains(secret), "{bad:?} leaks the password: {shown}");
+                assert!(shown.contains("line 6"), "{bad:?} names no line: {shown}");
+            }
+        }
+    }
+
+    #[test]
+    fn other_toml_errors_keep_their_message_and_line() {
+        let err = Config::parse("[brain]\nurl = \"https://proxy:8443\"\n[capture]\nvideo_fps = \"fast\"\n").unwrap_err().to_string();
+        assert!(err.contains("line 4") && err.contains("invalid type"), "{err}");
+        let err = Config::parse("[capture]\n").unwrap_err().to_string();
+        assert!(err.contains("line 1") && err.contains("brain"), "{err}");
+        // An error without a position (serde's `custom`) is the message alone.
+        let positionless = toml_error("[brain]\n", &<toml::de::Error as serde::de::Error>::custom("boom"));
+        assert_eq!(positionless.to_string(), "invalid TOML: boom");
     }
 
     #[test]
