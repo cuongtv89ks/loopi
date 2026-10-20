@@ -3,4 +3,5 @@ pub mod audio;
 pub mod gain;
 pub mod ogg_opus;
 pub mod stream;
+pub mod stream_audio;
 pub mod video;

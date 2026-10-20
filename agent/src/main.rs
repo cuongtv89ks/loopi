@@ -7,18 +7,19 @@ use anyhow::{bail, Context, Result};
 use loopi_agent::button::Press;
 use loopi_agent::cli::{run_config_path, DEFAULT_CONFIG};
 use loopi_agent::clock::SystemClock;
-use loopi_agent::config::{import_boot_config, Config};
+use loopi_agent::config::{import_boot_config, CaptureSource, Config};
 use loopi_agent::disk::StatvfsUsage;
 use loopi_agent::led::{blink_while, LedDriver};
 use loopi_agent::pairing::{ensure_paired, retry_delay, Identity};
 use loopi_agent::recorder::audio::AudioSourceFactory;
+use loopi_agent::recorder::{stream, stream_audio};
 use loopi_agent::osinfo::{OsInfo, CMDLINE_PATH, RELEASE_PATH};
 use loopi_agent::ota::system::{BundleFetcher, RaucCli, SystemdReboot};
 use loopi_agent::ota::task::OtaTimings;
 use loopi_agent::run::{run, Deps, OtaSystem, Timings};
 use loopi_agent::liveness::Liveness;
 use loopi_agent::selftest::{failed_count, format_report, run_selftest};
-use loopi_agent::sysinfo::{hw_info, LinuxProbe};
+use loopi_agent::sysinfo::{hw_info, LinuxProbe, NoProbe, SysProbe};
 use loopi_agent::transport::{build_client, HttpTransport, Transport};
 use loopi_agent::tls;
 use tokio::sync::{mpsc, watch};
@@ -223,6 +224,8 @@ async fn agent_main(config_path: PathBuf) -> Result<()> {
         bail!("config {} not found", config_path.display());
     }
     let config = Config::load(&config_path).with_context(|| format!("loading {}", config_path.display()))?;
+    // A network camera (P3c): ffmpeg records picture and sound, there is no button, no Wi-Fi probe and no A/B slot.
+    let stream = config.capture.source == CaptureSource::Stream;
     let shutdown = shutdown_signal()?;
     let liveness = Liveness::new();
     liveness.beat();
@@ -245,18 +248,24 @@ async fn agent_main(config_path: PathBuf) -> Result<()> {
     let fetcher: Arc<dyn BundleFetcher> = http;
     let os = OsInfo::read(Path::new(RELEASE_PATH), Path::new(CMDLINE_PATH));
     tracing::info!(version = ?os.version, variant = ?os.variant, slot = ?os.slot, "system");
+    let probe: Arc<dyn SysProbe> = if stream { Arc::new(NoProbe) } else { Arc::new(LinuxProbe) };
     let deps = Deps {
         clock: Arc::new(SystemClock::new(config.paths.sync_flag.clone())),
         disk: Arc::new(StatvfsUsage::new(&config.paths.data_dir)?),
         transport,
-        audio_factory: audio_factory(&config),
+        audio_factory: if stream {
+            stream_audio::factory(config.capture.recorder_cmd().to_string(), stream::audio_input(&config.capture))
+        } else {
+            audio_factory(&config)
+        },
         led,
-        presses: open_button(&config),
-        probe: Arc::new(LinuxProbe),
+        presses: if stream { mpsc::channel(1).1 } else { open_button(&config) },
+        probe,
         timings: Timings::default(),
         liveness,
         os,
-        ota: Some(OtaSystem {
+        // A network camera has no A/B slots: an `update` command is refused, as on any system without them.
+        ota: (!stream).then(|| OtaSystem {
             rauc: Arc::new(RaucCli),
             rebooter: Arc::new(SystemdReboot),
             fetcher,
