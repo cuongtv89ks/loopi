@@ -1,6 +1,7 @@
 import datetime as dt
 import stat
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -98,6 +99,15 @@ async def test_removing_a_camera_scrubs_the_password_and_revokes(pool, pki_setti
     (dict(video_url="rtsp://admin:pw@192.0.2.10/x"), "Đừng ghi tên đăng nhập hay mật khẩu vào địa chỉ"),
     (dict(video_url="rtsp://192.0.2.10/a b"), "Địa chỉ không được có dấu cách."),
     (dict(audio_url="ftp://192.0.2.10/a"), "Địa chỉ âm thanh phải bắt đầu bằng http://, https:// hoặc rtsp://."),
+    (dict(video_url="rtsp://#x"), "Địa chỉ không có tên máy hoặc IP."),  # the agent ends the host at '#' too
+    (dict(video_url="rtsp://?x"), "Địa chỉ không có tên máy hoặc IP."),
+    (dict(video_url="rtsp://192.0.2.10/" + "a" * 983), "Địa chỉ dài quá 1000 ký tự."),
+    (dict(video_url="rtsp://192.0.2.10/" + "ế" * 400), "Địa chỉ dài quá 1000 ký tự."),  # 400 characters, 1200 bytes
+    (dict(username="ad\x00min"), "Tên đăng nhập có ký tự không hợp lệ."),
+    (dict(username="ad\nmin"), "Tên đăng nhập có ký tự không hợp lệ."),
+    (dict(username="u" * 65), "Tên đăng nhập dài quá 64 ký tự."),
+    (dict(password="p" * 129), "Mật khẩu dài quá 128 ký tự."),
+    (dict(password="pw\x00"), "Mật khẩu có ký tự không hợp lệ."),
 ])
 def test_bad_camera_input_is_refused_with_a_vietnamese_reason(over, message):
     with pytest.raises(cameras.CameraError, match=message):
@@ -142,3 +152,134 @@ async def test_an_ordinary_token_leaves_the_cameras_alone(pool, pki_settings):
 
 async def test_the_app_creates_the_cameras_directory(client, pki_settings):
     assert pki_settings.cameras_dir.is_dir()
+
+
+def test_the_limits_are_the_agents_own_and_are_accepted_at_the_edge():
+    assert len(cam(video_url="rtsp://192.0.2.10/" + "a" * 982).video_url.encode()) == 1000
+    assert cam(video_url="rtsp://192.0.2.10/" + "ế" * 300).video_url  # 900 bytes
+    assert cam(username="u" * 64, password="p" * 128).password == "p" * 128
+
+
+@pytest.mark.parametrize("damage", [
+    lambda path: path.unlink(),
+    lambda path: path.write_text("not [toml", encoding="utf-8"),
+    lambda path: path.write_bytes(b"\xff\xfe"),
+    lambda path: path.write_text("[capture]\nsource = 'stream'\n", encoding="utf-8"),  # no stream_password
+], ids=["missing", "not-toml", "not-utf8", "no-password-key"])
+async def test_repairing_a_camera_with_a_login_whose_file_is_unreadable_changes_nothing(pool, pki_settings, damage):
+    camera_id = await cameras.add_camera(pool, pki_settings, cam())
+    path = pki_settings.cameras_dir / camera_id / "loopi.toml"
+    damage(path)
+    before = path.read_bytes() if path.exists() else None
+    with pytest.raises(cameras.CameraError, match="Không đọc được mật khẩu đã lưu của camera này; hãy gỡ camera rồi thêm lại."):
+        await cameras.repair_camera(pool, pki_settings, camera_id)
+    assert (await fetch_one(pool, "SELECT count(*) AS n FROM pair_token WHERE camera_id = %s", (camera_id,))) == {"n": 1}
+    assert (path.read_bytes() if path.exists() else None) == before  # no new file, no new token
+
+
+async def test_repairing_a_camera_without_a_login_works_even_with_no_file(pool, pki_settings):
+    camera_id = await cameras.add_camera(pool, pki_settings, cam(kind="esp32", video_url="http://192.0.2.20/stream",
+                                                                  username="", password="", has_audio=False))
+    path = pki_settings.cameras_dir / camera_id / "loopi.toml"
+    path.unlink()
+    assert await cameras.repair_camera(pool, pki_settings, camera_id) is True
+    config = config_of(pki_settings, camera_id)
+    assert config["capture"]["stream_password"] == "" and config["brain"]["pair_token"]
+
+
+async def test_a_non_ascii_password_survives_a_repair(pool, pki_settings, monkeypatch):
+    password = "mật khẩu \U0001F600 Ế"
+    camera_id = await cameras.add_camera(pool, pki_settings, cam(password=password))
+    real = Path.read_text
+
+    def utf8_only(self, encoding=None, errors=None):  # write_config writes UTF-8: the locale must not decide
+        assert self.name != "loopi.toml" or encoding == "utf-8"
+        return real(self, encoding, errors)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", utf8_only)
+        assert await cameras.repair_camera(pool, pki_settings, camera_id) is True
+    assert config_of(pki_settings, camera_id)["capture"]["stream_password"] == password
+
+
+async def test_a_removed_camera_can_not_pair_with_a_token_it_was_issued(pool, pki_settings):
+    camera_id = await cameras.add_camera(pool, pki_settings, cam())
+    token = config_of(pki_settings, camera_id)["brain"]["pair_token"]
+    assert await cameras.remove_camera(pool, pki_settings, camera_id) is True
+    assert (await fetch_one(pool, "SELECT used_at FROM pair_token WHERE token = %s", (token,)))["used_at"] is not None
+    assert await devices.register_device(pool, token, HW, lambda d: pki.sign_csr(pki_settings.pki_dir, make_csr_pem(), d)) is None
+    assert await fetch_one(pool, "SELECT count(*) AS n FROM device") == {"n": 0}
+
+
+async def test_a_token_that_survived_removal_still_never_links_the_removed_camera(pool, pki_settings):
+    camera_id = await cameras.add_camera(pool, pki_settings, cam(location="Bếp"))
+    token = config_of(pki_settings, camera_id)["brain"]["pair_token"]
+    async with pool.connection() as conn:  # the camera is gone but its token was not closed
+        await conn.execute("UPDATE network_camera SET removed_at = now() WHERE id = %s", (camera_id,))
+    paired = await devices.register_device(pool, token, HW, lambda d: pki.sign_csr(pki_settings.pki_dir, make_csr_pem(), d))
+    assert (await fetch_one(pool, "SELECT device_id FROM network_camera WHERE id = %s", (camera_id,)))["device_id"] is None
+    assert (await fetch_one(pool, "SELECT location FROM device WHERE id = %s", (paired["device_id"],)))["location"] != "Bếp"
+
+
+async def test_a_failed_add_removes_the_directory_it_made(pool, pki_settings, monkeypatch):
+    real = cameras.write_config
+
+    def write_then_fail(*args, **kwargs):
+        real(*args, **kwargs)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cameras, "write_config", write_then_fail)
+    with pytest.raises(OSError):
+        await cameras.add_camera(pool, pki_settings, cam())
+    assert list(pki_settings.cameras_dir.iterdir()) == []
+    assert await fetch_one(pool, "SELECT count(*) AS n FROM network_camera") == {"n": 0}
+
+
+async def test_a_failed_remove_leaves_the_camera_running(pool, pki_settings, monkeypatch):
+    camera_id = await cameras.add_camera(pool, pki_settings, cam())
+    directory = pki_settings.cameras_dir / camera_id
+    monkeypatch.setattr(cameras, "write_config", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        await cameras.remove_camera(pool, pki_settings, camera_id)
+    assert not (directory / "disabled").exists()
+    assert config_of(pki_settings, camera_id)["capture"]["stream_password"] == PASSWORD
+    assert [c["id"] for c in await cameras.list_cameras(pool)] == [camera_id]
+    unused = await fetch_one(pool, "SELECT count(*) AS n FROM pair_token WHERE camera_id = %s AND used_at IS NULL", (camera_id,))
+    assert unused == {"n": 1}  # the rollback also reopened the token
+
+
+async def test_a_failed_remove_keeps_a_disabled_file_it_did_not_create(pool, pki_settings, monkeypatch):
+    camera_id = await cameras.add_camera(pool, pki_settings, cam())
+    disabled = pki_settings.cameras_dir / camera_id / "disabled"
+    disabled.touch()  # put there by someone else
+    monkeypatch.setattr(cameras, "write_config", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        await cameras.remove_camera(pool, pki_settings, camera_id)
+    assert disabled.exists()
+
+
+async def test_removing_stops_the_agent_before_the_file_is_rewritten(pool, pki_settings, monkeypatch):
+    camera_id = await cameras.add_camera(pool, pki_settings, cam())
+    disabled = pki_settings.cameras_dir / camera_id / "disabled"
+    real = cameras.write_config
+    seen: list[bool] = []
+
+    def watching(*args, **kwargs):
+        seen.append(disabled.exists())
+        real(*args, **kwargs)
+
+    monkeypatch.setattr(cameras, "write_config", watching)
+    assert await cameras.remove_camera(pool, pki_settings, camera_id) is True
+    assert seen == [True]
+
+
+async def test_only_a_camera_that_has_not_paired_and_is_not_removed_can_be_repaired(pool, pki_settings):
+    paired_id = await cameras.add_camera(pool, pki_settings, cam())
+    token = config_of(pki_settings, paired_id)["brain"]["pair_token"]
+    await devices.register_device(pool, token, HW, lambda d: pki.sign_csr(pki_settings.pki_dir, make_csr_pem(), d))
+    removed_id = await cameras.add_camera(pool, pki_settings, cam(location="Bếp"))
+    await cameras.remove_camera(pool, pki_settings, removed_id)
+    assert await cameras.repair_camera(pool, pki_settings, paired_id) is False
+    assert await cameras.repair_camera(pool, pki_settings, removed_id) is False
+    assert config_of(pki_settings, paired_id)["brain"]["pair_token"] == token  # untouched
+    assert "pair_token" not in config_of(pki_settings, removed_id)["brain"]

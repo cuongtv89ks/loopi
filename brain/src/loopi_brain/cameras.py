@@ -8,6 +8,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
+import shutil
 import tomllib
 import urllib.parse
 from dataclasses import dataclass
@@ -22,7 +24,10 @@ CAMERA_TOKEN_TTL = dt.timedelta(hours=24)
 CONTAINER_ROOT = "/srv/loopi/cameras"  # the same path inside the cameras container
 CONFIG_FILE = "loopi.toml"
 DISABLED_FILE = "disabled"
-URL_MAX = 1000
+URL_MAX = 1000  # bytes, as the agent counts them
+USERNAME_MAX = 64
+PASSWORD_MAX = 128
+_AUTHORITY_END = re.compile(r"[/?#]")  # where a URL's host part ends, as the agent splits it
 VIDEO_FPS = 2
 VIDEO_BITRATE_BPS = 400_000
 
@@ -75,9 +80,9 @@ def _clean_url(text: str, *, schemes: tuple[str, ...], what: str) -> str:
         raise CameraError("Thay <IP> bằng địa chỉ của camera.")
     if any(c.isspace() for c in url) or not url.isprintable():
         raise CameraError("Địa chỉ không được có dấu cách.")
-    if len(url) > URL_MAX:
+    if len(url.encode()) > URL_MAX:
         raise CameraError(f"Địa chỉ dài quá {URL_MAX} ký tự.")
-    authority = url.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0]
+    authority = _AUTHORITY_END.split(url.split("://", 1)[1], maxsplit=1)[0]
     if "@" in authority:
         raise CameraError("Đừng ghi tên đăng nhập hay mật khẩu vào địa chỉ; điền chúng vào ô bên dưới.")
     if not authority:
@@ -95,7 +100,16 @@ def clean_input(*, kind: str, location: str, video_url: str, audio_url: str, use
         raise CameraError(str(exc)) from exc
     video = _clean_url(video_url, schemes=("rtsp://", "http://", "https://"), what="Địa chỉ")
     audio = _clean_url(audio_url, schemes=("http://", "https://", "rtsp://"), what="Địa chỉ âm thanh") if audio_url.strip() else None
-    return CameraInput(kind, place, video, audio, username.strip(), password, bool(has_audio))
+    user = username.strip()
+    if not user.isprintable():
+        raise CameraError("Tên đăng nhập có ký tự không hợp lệ.")
+    if len(user) > USERNAME_MAX:
+        raise CameraError(f"Tên đăng nhập dài quá {USERNAME_MAX} ký tự.")
+    if len(password) > PASSWORD_MAX:
+        raise CameraError(f"Mật khẩu dài quá {PASSWORD_MAX} ký tự.")
+    if "\x00" in password:
+        raise CameraError("Mật khẩu có ký tự không hợp lệ.")
+    return CameraInput(kind, place, video, audio, user, password, bool(has_audio))
 
 
 def with_credentials(url: str, username: str, password: str) -> str:
@@ -150,12 +164,19 @@ def write_config(cameras_dir: Path, camera_id: str, text: str) -> None:
     media.fsync_path(directory)
 
 
-def _stored_password(settings: Settings, camera_id: str) -> str:
+def _stored_password(settings: Settings, camera_id: str, username: str) -> str:
+    """The password in the camera's file. A camera without a login has none to lose, so an unreadable file gives "";
+    for one with a login it is an error: going on would overwrite the only copy of the password."""
     path = settings.cameras_dir / camera_id / CONFIG_FILE
     try:
-        return tomllib.loads(path.read_text())["capture"].get("stream_password", "")
-    except (OSError, tomllib.TOMLDecodeError, KeyError):
-        return ""
+        password = tomllib.loads(path.read_text(encoding="utf-8"))["capture"]["stream_password"]
+        if not isinstance(password, str):
+            raise TypeError("stream_password is not a string")
+        return password
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, KeyError, TypeError):
+        if not username:
+            return ""
+        raise CameraError("Không đọc được mật khẩu đã lưu của camera này; hãy gỡ camera rồi thêm lại.") from None
 
 
 def _input_from_row(row: dict, password: str) -> CameraInput:
@@ -177,17 +198,22 @@ def _fingerprint(settings: Settings) -> str:
 
 async def add_camera(pool: AsyncConnectionPool, settings: Settings, cam: CameraInput) -> str:
     camera_id = devices.new_id()
-    async with pool.connection() as conn, conn.transaction():
-        await conn.execute(
-            "INSERT INTO network_camera (id, kind, location, video_url, audio_url, username, has_audio)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (camera_id, cam.kind, cam.location, cam.video_url, cam.audio_url, cam.username, cam.has_audio),
-        )
-        token = await _token(conn, camera_id)
-        # Written before the commit: a failed write rolls the camera and its token back.
-        write_config(settings.cameras_dir, camera_id, render_config(
-            camera_id, cam, token=token, ca_fingerprint=_fingerprint(settings), brain_url=settings.camera_brain_url,
-            tz=settings.tz))
+    try:
+        async with pool.connection() as conn, conn.transaction():
+            await conn.execute(
+                "INSERT INTO network_camera (id, kind, location, video_url, audio_url, username, has_audio)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (camera_id, cam.kind, cam.location, cam.video_url, cam.audio_url, cam.username, cam.has_audio),
+            )
+            token = await _token(conn, camera_id)
+            # Written before the commit: a failed write rolls the camera and its token back.
+            write_config(settings.cameras_dir, camera_id, render_config(
+                camera_id, cam, token=token, ca_fingerprint=_fingerprint(settings),
+                brain_url=settings.camera_brain_url, tz=settings.tz))
+    except BaseException:
+        # The row is rolled back, so the new directory (a file with the password) must not stay for the supervisor.
+        shutil.rmtree(settings.cameras_dir / camera_id, ignore_errors=True)
+        raise
     return camera_id
 
 
@@ -202,30 +228,42 @@ async def repair_camera(pool: AsyncConnectionPool, settings: Settings, camera_id
         row = await cur.fetchone()
         if row is None:
             return False
+        password = _stored_password(settings, camera_id, row["username"])  # before any write: it may refuse
         token = await _token(conn, camera_id)
         write_config(settings.cameras_dir, camera_id, render_config(
-            camera_id, _input_from_row(row, _stored_password(settings, camera_id)), token=token,
+            camera_id, _input_from_row(row, password), token=token,
             ca_fingerprint=_fingerprint(settings), brain_url=settings.camera_brain_url, tz=settings.tz))
     return True
 
 
 async def remove_camera(pool: AsyncConnectionPool, settings: Settings, camera_id: str) -> bool:
-    async with pool.connection() as conn, conn.transaction():
-        cur = await conn.execute(
-            "UPDATE network_camera SET removed_at = now() WHERE id = %s AND removed_at IS NULL RETURNING *",
-            (camera_id,),
-        )
-        row = await cur.fetchone()
-        if row is None:
-            return False
-        directory = settings.cameras_dir / camera_id
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        (directory / DISABLED_FILE).touch()  # first: the supervisor stops the agent within one scan
-        write_config(settings.cameras_dir, camera_id, render_config(
-            camera_id, _input_from_row(row, ""), token=None, ca_fingerprint=_fingerprint(settings),
-            brain_url=settings.camera_brain_url, tz=settings.tz))
-        if row["device_id"]:
-            await conn.execute("UPDATE device SET revoked = TRUE WHERE id = %s", (row["device_id"],))
+    disabled = settings.cameras_dir / camera_id / DISABLED_FILE
+    created = False
+    try:
+        async with pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "UPDATE network_camera SET removed_at = now() WHERE id = %s AND removed_at IS NULL RETURNING *",
+                (camera_id,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return False
+            # A token nobody used yet must not pair a device for a camera that is gone.
+            await conn.execute(
+                "UPDATE pair_token SET used_at = now() WHERE camera_id = %s AND used_at IS NULL", (camera_id,))
+            if row["device_id"]:
+                await conn.execute("UPDATE device SET revoked = TRUE WHERE id = %s", (row["device_id"],))
+            # The files come last, so a failed statement above leaves them alone.
+            disabled.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            created = not disabled.exists()
+            disabled.touch()  # first: the supervisor stops the agent within one scan
+            write_config(settings.cameras_dir, camera_id, render_config(
+                camera_id, _input_from_row(row, ""), token=None, ca_fingerprint=_fingerprint(settings),
+                brain_url=settings.camera_brain_url, tz=settings.tz))
+    except BaseException:
+        if created:  # the row is rolled back: the camera still runs, so its agent must not be stopped
+            disabled.unlink(missing_ok=True)
+        raise
     return True
 
 

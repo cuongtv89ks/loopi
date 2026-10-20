@@ -81,7 +81,8 @@ async def register_device(
             )
             cur = await conn.execute(
                 "UPDATE network_camera c SET device_id = %s FROM pair_token t"
-                " WHERE t.token = %s AND t.camera_id = c.id AND c.device_id IS NULL RETURNING c.location",
+                " WHERE t.token = %s AND t.camera_id = c.id AND c.device_id IS NULL AND c.removed_at IS NULL"
+                " RETURNING c.location",
                 (device_id, token),
             )
             camera = await cur.fetchone()
