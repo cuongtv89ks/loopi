@@ -98,14 +98,15 @@ async def _pending_since(conn: AsyncConnection, start: dt.datetime, end: dt.date
 
 async def _points(conn: AsyncConnection, start: dt.datetime, end: dt.datetime, after: dt.datetime | None) -> list[Point]:
     cur = await conn.execute(
-        "SELECT id, kind, ts_start, ts_end, embedding FROM moment"
-        " WHERE ts_start >= %s AND ts_start < %s AND (%s::timestamptz IS NULL OR ts_start > %s)"
-        " ORDER BY ts_start, id",
+        "SELECT m.id, m.kind, m.ts_start, m.ts_end, m.embedding, m.device_id, d.location FROM moment m"
+        " LEFT JOIN device d ON d.id = m.device_id"
+        " WHERE m.ts_start >= %s AND m.ts_start < %s AND (%s::timestamptz IS NULL OR m.ts_start > %s)"
+        " ORDER BY m.ts_start, m.id",
         (start, end, after, after),
     )
     return [
         Point(r["id"], r["kind"], r["ts_start"], max(r["ts_end"], r["ts_start"]),
-              None if r["embedding"] is None else unit(r["embedding"].to_numpy()))
+              None if r["embedding"] is None else unit(r["embedding"].to_numpy()), r["device_id"], r["location"])
         for r in await cur.fetchall()
     ]
 
@@ -187,6 +188,45 @@ async def rebuild_chapters(
             "DELETE FROM chapter WHERE day = %s AND NOT closed AND NOT (id = ANY(%s))", (day, list(kept))
         )
     return len(closed) + len(segments), len(closed) + settled
+
+
+RENAME_REFRESH_DAYS = 14  # plan R10
+
+
+async def refresh_places(pool: AsyncConnectionPool, device_id: str, zone, now: dt.datetime | None = None) -> list[dt.date]:
+    """After a place was renamed: re-sign the chapters of the last RENAME_REFRESH_DAYS days on which the device and
+    another one have moments (only chapters that name places change signature, R9), so their summaries are written
+    again; mark those days' recaps stale; ask for a chapter build. Returns the days that changed."""
+    now = now or dt.datetime.now(dt.UTC)
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT day FROM (SELECT (ts_start AT TIME ZONE %s)::date AS day, device_id FROM moment"
+            " WHERE ts_start >= %s) t GROUP BY day HAVING bool_or(device_id = %s) AND count(DISTINCT device_id) >= 2"
+            " ORDER BY day",
+            (zone.key, now - dt.timedelta(days=RENAME_REFRESH_DAYS), device_id),
+        )
+        days = [r["day"] for r in await cur.fetchall()]
+    changed_days = []
+    for day in days:
+        changed = False
+        async with pool.connection() as conn, conn.transaction():
+            await lock_day(conn, day)
+            cur = await conn.execute(
+                "SELECT id, ts_start, last_moment_at, signature FROM chapter WHERE day = %s ORDER BY ts_start", (day,)
+            )
+            for c in await cur.fetchall():
+                points = await _points(conn, c["ts_start"], c["last_moment_at"] + dt.timedelta(microseconds=1), None)
+                sig = signature(points)
+                if sig != c["signature"]:
+                    await conn.execute("UPDATE chapter SET signature = %s, updated_at = now() WHERE id = %s",
+                                       (sig, c["id"]))
+                    changed = True
+            cur = await conn.execute("UPDATE day_recap SET stale = true WHERE day = %s", (day,))
+            changed = changed or cur.rowcount > 0
+        if changed:
+            await defer_build(pool, day, zone)
+            changed_days.append(day)
+    return changed_days
 
 
 async def chapter_lines(pool: AsyncConnectionPool, first: dt.datetime, last: dt.datetime, zone) -> list[str]:

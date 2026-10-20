@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 
 from .. import audio_level, bundles, cameras, devices, media, ota, pki, places
 from ..days import day_bounds_utc
+from ..pipeline import chapters as chapter_rules
 from ..pipeline import moments as moment_rules
 from ..pipeline import status
 from ..pipeline.state import raw_kept
@@ -288,6 +289,10 @@ async def save_location(request: Request, device_id: str, location: str = Form("
         )
     if not await places.set_location(pool, device_id, cleaned):
         raise HTTPException(status_code=404, detail="unknown device")
+    try:
+        await chapter_rules.refresh_places(pool, device_id, request.app.state.settings.zone)
+    except Exception:  # the new name is saved; summaries refresh by hand (Xử lý lại) if this fails
+        log.exception("could not refresh the summaries after renaming %s", device_id)
     return TEMPLATES.TemplateResponse(request, "_location.html", {"d": {"id": device_id, "location": cleaned},
                                                                    "saved": True})
 

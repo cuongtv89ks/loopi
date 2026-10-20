@@ -34,6 +34,8 @@ class Point:
     start: dt.datetime
     end: dt.datetime
     vector: np.ndarray | None = None  # unit-length embedding; None until embedded (markers never drift)
+    device_id: str | None = None
+    place: str | None = None  # the device's place name (P3c-3: part of the signature when places are named)
 
 
 def unit(values) -> np.ndarray | None:
@@ -122,5 +124,8 @@ def closed_count(segments: list[list[Point]], horizon: dt.datetime, day_end: dt.
 
 
 def signature(points: list[Point]) -> str:
-    """Identifies a chapter's members: equal signatures mean the same moments."""
-    return hashlib.sha256("\n".join(p.id for p in points).encode()).hexdigest()[:32]
+    """Identifies a chapter's members: equal signatures mean the same moments — and, when they come from two or more
+    devices (the chapter's text then names each place), the same place names (plan R9)."""
+    named = len({p.device_id for p in points if p.device_id}) >= 2
+    lines = (f"{p.id}\t{p.place or ''}" if named else p.id for p in points)
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:32]
