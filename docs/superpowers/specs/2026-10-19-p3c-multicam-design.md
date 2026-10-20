@@ -1,7 +1,7 @@
 # Loopi P3c — nhiều camera (thiết kế)
 
 - **Ngày:** 2026-10-19
-- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết sau khi P4 kết thúc; P3c-1 có plan ngày 2026-10-19 (`plans/2026-10-19-p3c1-storage-display.md`)
+- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết từ ngày 2026-10-19, P3c-1 trước (viết ngày 2026-10-19, sau khi P4 kết thúc theo D37: `plans/2026-10-19-p3c1-storage-display.md`)
 - **Spec gốc (bắt buộc):** `docs/superpowers/specs/2026-10-14-loopi-design.md`. Tài liệu này thay cho các quyết định tạm ngày 2026-10-18 trong `2026-10-18-p3c-multicam-decisions.md` ở những điểm nó sửa (cầu nối, lưu trữ). Nếu có chỗ mâu thuẫn, spec gốc thắng, trừ các quyết định mới D30–D36 dưới đây; các plan P3c sửa spec gốc cho khớp.
 - **Mục tiêu:** thêm được **camera bất kỳ trong LAN** vào brain — camera IP, điện thoại (iPhone, Android) chạy app phát luồng, bo ESP32 có camera — và **mọi camera đã thêm đều đi qua cùng luồng phân tích như Pi**: keyframe, caption, chép lời (khi camera có âm thanh), moment, chương, recap, tìm kiếm, hỏi đáp, MCP và vlog. Bộ camera đầu tiên của chủ dự án: 1 camera IP Imou và 2 iPhone cũ; sau đó có thể thêm điện thoại Android và ESP32.
 
@@ -21,7 +21,7 @@ Giữ nguyên từ 2026-10-18: điện thoại dùng app phát luồng có sẵn
 
 Chủ dự án chốt thêm (2026-10-19, sửa cùng ngày): **ESP32 có camera và mic được thêm như một camera mạng** (D36). ESP32-S3 không mã hoá H.264 bằng phần cứng, nên nó phát hình dạng MJPEG qua HTTP và PC chuyển sang H.264 như mọi camera mạng. Luồng MJPEG không mang âm thanh, nên tiếng từ mic của ESP32 đi qua một **luồng âm thanh riêng** (WAV 16 kHz mono qua HTTP). Firmware có sẵn (ví dụ `CameraWebServer` của Espressif, cổng 81, `/stream`) chỉ có hình: camera đó được phân tích hình. Để có tiếng và đèn báo đúng lúc ghi, Loopi có **firmware ESP32 riêng (P3c-4)**: MJPEG `/stream` và WAV `/audio` có mật khẩu, đèn sáng đúng lúc PC đang kéo luồng, cấu hình WiFi lần đầu. Thiết bị Loopi đầy đủ chạy trên ESP32 (mTLS, hàng đợi trên thẻ, gửi thẳng lên brain) vẫn ở backlog.
 
-Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của mọi phase P3c được viết sau khi P4 kết thúc**, kể cả P3c-1. Nếu tới khoảng 25/10 P4 chưa xong, người làm hỏi chủ dự án có bật retention 7 ngày có sẵn (D20) để SSD không đầy hay không (SSD dự kiến đầy khoảng 31/10 với retention tắt).
+Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của các phase P3c được viết từ ngày 2026-10-19, P3c-1 trước** (viết ngày 2026-10-19, sau khi P4 kết thúc theo D37).
 
 ## 2. Dịch vụ `cameras` (D30)
 
@@ -116,7 +116,7 @@ CPU: PC là i5-1135G7 (4 nhân, 8 luồng), RAM 15 GB. Hiện một Pi tốn kho
 3. **P3c-3 — xử lý nhiều camera** (sau P3c-2): chép lời từ mic rõ nhất, recap có vị trí, vlog nhiều camera.
 4. **P3c-4 — firmware ESP32 của Loopi** (sau P3c-2, khi chủ dự án có bo ESP32 có camera và mic): MJPEG `/stream` và WAV `/audio` có mật khẩu, đèn sáng đúng lúc có máy đang kéo luồng (D31 cho ESP32), cấu hình WiFi lần đầu. Đây là cách duy nhất có tiếng từ mic ESP32.
 
-Plan của mọi phase P3c được viết sau khi P4 kết thúc, theo thứ tự trên.
+Plan của các phase P3c được viết từ ngày 2026-10-19, P3c-1 trước, theo thứ tự trên.
 
 ## 10. Sửa spec gốc
 - Thêm D30–D36 vào bảng quyết định và dòng "Sửa đổi".
