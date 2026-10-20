@@ -109,10 +109,11 @@ does not reach the disk. Back out by removing both lines from `deploy/.env`.
   how many days raw video and audio are kept (7 and 7 by default, spec D20), "Quên khoảng thời gian" (preview, then
   permanent deletion of everything recorded in the range, at most 7 days at a time; an audit row keeps the range and
   the counts, never content), and reprocessing a day with the current models.
-- Retention is **off** after installing: Cài đặt shows how many recordings (and GB) it would delete; once turned on
-  there, it runs at 03:00 local time: raw files (and their MP4/playback copies) of finished recordings older than the
-  kept days are deleted and the pages say "đã hết hạn". Keyframes, transcripts, chapters and recaps stay. The same
-  03:00 run (on or off) retries files a "Quên khoảng thời gian" could not delete at once.
+- Retention is **on** after installing (D32): at 03:00 local time, raw files (and their MP4/playback copies) of
+  finished recordings older than the kept days (7 and 7) are deleted and the pages say "đã hết hạn". Cài đặt shows
+  how many recordings (and GB) a run would delete, and changes the days or turns it off. A video segment keeps one
+  copy, its MP4: the raw H.264 is deleted once the MP4 and the keyframes exist. Keyframes, transcripts, chapters,
+  recaps and vlogs stay. The same 03:00 run retries files a "Quên khoảng thời gian" could not delete at once.
 - Memory: Ollama keeps at most 2 models (`OLLAMA_MAX_LOADED_MODELS`). Measured: minicpm-v ≈ 2.9 GB, qwen3-embedding
   ≈ 1.3 GB; `qwen3:8b` with its 8192-token context ≈ 6.7 GB. Chapter summaries, recaps and chat share that one text
   model (spec D23: with `qwen3:4b` for summaries, a recap loaded `qwen3:8b` while `qwen3:4b` was still in memory and

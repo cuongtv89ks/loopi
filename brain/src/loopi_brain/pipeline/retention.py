@@ -1,12 +1,12 @@
 """Retention (spec §9.5, D20; §9.2 "03:00: áp dụng chính sách lưu trữ").
 
-Every night at 03:00 local time — **only once the owner turned it on in Cài đặt** (it ships off; the page shows
-what it would delete first) — raw recordings older than the kept days (7 and 7 by default) lose their raw file
-and the copy the web plays (video MP4, normalised audio): only recordings whose analysis is finished, never
-markers. The item row stays, marked ``raw_deleted_at`` so the pages say "đã hết hạn"; keyframes, thumbnails,
-transcripts, captions, moments, chapters and recaps are never deleted here, nor the golden-set copies under
-LOOPI_EVAL_DIR (spec D21). The same nightly run (on or off) retries the media files a "Quên khoảng thời gian" could
-not delete at once and sweeps the golden copies whose sample is gone (``evaluation.golden.sweep``).
+Every night at 03:00 local time — **while retention is on in Cài đặt** (on by default since D32; the page shows what
+a run would delete) — raw recordings older than the kept days (7 and 7 by default) lose their raw file and the copy
+the web plays (video MP4, normalised audio): only recordings whose analysis is finished, never markers. The item
+row stays, marked ``raw_deleted_at`` so the pages say "đã hết hạn"; keyframes, thumbnails, transcripts, captions,
+moments, chapters and recaps are never deleted here, nor the golden-set copies under LOOPI_EVAL_DIR (spec D21). The
+same nightly run (on or off) retries the media files a "Quên khoảng thời gian" could not delete at once and sweeps the
+golden copies whose sample is gone (``evaluation.golden.sweep``).
 
 Order of work per batch: the rows are marked ``raw_deleted_at`` under their row locks (``FOR UPDATE SKIP LOCKED``:
 a row someone else holds, say a reprocess resetting it, is left for the next night) and that is committed
@@ -163,7 +163,7 @@ async def apply_retention(
     pool: AsyncConnectionPool, settings: Settings, now: dt.datetime | None = None
 ) -> RetentionResult:
     """Delete the raw files of finished recordings older than the kept days, in batches; return the counts.
-    Nothing while retention is off (the default)."""
+    Nothing while retention is off in Cài đặt."""
     now = now or dt.datetime.now(dt.UTC)
     kept = await store.get_retention(pool)
     if not kept.enabled:

@@ -34,7 +34,7 @@ async def dev(pool, pki_settings):
 
 @pytest.fixture
 async def on(pool):
-    """The owner turned retention on in Cài đặt (it ships off)."""
+    """Retention is on by default since D32; the fixture keeps the tests explicit."""
     await store.set_retention(pool, store.Retention(enabled=True))
 
 
@@ -348,7 +348,8 @@ async def test_the_job_applies_retention_only_on_the_three_oclock_tick(pool, pki
         context.set_context(None)
 
 
-async def test_nothing_is_deleted_until_the_owner_turns_retention_on(pool, pki_settings, dev, caplog):
+async def test_retention_turned_off_in_cai_dat_deletes_nothing(pool, pki_settings, dev, caplog):
+    await store.set_retention(pool, store.Retention(enabled=False))
     video = await _recording(pool, pki_settings, dev["device_id"], "video", NINE)
     audio = await _recording(pool, pki_settings, dev["device_id"], "audio", NINE)
     await _recording(pool, pki_settings, dev["device_id"], "audio", NOW - dt.timedelta(days=1))  # too recent

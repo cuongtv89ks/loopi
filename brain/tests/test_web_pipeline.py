@@ -16,6 +16,7 @@ from helpers import (
     make_ctx,
     paired_device,
 )
+from loopi_brain import store
 from loopi_brain.app import create_app
 from loopi_brain.pipeline import dispatch, jobs, moments, recap, vlogs
 from loopi_brain.pipeline.status import fmt_duration
@@ -215,7 +216,14 @@ async def test_retry_all_requeues_every_dead_letter_but_the_embedding_run(web, p
     assert statuses == {"index_marker": "todo", "embed_moments": "failed"}
 
 
+async def test_the_pipeline_page_says_retention_is_on_by_default(web, pool):
+    text = (await web.get("/pipeline")).text  # no setting row yet: retention is on since D32
+    card = " ".join(text.split('<h2>Hiểu ngày</h2>')[1].split("</div>")[0].split())
+    assert "đang bật, giữ video thô 7 ngày, audio thô 7 ngày" in card and "đang tắt" not in card
+
+
 async def test_the_pipeline_page_shows_the_understanding_schedule(web, pool, pki_settings):
+    await store.set_retention(pool, store.Retention(enabled=False))  # the owner turned it off in Cài đặt
     text = (await web.get("/pipeline")).text
     card = " ".join(text.split('<h2>Hiểu ngày</h2>')[1].split("</div>")[0].split())  # whitespace-insensitive
     assert "Chia chương: mỗi giờ (phút thứ 5) · chương chờ tóm tắt: 0" in card
@@ -226,8 +234,7 @@ async def test_the_pipeline_page_shows_the_understanding_schedule(web, pool, pki
     async with pool.connection() as conn:
         await conn.execute("INSERT INTO day_recap (day, markdown, model_version, generated_at)"
                            " VALUES (%s, 'x', 'x', '2026-10-14T14:30:00Z')", (day,))
-        await conn.execute("INSERT INTO setting (key, value) VALUES ('retention',"
-                           " '{\"video_days\": 7, \"audio_days\": 7, \"enabled\": true}')")
+    await store.set_retention(pool, store.Retention(video_days=7, audio_days=7, enabled=True))  # turned back on
     job_id = await recap.defer_recap(pool, dt.date(2026, 10, 13))  # deferred like the planner does (lock, priority)
     await _fail_job(pool, job_id)
     text = (await web.get("/pipeline")).text

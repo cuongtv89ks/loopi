@@ -11,14 +11,14 @@ MAX_DAYS = 3650
 
 class Retention(BaseModel):
     """How many days raw recordings are kept (spec §9.5; D20: audio like video, 7 days by default), and whether the
-    nightly deletion runs at all: it is **off** until the owner turns it on in Cài đặt, after seeing what would go
-    (deleting recordings is never done without the owner's yes)."""
+    nightly deletion runs: **on** by default since D32 (P3c-1, one copy per segment); the owner can change the days
+    or turn it off in Cài đặt, which shows what a run would delete."""
 
     model_config = ConfigDict(extra="forbid")
 
     video_days: int = Field(default=7, ge=1, le=MAX_DAYS)
     audio_days: int = Field(default=7, ge=1, le=MAX_DAYS)
-    enabled: bool = False
+    enabled: bool = True
 
 
 MCP_KEY = "mcp"

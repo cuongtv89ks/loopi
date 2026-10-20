@@ -48,7 +48,7 @@ async def web(pool, pki_settings, jobs_open, ollama):
 
 
 async def test_retention_defaults_to_seven_days_and_is_stored(pool):
-    assert await store.get_retention(pool) == store.Retention(video_days=7, audio_days=7, enabled=False)  # off
+    assert await store.get_retention(pool) == store.Retention(video_days=7, audio_days=7, enabled=True)  # on (D32)
     await store.set_retention(pool, store.Retention(video_days=14, audio_days=3, enabled=True))
     assert await store.get_retention(pool) == store.Retention(video_days=14, audio_days=3, enabled=True)
     for bad in ({"video_days": 0}, {"audio_days": 3651}, {"video_days": "a week"}, {"keep": 1}):
@@ -56,7 +56,7 @@ async def test_retention_defaults_to_seven_days_and_is_stored(pool):
             store.Retention(**bad)
 
 
-async def test_the_settings_page_shows_providers_privacy_health_and_retention(web, ollama):
+async def test_the_settings_page_shows_providers_privacy_health_and_retention(web, ollama, pool):
     ollama.models.remove("qwen3:8b")
     text = (await web.get("/settings")).text
     assert '<a href="/settings">Cài đặt</a>' in text
@@ -66,9 +66,13 @@ async def test_the_settings_page_shows_providers_privacy_health_and_retention(we
     assert "Thiếu model: qwen3:8b." in text and "Asia/Seoul" in text
     assert 'name="video_days" min="1" max="3650" required value="7"' in text
     assert 'name="audio_days" min="1" max="3650" required value="7"' in text
+    assert '<input type="checkbox" name="enabled" checked> Bật dọn dữ liệu cũ' in text  # on by default (D32)
+    assert "Dọn dữ liệu cũ: <strong>đang bật</strong>." in text
+    assert 'href="/pipeline"' in text and 'hx-post="/settings/reprocess"' in text
+    await store.set_retention(pool, store.Retention(enabled=False))  # the owner turned it off
+    text = (await web.get("/settings")).text
     assert '<input type="checkbox" name="enabled"> Bật dọn dữ liệu cũ' in text  # not checked
     assert "Dọn dữ liệu cũ: <strong>đang tắt</strong> (chưa xoá gì)" in text
-    assert 'href="/pipeline"' in text and 'hx-post="/settings/reprocess"' in text
 
 
 async def test_a_broken_providers_file_is_shown(pool, pki_settings, jobs_open, tmp_path):
@@ -88,7 +92,7 @@ async def test_the_retention_form_saves_validated_days(web, pool):
     for bad in ("0", "3651", "abc", "-2"):
         r = await web.post("/settings/retention", data={"video_days": bad, "audio_days": "9"}, headers=HX)
         assert r.status_code == 422
-    assert await store.get_retention(pool) == store.Retention(video_days=5, audio_days=9)
+    assert await store.get_retention(pool) == store.Retention(video_days=5, audio_days=9, enabled=False)
     assert "value=\"5\"" in (await web.get("/settings")).text
     r = await web.post("/settings/retention", data={"video_days": "5", "audio_days": "9", "enabled": "on"}, headers=HX)
     assert "Dọn dữ liệu cũ đang bật: chạy lúc 03:00" in r.text and (await store.get_retention(pool)).enabled

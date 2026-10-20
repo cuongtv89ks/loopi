@@ -234,7 +234,7 @@ async def test_the_picture_switch_is_off_until_turned_on(pool):
     assert (await store.get_mcp(pool)).images is False
     await store.set_mcp(pool, store.McpSettings(images=True))
     assert (await store.get_mcp(pool)).images is True
-    assert (await store.get_retention(pool)).enabled is False  # the retention setting is a separate row
+    assert (await store.get_retention(pool)).enabled is True  # the retention setting is a separate row (on by default, D32)
 
 
 async def test_an_unknown_keyframe_has_no_thumbnail(pool, pki_settings):
