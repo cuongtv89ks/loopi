@@ -156,7 +156,7 @@ pub struct CaptureConfig {
     pub stream_username: String,
     #[serde(skip_serializing_if = "Secret::is_empty")]
     pub stream_password: Secret,
-    /// `stream`: a separate sound stream (WAV or PCM over HTTP, as the Loopi ESP32 firmware serves); the camera's
+    /// `stream`: a separate sound stream (WAV, PCM 16 kHz, over HTTP, as the Loopi ESP32 firmware serves); the camera's
     /// stream itself when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audio_url: Option<String>,

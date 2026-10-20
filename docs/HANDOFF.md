@@ -183,7 +183,7 @@ From now on, pushing is still outward-facing: ask the owner first.
    the old pairings `loopi-57s1`, `loopi-qh07` and `loopi-f9cn` (10-14 and 10-15 hold items of the old pairings, so
    those two Day pages show a camera filter with their names). Still open from P4a: the rpicam demo programs and the
    UART root console in prod, and an offline backup of the signing keys.
-3. **P3c-2 plan** (add any camera: the `stream` source and `led.kind = "none"` in the agent, `loopi-cameras`, the
+3. **P3c-2 plan** (add any camera: the `stream` source and `[led] source = "none"` in the agent, `loopi-cameras`, the
    `cameras` container, the add/test/remove camera form, the capacity estimate, "Đang ghi: N camera"). Carry into it
    the P3c-1 items left for it (ledger): search/chat label by the brain's device count instead of the result set (M2),
    the card title after a rename and an invalid name for an unknown device (M7), `has_data` under a camera filter (M8),

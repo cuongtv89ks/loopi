@@ -1,7 +1,7 @@
 # Loopi P3c — nhiều camera (thiết kế)
 
 - **Ngày:** 2026-10-19
-- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết từ ngày 2026-10-19, P3c-1 trước (viết ngày 2026-10-19, sau khi P4 kết thúc theo D37: `plans/2026-10-19-p3c1-storage-display.md`); P3c-2 có plan ngày 2026-10-20
+- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết từ ngày 2026-10-19, P3c-1 trước (viết ngày 2026-10-19, sau khi P4 kết thúc theo D37: `plans/2026-10-19-p3c1-storage-display.md`); P3c-2 có plan ngày 2026-10-20 (`plans/2026-10-20-p3c2-network-cameras.md`, có bảng R1–R9 ghi chỗ plan khác lời spec)
 - **Spec gốc (bắt buộc):** `docs/superpowers/specs/2026-10-14-loopi-design.md`. Tài liệu này thay cho các quyết định tạm ngày 2026-10-18 trong `2026-10-18-p3c-multicam-decisions.md` ở những điểm nó sửa (cầu nối, lưu trữ). Nếu có chỗ mâu thuẫn, spec gốc thắng, trừ các quyết định mới D30–D36 dưới đây; các plan P3c sửa spec gốc cho khớp.
 - **Mục tiêu:** thêm được **camera bất kỳ trong LAN** vào brain — camera IP, điện thoại (iPhone, Android) chạy app phát luồng, bo ESP32 có camera — và **mọi camera đã thêm đều đi qua cùng luồng phân tích như Pi**: keyframe, caption, chép lời (khi camera có âm thanh), moment, chương, recap, tìm kiếm, hỏi đáp, MCP và vlog. Bộ camera đầu tiên của chủ dự án: 1 camera IP Imou và 2 iPhone cũ; sau đó có thể thêm điện thoại Android và ESP32.
 
@@ -14,7 +14,7 @@
 | D32 | Lưu trữ | Ổ HDD 1 TB hỏng ngày 2026-10-18 (rớt khỏi bus khi ghi liên tục), media ở lại SSD. **Một bản mỗi đoạn video**: MP4 (remux, không mã hoá lại) là bản giữ; H.264 thô bị xoá khi đã có MP4 và phân tích xong. Pi giữ 1080p; camera mạng ghi **720p, 2 fps, khoảng 400 kbps**. **Retention bật, giữ 7 ngày** video và audio thô (D20 đổi từ "mặc định tắt" thành bật). Keyframe, transcript, caption, chương, recap, vlog giữ vĩnh viễn |
 | D33 | Chép lời khi nhiều mic cùng nghe | Phát hiện tiếng nói (VAD) chạy trên mọi mic. Audio cắt theo phút đồng hồ nên các đoạn cùng phút khớp nhau giữa các camera. Trong một phút, các khoảng tiếng nói chồng thời gian được gom thành nhóm; **mỗi nhóm chỉ chép lời một lần, từ mic nghe rõ nhất** (tỉ số tiếng nói trên nền nhiễu của chính mic đó cao nhất). Câu chỉ một phòng nghe thấy vẫn được chép. Brain chờ tối đa 3 phút cho audio của phút đó từ mọi camera; camera đến trễ hơn được coi như không có tiếng nói |
 | D34 | Hiển thị nhiều camera | Timeline "Hôm nay"/"Ngày" gộp mọi camera theo thời gian, mỗi mục có nhãn vị trí, có bộ lọc "Tất cả" hoặc một camera (lưu trong URL). Mọi thiết bị, kể cả Pi, có **tên vị trí** sửa được; nhãn này dùng ở timeline, tìm kiếm, chat, MCP, recap và vlog |
-| D36 | Thêm camera bất kỳ | Form "Thêm camera" có **loại camera**: *Camera IP (RTSP)*, *Điện thoại — iPhone/Android (app phát RTSP hoặc MJPEG)*, *ESP32 có camera (MJPEG qua HTTP)*, *Khác (URL RTSP/HTTP tuỳ ý)*. Mỗi loại điền sẵn mẫu URL và mặc định (có âm thanh hay không). Nút **"Thử kết nối"** kiểm tra luồng trước khi lưu và cho biết độ phân giải, số khung hình/giây, có âm thanh hay không. Mọi camera đã thêm được phân tích như nhau; camera nào không có luồng âm thanh thì chỉ được phân tích hình. Một camera có thể có **URL âm thanh riêng** (luồng WAV/PCM qua HTTP) bên cạnh URL hình — đó là cách ESP32 gửi tiếng từ mic của nó. Không giới hạn cứng số camera; trang Thiết bị cho biết dung lượng 7 ngày ước tính so với chỗ trống trên SSD và cảnh báo khi vượt (2026-10-19) |
+| D36 | Thêm camera bất kỳ | Form "Thêm camera" có **loại camera**: *Camera IP (RTSP)*, *Điện thoại — iPhone/Android (app phát RTSP hoặc MJPEG)*, *ESP32 có camera (MJPEG qua HTTP)*, *Khác (URL RTSP/HTTP tuỳ ý)*. Mỗi loại điền sẵn mẫu URL và mặc định (có âm thanh hay không). Nút **"Thử kết nối"** kiểm tra luồng trước khi lưu và cho biết độ phân giải, số khung hình/giây, có âm thanh hay không. Mọi camera đã thêm được phân tích như nhau; camera nào không có luồng âm thanh thì chỉ được phân tích hình. Một camera có thể có **URL âm thanh riêng** (luồng WAV (PCM 16 kHz) qua HTTP) bên cạnh URL hình — đó là cách ESP32 gửi tiếng từ mic của nó. Không giới hạn cứng số camera; trang Thiết bị cho biết dung lượng 7 ngày ước tính so với chỗ trống trên SSD và cảnh báo khi vượt (2026-10-19) |
 | D35 | Vlog nhiều camera | Một vlog mỗi ngày. Với mỗi 10 phút có hoạt động, phần tua nhanh lấy camera có nhiều moment nhất trong 10 phút đó; ảnh highlight có thể từ bất kỳ camera nào; mỗi cảnh có nhãn vị trí nhỏ |
 
 Giữ nguyên từ 2026-10-18: điện thoại dùng app phát luồng có sẵn (không viết app riêng), cắm sạc, bật Guided Access (iPhone) hoặc ghim màn hình (Android); **mọi camera có âm thanh đều ghi âm** (chủ dự án đã biết rủi ro theo 통신비밀보호법, §11 spec gốc); khi có BLE presence (P4c), nó giới hạn ghi âm trên **mọi** camera. BLE presence đã chuyển vào backlog (D37, 2026-10-19), nên hiện không có giới hạn này.
@@ -29,7 +29,8 @@ Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của các phase P3c
 - Thư mục cấu hình dùng chung với brain: `<LOOPI_DATA_DIR>/cameras/<camera_id>/` (trong container là `/srv/loopi/cameras/…`). Mỗi camera có `loopi.toml` (brain viết, quyền 600) và `data/` (hàng đợi, khoá, `state.json` của agent đó).
 - Bên trong là một bộ giám sát nhỏ (`loopi-cameras`, binary thứ hai trong crate agent): đọc thư mục, chạy `loopi-agent run --config <dir>/loopi.toml` cho mỗi camera, khởi động lại khi agent thoát (thời gian chờ tăng dần, như systemd làm cho Pi), dừng agent khi thư mục camera bị xoá hoặc có file `disabled`.
 - Agent của camera mạng nói chuyện với brain đúng như Pi: qua Caddy, mTLS, ở `https://proxy:8443` trong mạng compose (agent kiểm CA của brain, không kiểm tên máy) (R2); ghép cặp bằng token một lần mà brain ghi vào `loopi.toml`.
-- Giờ: container gắn thư mục `/run/systemd/timesync` của PC (chỉ đọc); camera chỉ ghi khi đồng hồ PC đã đồng bộ, như Pi (R3).
+- Giờ: agent của camera hỏi thẳng kernel của PC (adjtimex, như `timedatectl`); camera chỉ ghi khi đồng hồ PC đã đồng bộ, như Pi; container không gắn thư mục nào của PC ngoài `cameras/` (R3, sửa sau review cuối: thư mục `/run/systemd/timesync` bị tạo lại mỗi lần timesyncd khởi động lại).
+- Container `cameras` ở mạng riêng chỉ chung với proxy: không gọi thẳng được api, db, models.
 - Hàng đợi của camera mạng nằm trên SSD của PC. Ngưỡng 85 %/95 % của agent áp dụng cho đĩa đó.
 
 ## 3. Thay đổi ở agent (P3c-2)
@@ -38,11 +39,12 @@ Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của các phase P3c
   - `capture.stream_url` (không chứa mật khẩu), `capture.stream_username`, `capture.stream_password` (chỉ trong file, không bao giờ log, không vào heartbeat).
   - `capture.stream_url` có thể là `rtsp://` (camera IP, app điện thoại) hoặc `http(s)://` phát MJPEG (ESP32, nhiều app Android). RTSP kéo qua TCP; MJPEG không mang mốc thời gian nên dùng giờ lúc nhận khung.
   - Video: ffmpeg ghi đoạn 60 s H.264, 2 fps, tối đa khoảng 400 kbps, cạnh dài tối đa 1280 (720p; nguồn nhỏ hơn giữ nguyên kích thước), đặt tên như đoạn của `rpicam-vid`, nên phần hàng đợi và upload không đổi.
-  - `capture.audio_url` (tuỳ chọn): luồng âm thanh riêng qua HTTP (WAV hoặc PCM 16 kHz mono), dùng khi URL hình không mang âm thanh (ESP32). Có `audio_url` thì âm thanh lấy từ đó, không lấy từ URL hình.
+  - `capture.audio_url` (tuỳ chọn): luồng âm thanh riêng qua HTTP, dạng WAV (PCM 16 kHz), dùng khi URL hình không mang âm thanh (ESP32). Có `audio_url` thì âm thanh lấy từ đó, không lấy từ URL hình.
   - Âm thanh: khi luồng (hoặc `audio_url`) có âm thanh và camera bật ghi âm, ffmpeg xuất PCM 16 kHz mono qua pipe, làm một `AudioSource` mới; mọi thứ sau đó (Ogg Opus, đoạn theo phút) dùng lại. Brain ghi `audio_gain_db = 0` cho `stream` (R7). Camera được thêm với "không có âm thanh" (mặc định cho ESP32 chạy firmware có sẵn) thì không mở nguồn audio (brain ghi `capture.audio_enabled = false`; giá trị này là trần: lệnh bật audio từ xa không mở lại mic, R4); camera đáng lẽ có âm thanh mà luồng không có thì báo như mic bị rút (`mic_missing`).
   - Camera có âm thanh dùng hai kết nối (hình, tiếng); app chỉ nhận một kết nối thì mất tiếng (`mic_missing`) (R5).
   - Camera mất kết nối: ffmpeg thoát, agent thử lại với thời gian chờ tăng dần, heartbeat báo `camera_failures` và `last_error`; sai mật khẩu ghi rõ trong `last_error` (không kèm URL có mật khẩu).
 - `[led] source = "none"`: không có LED phần cứng; chỉ hợp lệ khi `capture.source = "stream"` (D31). Cấu hình sai thì agent từ chối chạy.
+- `[clock] source = "flag"` (mặc định, Pi: có file `paths.sync_flag` thì đồng hồ đã đồng bộ) hoặc `"kernel"` (camera mạng: hỏi kernel bằng adjtimex, đồng bộ khi sai số tối đa dưới 16 s, như `timedatectl`). Brain ghi `"kernel"` cho mọi camera mạng; file của Pi không có bảng `[clock]`.
 - Phiên bản agent và protocol không đổi.
 
 ## 4. Thay đổi ở brain
@@ -94,6 +96,7 @@ CPU: PC là i5-1135G7 (4 nhân, 8 luồng), RAM 15 GB. Hiện một Pi tốn kho
 ## 6. Quyền riêng tư và bảo mật
 - D31 cho camera mạng; Pi giữ nguyên bất biến LED.
 - Mật khẩu RTSP (ví dụ mã an toàn của Imou) chỉ nằm trong `loopi.toml` của camera, quyền 600, không vào git, không log, không hiện lại trên web, không vào heartbeat.
+- Giới hạn đã biết: ffmpeg và ffprobe chỉ nhận thông tin đăng nhập RTSP nằm trong URL, nên người dùng đăng nhập trên PC thấy được mật khẩu camera bằng `ps` trong lúc camera ghi (và tới 10 s khi "Thử kết nối").
 - "Quên khoảng thời gian" áp dụng cho mọi camera. Gỡ camera thu hồi thiết bị ngay.
 - Ghi âm trên mọi camera theo quyết định của chủ dự án. BLE presence (P4c) đã chuyển vào backlog (D37), nên ghi âm chỉ bị giới hạn bằng lịch, nút Pause và công tắc audio.
 

@@ -1,7 +1,7 @@
-//! Sound from a network camera (P3c design §3): ffmpeg decodes `audio_url` (WAV or PCM over HTTP) or the camera's
-//! stream to 16 kHz mono s16le on a pipe; one frame is 320 samples (640 bytes). A read waits at most `timeout` for
-//! data, so a stalled network never blocks the sound thread (and the agent's shutdown). ffmpeg's error output is
-//! discarded: it can quote the address with the password.
+//! Sound from a network camera (P3c design §3): ffmpeg decodes `audio_url` (WAV over HTTP; headerless PCM cannot be
+//! probed) or the camera's stream to 16 kHz mono s16le on a pipe; one frame is 320 samples (640 bytes). A read waits
+//! at most `timeout` for data, so a stalled network never blocks the sound thread (and the agent's shutdown). ffmpeg's
+//! error output is discarded: it can quote the address with the password.
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::process::{Child, ChildStdout, Command, Stdio};

@@ -16,7 +16,8 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
    `docker compose up -d models && docker compose run --rm --no-deps worker loopi-brain models pull`
    (Without them the worker still extracts keyframes and the first transcription downloads Whisper itself;
    captions and embeddings simply wait, and the "Xử lý" page lists the missing models.)
-5. `docker compose up -d --build` — starts `db`, `api`, `worker` (pipeline jobs), `models` (Ollama), `proxy` and `cameras` (one agent per network camera).
+5. `docker compose up -d --build` — starts `db`, `api`, `worker` (pipeline jobs), `models` (Ollama), `proxy` and
+   `cameras` (one agent per network camera).
 6. `./smoke.sh` (waits up to 60 s for the stack to become ready) → must print `OK: smoke test passed`.
    (`LOOPI_DATA_DIR` is read from `deploy/.env` if not exported; falls back to `/srv/loopi`.)
    It also checks the stack through an IP-literal URL (`https://<LAN IP>:8443`, no TLS SNI), the way devices and browsers
@@ -49,19 +50,24 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
 - Thiết bị → "Thêm camera mạng": pick the type (IP camera, phone app, ESP32, other), type the place and the stream
   address (replace `<IP>`), the user name and password, then "Thử kết nối" (ffprobe, at most 10 s) and "Lưu camera".
   The brain writes `<LOOPI_DATA_DIR>/cameras/<id>/loopi.toml` (mode 600, holds the password; never commit or print it)
-  and the `cameras` container starts an agent for it within 5 s; it pairs, then records 720p at 2 fps (about 4.4 GB a
-  day with sound).
-- The camera shows up as a device; pause, sound on/off and the place name work as for the Pi. The header of every page
-  says how many cameras record now.
+  and the `cameras` container starts an agent for it within 5 s; it pairs, then records at most 720p at 2 fps (about
+  4.4 GB a day with sound).
+- The camera shows up as a device; pause, sound on/off (for a camera added with sound) and the place name work as for
+  the Pi. The header of every page says how many cameras record now.
 - A camera that has not paired within 24 h (cameras container down): "Ghép cặp lại". "Gỡ camera" stops its agent,
   removes the password from its file and revokes it; what it recorded stays until retention or "Quên".
 - A network camera's card shows "Gỡ camera" instead of "Thu hồi" (removing also revokes).
-- "Ghép cặp lại" refuses, with a message, when the stored password cannot be read; then remove the camera and add it again.
+- "Ghép cặp lại" refuses, with a message, when the stored password cannot be read; then remove the camera and add it
+  again.
 - "Thử kết nối" checks the address and the login the same way "Lưu camera" does before it runs ffprobe.
 - Logs: `docker compose -p deploy logs cameras` (each agent line starts with `[<camera id>]`; stream errors are
   named, never quoted, so no address or password appears).
-- The container mounts only `<data>/cameras` and the host's `/run/systemd/timesync` (cameras record only while the PC's
-  clock is synced).
+- Clock and isolation: the camera agents ask the PC's kernel whether its clock is synced (as `timedatectl` does) and
+  record only while it is. The container mounts only `<data>/cameras` and sits on a network of its own with the proxy:
+  it cannot reach the api, db or models directly.
+- Known limitation: ffmpeg and ffprobe take RTSP credentials only inside the URL, so a user logged in on the PC can see
+  a camera's password with `ps` while it records (and for up to 10 s during "Thử kết nối"). A separate sound address
+  must serve WAV.
 
 ## Media on their own disk
 
