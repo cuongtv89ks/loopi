@@ -192,3 +192,14 @@ async def list_devices(pool: AsyncConnectionPool) -> list[dict]:
             " dropped_total, created_at FROM device ORDER BY created_at"
         )
         return await cur.fetchall()
+
+
+async def recording_count(pool: AsyncConnectionPool) -> int:
+    """Devices recording video now (D31: the web is the sign for a network camera): not revoked, heard from within
+    45 seconds, and their last heartbeat says recording_video."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT count(*) AS n FROM device WHERE NOT revoked AND last_heartbeat_at > now() - interval '45 seconds'"
+            " AND (last_heartbeat->>'recording_video')::boolean"
+        )
+        return (await cur.fetchone())["n"]

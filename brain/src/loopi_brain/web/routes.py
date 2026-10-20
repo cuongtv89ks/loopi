@@ -189,6 +189,13 @@ async def audio_playback(request: Request, item_id: str):
     return FileResponse(view, media_type="audio/ogg")
 
 
+@router.get("/status/recording", response_class=HTMLResponse)
+async def recording_now(request: Request):
+    """The header line on every page (htmx, every 15 s)."""
+    count = await devices.recording_count(request.app.state.pool)
+    return TEMPLATES.TemplateResponse(request, "_recording_now.html", {"count": count})
+
+
 @router.get("/devices", response_class=HTMLResponse)
 async def devices_page(request: Request):
     settings = request.app.state.settings
