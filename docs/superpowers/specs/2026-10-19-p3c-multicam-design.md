@@ -1,7 +1,7 @@
 # Loopi P3c — nhiều camera (thiết kế)
 
 - **Ngày:** 2026-10-19
-- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết từ ngày 2026-10-19, P3c-1 trước (viết ngày 2026-10-19, sau khi P4 kết thúc theo D37: `plans/2026-10-19-p3c1-storage-display.md`)
+- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết từ ngày 2026-10-19, P3c-1 trước (viết ngày 2026-10-19, sau khi P4 kết thúc theo D37: `plans/2026-10-19-p3c1-storage-display.md`); P3c-2 có plan ngày 2026-10-20
 - **Spec gốc (bắt buộc):** `docs/superpowers/specs/2026-10-14-loopi-design.md`. Tài liệu này thay cho các quyết định tạm ngày 2026-10-18 trong `2026-10-18-p3c-multicam-decisions.md` ở những điểm nó sửa (cầu nối, lưu trữ). Nếu có chỗ mâu thuẫn, spec gốc thắng, trừ các quyết định mới D30–D36 dưới đây; các plan P3c sửa spec gốc cho khớp.
 - **Mục tiêu:** thêm được **camera bất kỳ trong LAN** vào brain — camera IP, điện thoại (iPhone, Android) chạy app phát luồng, bo ESP32 có camera — và **mọi camera đã thêm đều đi qua cùng luồng phân tích như Pi**: keyframe, caption, chép lời (khi camera có âm thanh), moment, chương, recap, tìm kiếm, hỏi đáp, MCP và vlog. Bộ camera đầu tiên của chủ dự án: 1 camera IP Imou và 2 iPhone cũ; sau đó có thể thêm điện thoại Android và ESP32.
 
@@ -10,7 +10,7 @@
 | # | Chủ đề | Quyết định |
 |---|---|---|
 | D30 | Cầu nối camera mạng | Một dịch vụ `cameras` trên PC chạy **một agent cho mỗi camera mạng**: cùng agent Rust như Pi (build cho x86_64), thêm nguồn ghi `stream` dùng ffmpeg kéo luồng **RTSP hoặc MJPEG qua HTTP**. Mỗi camera là một thiết bị riêng (ghép cặp, hàng đợi, heartbeat, pause, bật/tắt âm thanh, giờ yên lặng), protocol v1 giữ nguyên. Thêm và gỡ camera từ trang Thiết bị. Không dùng MediaMTX. Thay quyết định 2026-10-18 "mỗi camera một container + MediaMTX" (2026-10-19) |
-| D31 | Báo đang ghi cho camera mạng | Camera mạng không có LED do Loopi điều khiển: dấu hiệu là tín hiệu sẵn có của thiết bị (đèn Imou, màn hình app iPhone) cộng với web — trang Thiết bị ghi rõ camera nào đang ghi, đầu mọi trang có dòng "Đang ghi: N camera". Pause trên web dừng đúng camera đó ở heartbeat kế tiếp (≤ 15 s). ESP32 chạy firmware có sẵn không có đèn gắn với việc ghi: dấu hiệu chỉ là web; firmware Loopi (P3c-4) bật đèn đúng lúc luồng đang được kéo. Bất biến "không có chuyện đang ghi mà LED tắt" (§4, §7.4) giữ nguyên cho Pi; với camera mạng, agent ghi khi không có LED phần cứng (`led.kind = "none"`), và chỉ được phép như vậy khi nguồn ghi là `stream` |
+| D31 | Báo đang ghi cho camera mạng | Camera mạng không có LED do Loopi điều khiển: dấu hiệu là tín hiệu sẵn có của thiết bị (đèn Imou, màn hình app iPhone) cộng với web — trang Thiết bị ghi rõ camera nào đang ghi, đầu mọi trang có dòng "Đang ghi: N camera". Pause trên web dừng đúng camera đó ở heartbeat kế tiếp (≤ 15 s). ESP32 chạy firmware có sẵn không có đèn gắn với việc ghi: dấu hiệu chỉ là web; firmware Loopi (P3c-4) bật đèn đúng lúc luồng đang được kéo. Bất biến "không có chuyện đang ghi mà LED tắt" (§4, §7.4) giữ nguyên cho Pi; với camera mạng, agent ghi khi không có LED phần cứng (`[led] source = "none"`), và chỉ được phép như vậy khi nguồn ghi là `stream` |
 | D32 | Lưu trữ | Ổ HDD 1 TB hỏng ngày 2026-10-18 (rớt khỏi bus khi ghi liên tục), media ở lại SSD. **Một bản mỗi đoạn video**: MP4 (remux, không mã hoá lại) là bản giữ; H.264 thô bị xoá khi đã có MP4 và phân tích xong. Pi giữ 1080p; camera mạng ghi **720p, 2 fps, khoảng 400 kbps**. **Retention bật, giữ 7 ngày** video và audio thô (D20 đổi từ "mặc định tắt" thành bật). Keyframe, transcript, caption, chương, recap, vlog giữ vĩnh viễn |
 | D33 | Chép lời khi nhiều mic cùng nghe | Phát hiện tiếng nói (VAD) chạy trên mọi mic. Audio cắt theo phút đồng hồ nên các đoạn cùng phút khớp nhau giữa các camera. Trong một phút, các khoảng tiếng nói chồng thời gian được gom thành nhóm; **mỗi nhóm chỉ chép lời một lần, từ mic nghe rõ nhất** (tỉ số tiếng nói trên nền nhiễu của chính mic đó cao nhất). Câu chỉ một phòng nghe thấy vẫn được chép. Brain chờ tối đa 3 phút cho audio của phút đó từ mọi camera; camera đến trễ hơn được coi như không có tiếng nói |
 | D34 | Hiển thị nhiều camera | Timeline "Hôm nay"/"Ngày" gộp mọi camera theo thời gian, mỗi mục có nhãn vị trí, có bộ lọc "Tất cả" hoặc một camera (lưu trong URL). Mọi thiết bị, kể cả Pi, có **tên vị trí** sửa được; nhãn này dùng ở timeline, tìm kiếm, chat, MCP, recap và vlog |
@@ -28,8 +28,8 @@ Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của các phase P3c
 - Một container mới trong `deploy/docker-compose.yml`, image build từ crate `agent/` cho x86_64, kèm `ffmpeg`. Không cần quyền Docker, không chạy bằng root.
 - Thư mục cấu hình dùng chung với brain: `<LOOPI_DATA_DIR>/cameras/<camera_id>/` (trong container là `/srv/loopi/cameras/…`). Mỗi camera có `loopi.toml` (brain viết, quyền 600) và `data/` (hàng đợi, khoá, `state.json` của agent đó).
 - Bên trong là một bộ giám sát nhỏ (`loopi-cameras`, binary thứ hai trong crate agent): đọc thư mục, chạy `loopi-agent run --config <dir>/loopi.toml` cho mỗi camera, khởi động lại khi agent thoát (thời gian chờ tăng dần, như systemd làm cho Pi), dừng agent khi thư mục camera bị xoá hoặc có file `disabled`.
-- Agent của camera mạng nói chuyện với brain đúng như Pi: qua Caddy, mTLS, cùng URL brain trong LAN; ghép cặp bằng token một lần mà brain ghi vào `loopi.toml`.
-- Giờ: container dùng đồng hồ của PC (đã đồng bộ NTP); agent được cấu hình coi đồng hồ là đã đồng bộ.
+- Agent của camera mạng nói chuyện với brain đúng như Pi: qua Caddy, mTLS, ở `https://proxy:8443` trong mạng compose (agent kiểm CA của brain, không kiểm tên máy) (R2); ghép cặp bằng token một lần mà brain ghi vào `loopi.toml`.
+- Giờ: container gắn thư mục `/run/systemd/timesync` của PC (chỉ đọc); camera chỉ ghi khi đồng hồ PC đã đồng bộ, như Pi (R3).
 - Hàng đợi của camera mạng nằm trên SSD của PC. Ngưỡng 85 %/95 % của agent áp dụng cho đĩa đó.
 
 ## 3. Thay đổi ở agent (P3c-2)
@@ -39,9 +39,10 @@ Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của các phase P3c
   - `capture.stream_url` có thể là `rtsp://` (camera IP, app điện thoại) hoặc `http(s)://` phát MJPEG (ESP32, nhiều app Android). RTSP kéo qua TCP; MJPEG không mang mốc thời gian nên dùng giờ lúc nhận khung.
   - Video: ffmpeg ghi đoạn 60 s H.264, 2 fps, tối đa khoảng 400 kbps, cạnh dài tối đa 1280 (720p; nguồn nhỏ hơn giữ nguyên kích thước), đặt tên như đoạn của `rpicam-vid`, nên phần hàng đợi và upload không đổi.
   - `capture.audio_url` (tuỳ chọn): luồng âm thanh riêng qua HTTP (WAV hoặc PCM 16 kHz mono), dùng khi URL hình không mang âm thanh (ESP32). Có `audio_url` thì âm thanh lấy từ đó, không lấy từ URL hình.
-  - Âm thanh: khi luồng (hoặc `audio_url`) có âm thanh và camera bật ghi âm, ffmpeg xuất PCM 16 kHz mono qua pipe, làm một `AudioSource` mới; mọi thứ sau đó (Ogg Opus, đoạn theo phút) dùng lại. `audio_gain_db` mặc định 0 cho `stream`. Camera được thêm với "không có âm thanh" (mặc định cho ESP32 chạy firmware có sẵn) thì không mở nguồn audio; camera đáng lẽ có âm thanh mà luồng không có thì báo như mic bị rút (`mic_missing`).
+  - Âm thanh: khi luồng (hoặc `audio_url`) có âm thanh và camera bật ghi âm, ffmpeg xuất PCM 16 kHz mono qua pipe, làm một `AudioSource` mới; mọi thứ sau đó (Ogg Opus, đoạn theo phút) dùng lại. Brain ghi `audio_gain_db = 0` cho `stream` (R7). Camera được thêm với "không có âm thanh" (mặc định cho ESP32 chạy firmware có sẵn) thì không mở nguồn audio (brain ghi `capture.audio_enabled = false`; giá trị này là trần: lệnh bật audio từ xa không mở lại mic, R4); camera đáng lẽ có âm thanh mà luồng không có thì báo như mic bị rút (`mic_missing`).
+  - Camera có âm thanh dùng hai kết nối (hình, tiếng); app chỉ nhận một kết nối thì mất tiếng (`mic_missing`) (R5).
   - Camera mất kết nối: ffmpeg thoát, agent thử lại với thời gian chờ tăng dần, heartbeat báo `camera_failures` và `last_error`; sai mật khẩu ghi rõ trong `last_error` (không kèm URL có mật khẩu).
-- `led.kind = "none"`: không có LED phần cứng; chỉ hợp lệ khi `capture.source = "stream"` (D31). Cấu hình sai thì agent từ chối chạy.
+- `[led] source = "none"`: không có LED phần cứng; chỉ hợp lệ khi `capture.source = "stream"` (D31). Cấu hình sai thì agent từ chối chạy.
 - Phiên bản agent và protocol không đổi.
 
 ## 4. Thay đổi ở brain
@@ -51,7 +52,7 @@ Thứ tự (chủ dự án chốt lại 2026-10-19): **plan của các phase P3c
 - Bảng `network_camera`: id, `device_id` (sau khi ghép cặp), vị trí, URL (không có mật khẩu), username, trạng thái (đang bật/đã tắt). **Mật khẩu không nằm trong database**, chỉ trong `loopi.toml` của camera (quyền 600). Trang không bao giờ hiện lại mật khẩu.
 - Thêm camera (D36): form "Thêm camera" (loại camera, vị trí, URL hình, URL âm thanh nếu có, username, mật khẩu, có âm thanh hay không). Loại camera điền sẵn mẫu URL: Imou `rtsp://<IP>:554/cam/realmonitor?channel=1&subtype=0`; ESP32 firmware Loopi `http://<IP>/stream` và `http://<IP>/audio`, ESP32 firmware có sẵn `http://<IP>:81/stream` (không âm thanh); app Android "IP Webcam" `http://<IP>:8080/video`; loại *Khác* để trống.
 - **Thử kết nối:** brain (container api, đã có ffmpeg) chạy `ffprobe` tối đa 10 s với URL và thông tin đăng nhập vừa nhập, rồi hiện độ phân giải, fps, codec và có âm thanh hay không (kiểm cả URL âm thanh nếu có). Thông tin đăng nhập không bao giờ vào log hay thông báo lỗi.
-- Lưu → tạo token ghép cặp → viết `cameras/<id>/loopi.toml`. Gỡ camera: ghi file `disabled`, thu hồi thiết bị; dữ liệu đã ghi bị xoá theo retention hoặc "Quên".
+- Lưu → tạo token ghép cặp → viết `cameras/<id>/loopi.toml` (token sống 24 giờ; nút 'Ghép cặp lại' tạo token mới, R6). Gỡ camera: ghi file `disabled`, thu hồi thiết bị; file cấu hình được viết lại không còn mật khẩu (R9); dữ liệu đã ghi bị xoá theo retention hoặc "Quên". Thẻ của camera mạng có nút 'Gỡ camera' thay cho 'Thu hồi'.
 - Ước tính dung lượng: mỗi camera mạng thêm khoảng 4,4 GB/ngày (≈ 31 GB cho 7 ngày). Trang Thiết bị hiện tổng ước tính 7 ngày so với chỗ trống trên SSD; form thêm camera cảnh báo khi camera mới làm vượt 85 % chỗ trống.
 
 ### 4.2 Một bản mỗi đoạn và retention (P3c-1, D32)
@@ -97,7 +98,7 @@ CPU: PC là i5-1135G7 (4 nhân, 8 luồng), RAM 15 GB. Hiện một Pi tốn kho
 - Ghi âm trên mọi camera theo quyết định của chủ dự án. BLE presence (P4c) đã chuyển vào backlog (D37), nên ghi âm chỉ bị giới hạn bằng lịch, nút Pause và công tắc audio.
 
 ## 7. Kiểm thử
-- Agent: nguồn `stream` với script ffmpeg giả (như `rpicam-vid` giả hiện có) và file mẫu phát lặp — một video H.264, một luồng MJPEG và một luồng WAV qua HTTP làm URL âm thanh riêng — không cần RTSP hay ESP32 thật; nguồn audio từ pipe; camera không có âm thanh không mở nguồn audio; `led.kind = "none"` bị từ chối với nguồn `csi`.
+- Agent: nguồn `stream` với script ffmpeg giả (như `rpicam-vid` giả hiện có) và file mẫu phát lặp — một video H.264, một luồng MJPEG và một luồng WAV qua HTTP làm URL âm thanh riêng — không cần RTSP hay ESP32 thật; nguồn audio từ pipe; camera không có âm thanh không mở nguồn audio; `[led] source = "none"` bị từ chối với nguồn `csi`.
 - `loopi-cameras`: chạy và dừng agent khi thư mục thay đổi, khởi động lại khi agent thoát, dừng khi có `disabled`.
 - Brain: xoá bản thô sau khi có MP4 và phân tích xong (không xoá sớm hơn); retention bật mặc định; gom nhóm tiếng nói và chọn mic (khoảng tiếng nói giả); chờ tối đa 3 phút; timeline gộp và bộ lọc; form thêm camera theo từng loại (mẫu URL đúng; mật khẩu không bao giờ xuất hiện trong trang, log hay database); "Thử kết nối" với ffprobe giả (thành công, sai mật khẩu, quá 10 s); cảnh báo dung lượng; camera không có âm thanh vẫn có keyframe, caption, moment; chọn camera cho vlog.
 
@@ -112,7 +113,7 @@ CPU: PC là i5-1135G7 (4 nhân, 8 luồng), RAM 15 GB. Hiện một Pi tốn kho
 
 ## 9. Chia plan
 1. **P3c-1 — lưu trữ và hiển thị**: một bản mỗi đoạn, retention bật 7 ngày, `device.location`, timeline gộp có nhãn và bộ lọc, nhãn vị trí trong tìm kiếm/chat/MCP.
-2. **P3c-2 — thêm camera bất kỳ**: nguồn `stream` (RTSP, MJPEG, URL âm thanh riêng) và `led.kind = "none"` ở agent, `loopi-cameras`, container `cameras`, form thêm/gỡ camera theo loại, "Thử kết nối", cảnh báo dung lượng, "Đang ghi: N camera".
+2. **P3c-2 — thêm camera bất kỳ**: nguồn `stream` (RTSP, MJPEG, URL âm thanh riêng) và `[led] source = "none"` ở agent, `loopi-cameras`, container `cameras`, form thêm/gỡ camera theo loại, "Thử kết nối", cảnh báo dung lượng, "Đang ghi: N camera".
 3. **P3c-3 — xử lý nhiều camera** (sau P3c-2): chép lời từ mic rõ nhất, recap có vị trí, vlog nhiều camera.
 4. **P3c-4 — firmware ESP32 của Loopi** (sau P3c-2, khi chủ dự án có bo ESP32 có camera và mic): MJPEG `/stream` và WAV `/audio` có mật khẩu, đèn sáng đúng lúc có máy đang kéo luồng (D31 cho ESP32), cấu hình WiFi lần đầu. Đây là cách duy nhất có tiếng từ mic ESP32.
 
