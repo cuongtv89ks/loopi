@@ -171,7 +171,7 @@ image and OTA; WiFi by QR with a captive portal and BLE presence move to the bac
 - `feat/p4`: P4a (worktree `/home/soul/loopi-p4`); `feat/phase2` is at its e0045ee, the rest are agent/OS/docs commits.
 - `feat/p3c1`: P3c-1 (worktree `/home/soul/loopi-p3c`), merged into `main` (PR #3).
 - `feat/p3c3`: P3c-3 (worktree `/home/soul/loopi-p3c3`), with main (the P3c-2 sign-in fix) merged in;
-  `feat/phase2` was fast-forwarded to it for the deploy. Not yet merged into `main` or pushed (ask the owner).
+  `feat/phase2` was fast-forwarded to it for the deploy; merged into `main` (fast-forward) and pushed on 2026-10-21.
 - `feat/p3c2`: P3c-2 (worktree `/home/soul/loopi-p3c2`); `feat/phase2` was fast-forwarded to it for the deploy;
   merged into `main` (fast-forward) and `main` pushed on 2026-10-20.
 
