@@ -1,7 +1,7 @@
 # Loopi P3c — nhiều camera (thiết kế)
 
 - **Ngày:** 2026-10-19
-- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết sau khi P4 kết thúc
+- **Trạng thái:** chủ dự án duyệt ngày 2026-10-19; plan của từng phase (P3c-1 … P3c-4) viết sau khi P4 kết thúc; P3c-1 có plan ngày 2026-10-19 (`plans/2026-10-19-p3c1-storage-display.md`)
 - **Spec gốc (bắt buộc):** `docs/superpowers/specs/2026-10-14-loopi-design.md`. Tài liệu này thay cho các quyết định tạm ngày 2026-10-18 trong `2026-10-18-p3c-multicam-decisions.md` ở những điểm nó sửa (cầu nối, lưu trữ). Nếu có chỗ mâu thuẫn, spec gốc thắng, trừ các quyết định mới D30–D36 dưới đây; các plan P3c sửa spec gốc cho khớp.
 - **Mục tiêu:** thêm được **camera bất kỳ trong LAN** vào brain — camera IP, điện thoại (iPhone, Android) chạy app phát luồng, bo ESP32 có camera — và **mọi camera đã thêm đều đi qua cùng luồng phân tích như Pi**: keyframe, caption, chép lời (khi camera có âm thanh), moment, chương, recap, tìm kiếm, hỏi đáp, MCP và vlog. Bộ camera đầu tiên của chủ dự án: 1 camera IP Imou và 2 iPhone cũ; sau đó có thể thêm điện thoại Android và ESP32.
 
@@ -17,7 +17,7 @@
 | D36 | Thêm camera bất kỳ | Form "Thêm camera" có **loại camera**: *Camera IP (RTSP)*, *Điện thoại — iPhone/Android (app phát RTSP hoặc MJPEG)*, *ESP32 có camera (MJPEG qua HTTP)*, *Khác (URL RTSP/HTTP tuỳ ý)*. Mỗi loại điền sẵn mẫu URL và mặc định (có âm thanh hay không). Nút **"Thử kết nối"** kiểm tra luồng trước khi lưu và cho biết độ phân giải, số khung hình/giây, có âm thanh hay không. Mọi camera đã thêm được phân tích như nhau; camera nào không có luồng âm thanh thì chỉ được phân tích hình. Một camera có thể có **URL âm thanh riêng** (luồng WAV/PCM qua HTTP) bên cạnh URL hình — đó là cách ESP32 gửi tiếng từ mic của nó. Không giới hạn cứng số camera; trang Thiết bị cho biết dung lượng 7 ngày ước tính so với chỗ trống trên SSD và cảnh báo khi vượt (2026-10-19) |
 | D35 | Vlog nhiều camera | Một vlog mỗi ngày. Với mỗi 10 phút có hoạt động, phần tua nhanh lấy camera có nhiều moment nhất trong 10 phút đó; ảnh highlight có thể từ bất kỳ camera nào; mỗi cảnh có nhãn vị trí nhỏ |
 
-Giữ nguyên từ 2026-10-18: điện thoại dùng app phát luồng có sẵn (không viết app riêng), cắm sạc, bật Guided Access (iPhone) hoặc ghim màn hình (Android); **mọi camera có âm thanh đều ghi âm** (chủ dự án đã biết rủi ro theo 통신비밀보호법, §11 spec gốc); khi có BLE presence (P4c), nó giới hạn ghi âm trên **mọi** camera.
+Giữ nguyên từ 2026-10-18: điện thoại dùng app phát luồng có sẵn (không viết app riêng), cắm sạc, bật Guided Access (iPhone) hoặc ghim màn hình (Android); **mọi camera có âm thanh đều ghi âm** (chủ dự án đã biết rủi ro theo 통신비밀보호법, §11 spec gốc); khi có BLE presence (P4c), nó giới hạn ghi âm trên **mọi** camera. BLE presence đã chuyển vào backlog (D37, 2026-10-19), nên hiện không có giới hạn này.
 
 Chủ dự án chốt thêm (2026-10-19, sửa cùng ngày): **ESP32 có camera và mic được thêm như một camera mạng** (D36). ESP32-S3 không mã hoá H.264 bằng phần cứng, nên nó phát hình dạng MJPEG qua HTTP và PC chuyển sang H.264 như mọi camera mạng. Luồng MJPEG không mang âm thanh, nên tiếng từ mic của ESP32 đi qua một **luồng âm thanh riêng** (WAV 16 kHz mono qua HTTP). Firmware có sẵn (ví dụ `CameraWebServer` của Espressif, cổng 81, `/stream`) chỉ có hình: camera đó được phân tích hình. Để có tiếng và đèn báo đúng lúc ghi, Loopi có **firmware ESP32 riêng (P3c-4)**: MJPEG `/stream` và WAV `/audio` có mật khẩu, đèn sáng đúng lúc PC đang kéo luồng, cấu hình WiFi lần đầu. Thiết bị Loopi đầy đủ chạy trên ESP32 (mTLS, hàng đợi trên thẻ, gửi thẳng lên brain) vẫn ở backlog.
 
@@ -94,7 +94,7 @@ CPU: PC là i5-1135G7 (4 nhân, 8 luồng), RAM 15 GB. Hiện một Pi tốn kho
 - D31 cho camera mạng; Pi giữ nguyên bất biến LED.
 - Mật khẩu RTSP (ví dụ mã an toàn của Imou) chỉ nằm trong `loopi.toml` của camera, quyền 600, không vào git, không log, không hiện lại trên web, không vào heartbeat.
 - "Quên khoảng thời gian" áp dụng cho mọi camera. Gỡ camera thu hồi thiết bị ngay.
-- Ghi âm trên mọi camera theo quyết định của chủ dự án; P4c (BLE presence) sẽ giới hạn ghi âm trên mọi camera.
+- Ghi âm trên mọi camera theo quyết định của chủ dự án. BLE presence (P4c) đã chuyển vào backlog (D37), nên ghi âm chỉ bị giới hạn bằng lịch, nút Pause và công tắc audio.
 
 ## 7. Kiểm thử
 - Agent: nguồn `stream` với script ffmpeg giả (như `rpicam-vid` giả hiện có) và file mẫu phát lặp — một video H.264, một luồng MJPEG và một luồng WAV qua HTTP làm URL âm thanh riêng — không cần RTSP hay ESP32 thật; nguồn audio từ pipe; camera không có âm thanh không mở nguồn audio; `led.kind = "none"` bị từ chối với nguồn `csi`.
