@@ -35,3 +35,11 @@ async def test_a_revoked_camera_is_not_counted(client, pool, pki_settings):
     assert await devices.revoke_device(pool, a["device_id"])
     r = await client.get("/status/recording")
     assert r.status_code == 200 and '<a href="/devices">Đang ghi: 0 camera</a>' in r.text
+
+
+async def test_the_poll_never_touches_the_error_banner(client):
+    text = (await client.get("/settings")).text
+    assert 'const fromPoll = (e) => e.detail.elt.id === "recording-now";' in text
+    for event in ("htmx:beforeRequest", "htmx:responseError", "htmx:sendError"):
+        listener = text.split(f'addEventListener("{event}", (e) => {{', 1)[1]
+        assert listener.lstrip().startswith("if (fromPoll(e)) return;"), event

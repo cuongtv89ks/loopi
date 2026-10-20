@@ -45,14 +45,19 @@
     const HX_ERRORS = {403: "Yêu cầu không hợp lệ", 404: "Không tìm thấy, hãy tải lại trang",
                        409: "Job không còn ở trạng thái lỗi, hãy tải lại trang",
                        422: "Giá trị không hợp lệ, hãy kiểm tra lại"};
+    // The 15 s "Đang ghi" poll is not an owner request: it never clears or shows the banner.
+    const fromPoll = (e) => e.detail.elt.id === "recording-now";
     document.body.addEventListener("htmx:responseError", (e) => {
+      if (fromPoll(e)) return;
       document.getElementById("hx-error").textContent =
         HX_ERRORS[e.detail.xhr.status] || "Có lỗi, thử lại";
     });
-    document.body.addEventListener("htmx:sendError", () => {
+    document.body.addEventListener("htmx:sendError", (e) => {
+      if (fromPoll(e)) return;
       document.getElementById("hx-error").textContent = "Có lỗi, thử lại";
     });
-    document.body.addEventListener("htmx:beforeRequest", () => {
+    document.body.addEventListener("htmx:beforeRequest", (e) => {
+      if (fromPoll(e)) return;
       document.getElementById("hx-error").textContent = "";
     });
     // A link to one moment (a chat citation) opens the folded section that holds it.
