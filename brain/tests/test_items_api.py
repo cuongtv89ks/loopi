@@ -204,30 +204,18 @@ async def test_store_fsyncs_part_file_then_directory(pool, pki_settings, device,
     async def chunks():
         yield body
 
-    real = items._fsync_path
+    real = items.fsync_path
     calls = []
 
     def recording_fsync(path):
         calls.append(path)
         real(path)
 
-    monkeypatch.setattr(items, "_fsync_path", recording_fsync)
+    monkeypatch.setattr(items, "fsync_path", recording_fsync)
     status, _ = await items.store_item(pool, pki_settings, device["device_id"], header, chunks())
     assert status == 201
     # fsync'd the .part file first, then the parent directory after the rename
     assert calls[0].name.endswith(".part") and calls[1].is_dir()
-
-
-def test_fsync_path_syncs_file_and_directory(tmp_path, monkeypatch):
-    from loopi_brain import items
-
-    synced = []
-    monkeypatch.setattr(items.os, "fsync", lambda fd: synced.append(fd))
-    f = tmp_path / "a"
-    f.write_bytes(b"x")
-    items._fsync_path(f)
-    items._fsync_path(tmp_path)
-    assert len(synced) == 2
 
 
 @pytest.mark.parametrize(

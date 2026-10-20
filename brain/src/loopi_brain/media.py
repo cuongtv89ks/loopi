@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
@@ -75,6 +76,15 @@ def _entry(media_root: Path, rel: str) -> Path:
     return entry
 
 
+def fsync_path(path: Path) -> None:
+    """fsync a file or a directory (blocking) so what was written to it survives a crash; OSError if it cannot."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def remove_files(media_root: Path, rels: list[str]) -> tuple[int, list[str]]:
     """Delete media files (blocking); return (files deleted, paths that could not be deleted). A missing file
     counts as gone; a path outside the media root is refused and reported, never touched; a symlink inside the
@@ -107,7 +117,11 @@ async def remux_to_mp4(src: Path, dst: Path, fps: int) -> None:
             ["-framerate", str(fps), "-f", "h264", "-i", str(src), "-c", "copy", "-movflags", "+faststart", str(tmp)],
             FFMPEG_TIMEOUT_S,
         )
+        # tmp -> fsync -> rename -> fsync the directory: the MP4 is the one copy that stays (D32), so it is on disk
+        # under its final name before anything else relies on it
+        await anyio.to_thread.run_sync(fsync_path, tmp)
         tmp.replace(dst)
+        await anyio.to_thread.run_sync(fsync_path, dst.parent)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

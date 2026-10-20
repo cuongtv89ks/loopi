@@ -1,6 +1,8 @@
 import asyncio
 import hashlib
+import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -76,6 +78,52 @@ async def test_remux_of_garbage_raises(tmp_path):
         await media.remux_to_mp4(src, tmp_path / "bad.mp4", fps=2)
     assert not (tmp_path / "bad.mp4").exists()
     assert not list(tmp_path.rglob("*.part.mp4"))
+
+
+async def test_remux_flushes_the_mp4_before_and_after_the_rename(tmp_path, monkeypatch):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg required")
+    src = tmp_path / "in.h264"
+    src.write_bytes(NO_VUI_FIXTURE.read_bytes())
+    dst = tmp_path / "out" / "x.mp4"
+    events = []
+    real = os.fsync
+
+    def recording(fd):
+        kind = "dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+        events.append((kind, dst.exists()))  # was the final name there yet?
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", recording)
+    await media.remux_to_mp4(src, dst, fps=2)
+    # the .part file is flushed before it takes its final name, the directory after
+    assert events == [("file", False), ("dir", True)]
+
+
+async def test_a_remux_whose_flush_fails_leaves_no_mp4(tmp_path, monkeypatch):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg required")
+    src = tmp_path / "in.h264"
+    src.write_bytes(NO_VUI_FIXTURE.read_bytes())
+    dst = tmp_path / "out" / "x.mp4"
+
+    def failing(fd):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(os, "fsync", failing)
+    with pytest.raises(OSError):
+        await media.remux_to_mp4(src, dst, fps=2)
+    assert not dst.exists() and not list(tmp_path.rglob("*.part.mp4"))
+
+
+def test_fsync_path_syncs_file_and_directory(tmp_path, monkeypatch):
+    synced = []
+    monkeypatch.setattr(media.os, "fsync", lambda fd: synced.append(fd))
+    f = tmp_path / "a"
+    f.write_bytes(b"x")
+    media.fsync_path(f)
+    media.fsync_path(tmp_path)
+    assert len(synced) == 2
 
 
 async def test_uploaded_video_becomes_ready(client, pool, pki_settings, h264_sample):

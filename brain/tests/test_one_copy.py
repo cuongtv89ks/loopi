@@ -1,5 +1,9 @@
 import asyncio
 import datetime as dt
+import errno
+import logging
+import os
+import stat
 
 import pytest
 
@@ -68,6 +72,69 @@ async def test_a_segment_whose_mp4_is_missing_or_empty_keeps_its_raw_file(pool, 
     assert _on_disk(pki_settings, seg["raw"])
     assert (await fetch_one(pool, "SELECT h264_deleted_at FROM item WHERE id = %s", (seg["id"],)))[
         "h264_deleted_at"] is None
+
+
+def _record_fsyncs(monkeypatch, events: list) -> None:
+    """Record every os.fsync as ("fsync", "dir" | "file") in ``events`` and let it run for real."""
+    real = os.fsync
+
+    def recording(fd):
+        events.append(("fsync", "dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"))
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", recording)
+
+
+async def test_the_mp4_is_flushed_before_its_raw_file_goes(pool, pki_settings, dev, monkeypatch):
+    first = await _segment(pool, pki_settings, dev["device_id"])
+    second = await _segment(pool, pki_settings, dev["device_id"], start=NINE + dt.timedelta(minutes=1))
+    events: list = []
+    _record_fsyncs(monkeypatch, events)
+    real_remove = one_copy.media.remove_files
+
+    def recording_remove(root, rels):
+        events.append(("remove", rels[0]))
+        return real_remove(root, rels)
+
+    monkeypatch.setattr(one_copy.media, "remove_files", recording_remove)
+    assert await one_copy.drop_raw_video(pool, pki_settings) == one_copy.OneCopyResult(dropped=2, kept=0)
+    # per segment: its MP4 file is flushed, then (once per directory and batch) the directory, then the raw file
+    assert events == [("fsync", "file"), ("fsync", "dir"), ("remove", first["raw"]),
+                      ("fsync", "file"), ("remove", second["raw"])]
+
+
+@pytest.mark.parametrize("what", ["file", "dir"])
+async def test_an_mp4_that_cannot_be_flushed_keeps_its_raw_file(pool, pki_settings, dev, monkeypatch, what):
+    seg = await _segment(pool, pki_settings, dev["device_id"])
+    real = os.fsync
+
+    def failing(fd):
+        if ("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file") == what:
+            raise OSError(errno.EIO, "Input/output error")
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", failing)
+    assert await one_copy.drop_raw_video(pool, pki_settings) == one_copy.OneCopyResult(dropped=0, kept=1)
+    assert _on_disk(pki_settings, seg["raw"]) and _on_disk(pki_settings, seg["view"])
+    assert (await fetch_one(pool, "SELECT h264_deleted_at FROM item WHERE id = %s", (seg["id"],)))[
+        "h264_deleted_at"] is None
+    monkeypatch.undo()
+    assert (await one_copy.drop_raw_video(pool, pki_settings)).dropped == 1  # the next run flushes and drops it
+    assert not _on_disk(pki_settings, seg["raw"])
+
+
+async def test_segments_without_a_usable_mp4_are_logged_once_per_run(pool, pki_settings, dev, caplog):
+    segs = [await _segment(pool, pki_settings, dev["device_id"], start=NINE + dt.timedelta(minutes=n), mp4=None)
+            for n in range(7)]
+    ok = await _segment(pool, pki_settings, dev["device_id"], start=NINE + dt.timedelta(hours=1))
+    with caplog.at_level(logging.INFO, logger=one_copy.log.name):
+        result = await one_copy.drop_raw_video(pool, pki_settings)
+    assert result == one_copy.OneCopyResult(dropped=1, kept=7) and not _on_disk(pki_settings, ok["raw"])
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    text = warnings[0].getMessage()
+    assert "7" in text and all(s["id"] in text for s in segs[:5])  # the count, and the first five ids
+    assert not any(s["id"] in text for s in segs[5:])
 
 
 async def test_audio_markers_and_expired_segments_are_not_touched(pool, pki_settings, dev):

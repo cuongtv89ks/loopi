@@ -4,7 +4,6 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import os
 import re
 import secrets
 import shutil
@@ -18,6 +17,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from . import volume
 from .config import Settings
+from .media import fsync_path
 
 KIND_CONTENT_TYPES = {"video": "video/h264", "audio": "audio/ogg", "marker": "application/json"}
 KIND_EXT = {"video": "h264", "audio": "opus", "marker": "json"}
@@ -151,15 +151,6 @@ def _marker_meta(path: Path, size: int) -> dict:
     return meta
 
 
-def _fsync_path(path: Path) -> None:
-    """fsync a file or a directory so the data survives a crash."""
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 async def store_item(
     pool: AsyncConnectionPool,
     settings: Settings,
@@ -194,7 +185,7 @@ async def store_item(
         elif header.kind == "marker":
             meta, view_path = _marker_meta(tmp, size), None
 
-        await anyio.to_thread.run_sync(_fsync_path, tmp)
+        await anyio.to_thread.run_sync(fsync_path, tmp)
         async with pool.connection() as conn:
             async with conn.transaction():
                 # Serialise concurrent uploads of the same id.
@@ -204,7 +195,7 @@ async def store_item(
                     return _duplicate_or_conflict(existing, device_id, header)
                 tmp.replace(final)
                 try:
-                    await anyio.to_thread.run_sync(_fsync_path, final.parent)
+                    await anyio.to_thread.run_sync(fsync_path, final.parent)
                     await conn.execute(
                         "INSERT INTO item (id, device_id, kind, started_at, ended_at, sha256, size_bytes,"
                         " raw_path, view_path, meta, status)"
