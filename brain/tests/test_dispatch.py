@@ -413,6 +413,7 @@ async def test_periodic_tasks_are_registered():
         (jobs.DISPATCH_PENDING, "* * * * *"),
         (jobs.RETRY_STALLED, "*/10 * * * *"),
         (jobs.REMOVE_OLD_JOBS, "15 4 * * *"),
+        (jobs.GROUP_SPEECH, "* * * * *"),
     } <= periodic
 
 

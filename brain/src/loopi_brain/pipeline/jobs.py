@@ -16,6 +16,7 @@ TASK_MODULES = [
     "loopi_brain.pipeline.moments",
     "loopi_brain.pipeline.caption",
     "loopi_brain.pipeline.asr",
+    "loopi_brain.pipeline.grouping",
     "loopi_brain.pipeline.chapters",
     "loopi_brain.pipeline.recap",
     "loopi_brain.pipeline.vlogs",
