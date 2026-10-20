@@ -27,7 +27,7 @@ def _item_job(kind: str, device_id: str) -> tuple[str, str, str | None]:
     if kind == "video":
         return jobs.ANALYZE_VIDEO, "video", f"video:{device_id}"  # keyframe order per device
     if kind == "audio":
-        return jobs.TRANSCRIBE_AUDIO, "audio", "asr"  # one Whisper run at a time
+        return jobs.DETECT_SPEECH, "audio", None  # VAD + SNR; Whisper runs later under "asr" (grouping.group_speech)
     return jobs.INDEX_MARKER, "light", None
 
 

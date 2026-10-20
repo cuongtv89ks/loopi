@@ -21,6 +21,8 @@ FAILED_LIMIT = 100
 TASK_LABELS = {
     jobs.ANALYZE_VIDEO: "Phân tích video",
     jobs.CAPTION_KEYFRAME: "Mô tả khung hình",
+    jobs.DETECT_SPEECH: "Tìm tiếng nói",
+    jobs.GROUP_SPEECH: "Ghép tiếng nói giữa các mic",
     jobs.TRANSCRIBE_AUDIO: "Nhận dạng giọng nói",
     jobs.INDEX_MARKER: "Ghi nhận đánh dấu",
     jobs.EMBED_MOMENTS: "Tạo embedding",

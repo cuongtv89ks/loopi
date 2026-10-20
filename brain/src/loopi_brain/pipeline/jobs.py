@@ -26,6 +26,8 @@ TASK_MODULES = [
 
 ANALYZE_VIDEO = "analyze_video"
 CAPTION_KEYFRAME = "caption_keyframe"
+DETECT_SPEECH = "detect_speech"
+GROUP_SPEECH = "group_speech"
 TRANSCRIBE_AUDIO = "transcribe_audio"
 INDEX_MARKER = "index_marker"
 EMBED_MOMENTS = "embed_moments"
@@ -42,13 +44,13 @@ PLAN_VLOGS = "plan_vlogs"
 WRITE_VLOG_SCRIPT = "write_vlog_script"
 RENDER_VLOG = "render_vlog"
 RUN_EVAL = "run_eval"
-PIPELINE_TASKS = (ANALYZE_VIDEO, CAPTION_KEYFRAME, TRANSCRIBE_AUDIO, INDEX_MARKER, EMBED_MOMENTS)
+PIPELINE_TASKS = (ANALYZE_VIDEO, CAPTION_KEYFRAME, DETECT_SPEECH, TRANSCRIBE_AUDIO, INDEX_MARKER, EMBED_MOMENTS)
 # Runs that start again by themselves (the dispatcher asks for embedding runs; the scheduler starts
 # each periodic tick; the hourly planner asks for each day's chapters again), so a failed one is never
 # retried and only the newest failed one is kept.
 AUTO_RERUN_TASKS = (
     EMBED_MOMENTS, DISPATCH_PENDING, RETRY_STALLED, REMOVE_OLD_JOBS, PLAN_CHAPTERS, BUILD_CHAPTERS, PLAN_RECAPS,
-    PLAN_VLOGS, APPLY_RETENTION, DROP_RAW_VIDEO,
+    PLAN_VLOGS, APPLY_RETENTION, DROP_RAW_VIDEO, GROUP_SPEECH,
 )
 # The text models run one job at a time (chapters, recaps): each one takes most of the CPU. They also wait behind
 # every live job (video, captions, ASR, markers, embeddings: priority 0) for a free worker slot, so recordings keep

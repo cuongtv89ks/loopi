@@ -140,8 +140,9 @@ async def test_a_waiting_evaluation_never_goes_ahead_of_a_live_transcription(poo
     await run_jobs(make_ctx(pool, pki_settings, transcriber=FakeTranscriber(*HEARD)))
     order = await fetch_all(pool, "SELECT j.task_name FROM procrastinate_events e JOIN procrastinate_jobs j"
                                   " ON j.id = e.job_id WHERE e.type = 'started' ORDER BY e.id")
-    # The live transcription and the embedding of its moment run first, then the four evaluation jobs.
-    assert [r["task_name"] for r in order] == ["transcribe_audio", "embed_moments"] + ["run_eval"] * 4
+    # The live audio's speech detection runs first, then the four evaluation jobs. Until grouping (plan Tasks 4-5)
+    # defers the transcription, the live item stops after its detection: no transcription, no embedding.
+    assert [r["task_name"] for r in order] == ["detect_speech"] + ["run_eval"] * 4
 
 
 async def test_what_a_rule_drops_from_real_speech_is_counted(pool, pki_settings, dev, jobs_open, monkeypatch):

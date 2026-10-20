@@ -43,6 +43,7 @@ def test_every_pipeline_task_is_registered():
     assert set(jobs.PIPELINE_TASKS) | {jobs.DISPATCH_PENDING, jobs.RETRY_STALLED, jobs.REMOVE_OLD_JOBS} <= set(
         jobs.job_app.tasks
     )
+    assert jobs.DETECT_SPEECH in jobs.job_app.tasks  # the audio item's first job (VAD + SNR); Whisper runs after it
 
 
 async def test_a_real_worker_runs_every_stage(pool, pki_settings, dev, jobs_open, monkeypatch):
@@ -60,15 +61,18 @@ async def test_a_real_worker_runs_every_stage(pool, pki_settings, dev, jobs_open
     assert await dispatch.dispatch_pending(pool, ctx.router) == (3, 0)
     await run_jobs(ctx)
 
+    # The audio item stops after its speech detection: grouping (plan Tasks 4-5) will defer the transcription.
     states = await fetch_all(pool, "SELECT id, analysis_state FROM item")
-    assert {r["id"]: r["analysis_state"] for r in states} == {video: "done", audio: "done", marker: "done"}
+    assert {r["id"]: r["analysis_state"] for r in states} == {video: "done", audio: "pending", marker: "done"}
+    regions = await fetch_all(pool, "SELECT item_id, state FROM speech_region")
+    assert [(r["item_id"], r["state"]) for r in regions] == [(audio, "waiting")]
     assert [r["caption"] is not None for r in await fetch_all(pool, "SELECT caption FROM keyframe")] == [True, True]
     found = await fetch_all(pool, "SELECT kind, text, embedding FROM moment ORDER BY ts_start")
-    assert [m["kind"] for m in found] == ["visual", "visual", "speech", "marker"]
+    assert [m["kind"] for m in found] == ["visual", "visual", "marker"]
     assert all(m["embedding"] is not None for m in found)
     statuses = await fetch_all(pool, "SELECT task_name, status FROM procrastinate_jobs")
     assert {r["status"] for r in statuses} == {"succeeded"}
-    assert {r["task_name"] for r in statuses} == set(jobs.PIPELINE_TASKS)
+    assert {r["task_name"] for r in statuses} == set(jobs.PIPELINE_TASKS) - {jobs.TRANSCRIBE_AUDIO}
 
 
 async def test_run_worker_builds_its_context_and_recovers_stalled_jobs(pool, pki_settings, dev, jobs_open, monkeypatch):

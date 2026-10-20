@@ -62,7 +62,7 @@ async def test_defer_item_creates_one_job_per_kind_and_records_it(pool, dev, job
     by_lock = await jobs_by_lock(pool)
     expected = {
         video: (jobs.ANALYZE_VIDEO, "video", f"video:{device_id}"),
-        audio: (jobs.TRANSCRIBE_AUDIO, "audio", "asr"),
+        audio: (jobs.DETECT_SPEECH, "audio", None),  # VAD + SNR first; Whisper runs later under "asr"
         marker: (jobs.INDEX_MARKER, "light", None),
     }
     for item_id, (task, queue, lock) in expected.items():
@@ -121,17 +121,17 @@ async def test_backlog_is_fed_a_few_jobs_at_a_time_and_uploads_skip_the_line(poo
     for n in range(3):
         await insert_item(pool, dev["device_id"], kind="marker", started_at=T0 + dt.timedelta(minutes=n), seconds=0)
     assert await dispatch.dispatch_pending(pool, router) == (23, 0)  # 20 of the audio backlog, every marker
-    assert await dispatch.dispatch_pending(pool, router) == (0, 0)  # 20 transcriptions already wait
+    assert await dispatch.dispatch_pending(pool, router) == (0, 0)  # 20 speech detections already wait
     fresh = await insert_item(pool, dev["device_id"], kind="audio", started_at=T0 + dt.timedelta(days=1))
     assert await dispatch.defer_item(pool, fresh) is not None  # the upload fast path is never capped
-    async with pool.connection() as conn:  # the worker finishes 15 of the 21 waiting transcriptions
+    async with pool.connection() as conn:  # the worker finishes 15 of the 21 waiting detections
         await conn.execute(
             "UPDATE procrastinate_jobs SET status = 'succeeded' WHERE id IN (SELECT id FROM procrastinate_jobs"
-            " WHERE status = 'todo' AND task_name = 'transcribe_audio' ORDER BY id LIMIT 15)"
+            " WHERE status = 'todo' AND task_name = 'detect_speech' ORDER BY id LIMIT 15)"
         )
     assert await dispatch.dispatch_pending(pool, router) == (14, 0)  # topped up to 20 waiting again
     waiting = await fetch_one(
-        pool, "SELECT count(*) AS n FROM procrastinate_jobs WHERE status = 'todo' AND task_name = 'transcribe_audio'"
+        pool, "SELECT count(*) AS n FROM procrastinate_jobs WHERE status = 'todo' AND task_name = 'detect_speech'"
     )
     assert waiting["n"] == 20
 

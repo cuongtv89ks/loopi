@@ -1,4 +1,5 @@
-"""transcribe_audio: level normalisation, then Silero VAD + faster-whisper per speech region (spec §9.2, D19).
+"""detect_speech (Silero VAD + SNR per region, D33) and transcribe_audio: level normalisation, then Silero VAD +
+faster-whisper per speech region (spec §9.2, D19).
 
 Step 4: the raw audio is kept like video (spec D20, 7 days by default); ``retention.py`` then deletes it
 together with its playback copy ``view/<device>/YYYY/MM/DD/<id>.opus`` (see ``media.normalise_audio``).
@@ -19,7 +20,7 @@ import numpy as np
 
 from .. import audio_level, devices
 from ..config import ASR_RULES, Settings
-from . import dispatch, jobs
+from . import dispatch, grouping, jobs, speech
 from .context import PipelineContext, get_context
 from .jobs import job_app
 from .state import error_text, finish_item, item_exists, lock_pending_item, mark_item_done, record_item_error
@@ -311,6 +312,73 @@ def transcribe_file(
         chunk = audio[int(region.start * SAMPLE_RATE): int(region.end * SAMPLE_RATE)]
         results.append((region, transcriber.transcribe(chunk)))
     return results
+
+
+def detect_file(path: Path, max_gain_db: float = audio_level.MAX_GAIN_DB,
+                vad_threshold: float = VAD_THRESHOLD) -> list[tuple[Region, float]]:
+    """Blocking: decode; find speech on the level-normalised audio (what Whisper will hear); measure each region's
+    SNR on the raw audio against this microphone's own noise (D33, plan R5)."""
+    raw = load_audio(path)
+    noise = speech.noise_level(raw)
+    regions = speech_regions(normalise(raw, max_gain_db), vad_threshold)
+    return [(r, speech.snr_db(raw, r.start, r.end, noise)) for r in regions]
+
+
+async def _detect(ctx: PipelineContext, item_id: str) -> int:
+    pool = ctx.pool
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT device_id, kind, started_at, raw_path, analysis_state FROM item WHERE id = %s", (item_id,)
+        )
+        item = await cur.fetchone()
+    if item is None or item["kind"] != "audio" or item["analysis_state"] != "pending":
+        return 0
+    path = ctx.settings.media_root / item["raw_path"]
+    if not path.is_file():
+        await finish_item(pool, item_id, "skipped")
+        return 0
+    found = await anyio.to_thread.run_sync(
+        detect_file, path, ctx.settings.asr_max_gain_db, ctx.settings.asr_vad_threshold
+    )
+    start: dt.datetime = item["started_at"]
+    async with pool.connection() as conn, conn.transaction():
+        if not await lock_pending_item(conn, item_id):
+            return 0
+        await conn.execute("DELETE FROM speech_region WHERE item_id = %s", (item_id,))
+        for region, snr in found:
+            await conn.execute(
+                "INSERT INTO speech_region (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (devices.new_id(), item_id, item["device_id"], start + dt.timedelta(seconds=region.start),
+                 start + dt.timedelta(seconds=region.end), region.start, region.end - region.start, snr),
+            )
+        await conn.execute("UPDATE item SET speech_detected_at = now() WHERE id = %s", (item_id,))
+        if not found:
+            await mark_item_done(conn, item_id)
+    if found:
+        try:
+            await grouping.group_speech(pool)
+        except Exception:  # the periodic group_speech tick tries again within a minute
+            log.exception("grouping after the detection of item %s failed", item_id)
+    log.info("item %s: %d speech regions", item_id, len(found))
+    return len(found)
+
+
+async def detect_speech(ctx: PipelineContext, item_id: str) -> int:
+    """Find and measure the speech of a pending audio item; return the number of regions stored."""
+    try:
+        return await _detect(ctx, item_id)
+    except Exception as exc:
+        if not await item_exists(ctx.pool, item_id):
+            log.info("item %s was deleted during its speech detection: %s", item_id, error_text(exc))
+            return 0
+        await record_item_error(ctx.pool, item_id, exc)
+        raise
+
+
+@job_app.task(name=jobs.DETECT_SPEECH, queue="audio", retry=jobs.RETRY)
+async def detect_speech_job(item_id: str) -> None:
+    await detect_speech(get_context(), item_id)
 
 
 async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
