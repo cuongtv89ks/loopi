@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use loopi_agent::button::Press;
+use loopi_agent::cli::{run_config_path, DEFAULT_CONFIG};
 use loopi_agent::clock::SystemClock;
 use loopi_agent::config::{import_boot_config, Config};
 use loopi_agent::disk::StatvfsUsage;
@@ -23,7 +24,6 @@ use loopi_agent::tls;
 use tokio::sync::{mpsc, watch};
 
 const PAIR_BEAT: std::time::Duration = std::time::Duration::from_secs(5);
-const DATA_CONFIG: &str = "/data/config/loopi.toml";
 #[cfg(target_os = "linux")]
 const WATCHDOG_PING: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -34,10 +34,13 @@ fn main() -> ExitCode {
         .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
-        None | Some("run") => runtime().and_then(|rt| rt.block_on(agent_main())),
+        None => runtime().and_then(|rt| rt.block_on(agent_main(PathBuf::from(DEFAULT_CONFIG)))),
+        Some("run") => run_config_path(&args[1..])
+            .map_err(|e| anyhow::anyhow!(e))
+            .and_then(|path| runtime().and_then(|rt| rt.block_on(agent_main(path)))),
         Some("provision") => provision(&args[1..]),
         Some("selftest") => runtime().and_then(|rt| {
-            let checks = rt.block_on(run_selftest(Path::new(DATA_CONFIG)));
+            let checks = rt.block_on(run_selftest(Path::new(DEFAULT_CONFIG)));
             print!("{}", format_report(&checks));
             match failed_count(&checks) {
                 0 => Ok(()),
@@ -45,7 +48,7 @@ fn main() -> ExitCode {
             }
         }),
         // systemd's ExecStopPost= after every agent exit: no runtime, pairing or network.
-        Some("led-off") => loopi_agent::led::switch_off(Path::new(DATA_CONFIG)).context("switching the privacy LED off"),
+        Some("led-off") => loopi_agent::led::switch_off(Path::new(DEFAULT_CONFIG)).context("switching the privacy LED off"),
         Some(other) => Err(anyhow::anyhow!("unknown command {other:?}; use run | provision | selftest | led-off")),
     };
     match result {
@@ -212,12 +215,14 @@ fn shutdown_signal() -> Result<watch::Receiver<bool>> {
     Ok(rx)
 }
 
-async fn agent_main() -> Result<()> {
-    let config_path = Path::new(DATA_CONFIG);
+async fn agent_main(config_path: PathBuf) -> Result<()> {
     if !config_path.exists() {
-        bail!("not provisioned: run `loopi-agent provision` first");
+        if config_path == Path::new(DEFAULT_CONFIG) {
+            bail!("not provisioned: run `loopi-agent provision` first");
+        }
+        bail!("config {} not found", config_path.display());
     }
-    let config = Config::load(config_path).with_context(|| format!("loading {DATA_CONFIG}"))?;
+    let config = Config::load(&config_path).with_context(|| format!("loading {}", config_path.display()))?;
     let shutdown = shutdown_signal()?;
     let liveness = Liveness::new();
     liveness.beat();

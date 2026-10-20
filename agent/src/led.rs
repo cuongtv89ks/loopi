@@ -259,11 +259,22 @@ fn led_error(dir: &Path, what: &str, e: io::Error) -> io::Error {
     io::Error::new(e.kind(), format!("LED {}: {what}: {e}", dir.display()))
 }
 
+/// A network camera has no LED that Loopi drives (D31): every write succeeds, so the recording gates open as they do
+/// for a working LED. `Config::validate` allows it only with `capture.source = "stream"`.
+pub struct NullLed;
+
+impl LedDriver for NullLed {
+    fn set(&mut self, _on: bool) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Open the privacy LED `led` names (`gpio` holds the line of an external LED).
 pub fn open(led: &LedConfig, gpio: &GpioConfig) -> io::Result<Box<dyn LedDriver>> {
     match led.source {
         LedSource::Sysfs => Ok(Box::new(SysfsLed::open(&led.path)?)),
         LedSource::Gpio => open_gpio(gpio),
+        LedSource::None => Ok(Box::new(NullLed)),
     }
 }
 
@@ -631,5 +642,12 @@ mod tests {
         })
         .await;
         assert_eq!(out, 7);
+    }
+
+    #[test]
+    fn the_null_led_of_a_network_camera_always_works() {
+        let led_config = LedConfig { source: LedSource::None, ..LedConfig::default() };
+        let mut led = open(&led_config, &GpioConfig::default()).unwrap();
+        assert!(led.set(true).is_ok() && led.set(false).is_ok());
     }
 }

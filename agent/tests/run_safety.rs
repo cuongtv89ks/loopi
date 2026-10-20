@@ -15,7 +15,7 @@ use loopi_agent::recorder::ogg_opus::FRAME_SAMPLES;
 use loopi_agent::run::{run, Deps, Timings};
 use loopi_agent::sysinfo::NoProbe;
 use loopi_agent::testing::{FakeTransport, FixedDisk, SyncedClock, ToneSource};
-use loopi_agent::wire::HeartbeatRequest;
+use loopi_agent::wire::{HeartbeatRequest, RemoteCommand};
 use tokio::sync::{mpsc, watch};
 
 /// Camera double: appends its PID to `spawns` and runs until SIGINT/SIGTERM.
@@ -126,10 +126,19 @@ impl Harness {
     }
 
     fn deps(&self, led: Option<Box<dyn LedDriver>>) -> (Deps, watch::Sender<bool>, watch::Receiver<bool>) {
+        self.deps_with(led, true)
+    }
+
+    /// `audio_enabled` is the provisioned `capture.audio_enabled`.
+    fn deps_with(
+        &self,
+        led: Option<Box<dyn LedDriver>>,
+        audio_enabled: bool,
+    ) -> (Deps, watch::Sender<bool>, watch::Receiver<bool>) {
         let config = Config {
             wifi: None,
             brain: BrainConfig { url: "https://brain.invalid:8443".into(), pair_token: None, ca_fingerprint: None },
-            capture: CaptureConfig { camera_cmd: self.camera.clone(), ..CaptureConfig::default() },
+            capture: CaptureConfig { camera_cmd: self.camera.clone(), audio_enabled, ..CaptureConfig::default() },
             schedule: ScheduleConfig::default(),
             led: LedConfig::default(),
             gpio: GpioConfig::default(),
@@ -294,4 +303,32 @@ async fn unreadable_leftovers_in_every_recovery_path_do_not_stop_the_agent() {
     assert!(kinds.contains(&loopi_agent::item::ItemKind::Video) && kinds.contains(&loopi_agent::item::ItemKind::Audio), "{kinds:?}");
     assert!(run_dir.join("v_000000.h264").exists(), "the unreadable segment is left for the next start");
     assert!(audio_dir.join("01JA2B3C4D5E6F7G8H9J0KMNPR.opus.part").exists(), "audio is never deleted");
+}
+
+/// Privacy (R4): a file without sound is a ceiling. The brain's "audio on" is acknowledged but never reopens the
+/// microphone, and the heartbeat keeps saying that audio is off.
+#[tokio::test]
+async fn a_remote_audio_on_cannot_reopen_a_microphone_the_config_turned_off() {
+    const AUDIO_ON_ID: &str = "01JA2B3C4D5E6F7G8H9J0KMNPQ";
+    let h = Harness::new();
+    h.transport.push_heartbeat(Ok(vec![RemoteCommand {
+        id: AUDIO_ON_ID.into(),
+        kind: "set_config".into(),
+        payload: serde_json::json!({ "audio_enabled": true }),
+    }]));
+    let (deps, stop_tx, stop_rx) = h.deps_with(Some(Box::new(h.led.clone())), false);
+    let agent = tokio::spawn(run(deps, stop_rx));
+
+    let acked = |h: &Harness| h.transport.heartbeats.lock().unwrap().iter().any(|hb| hb.acked_command_ids == [AUDIO_ON_ID]);
+    assert!(eventually(|| acked(&h)).await, "the command reached the agent and was acknowledged");
+    assert!(eventually(|| !camera_pids(&h.spawns).is_empty()).await, "video records: only the sound is off");
+    let after = h.transport.heartbeats.lock().unwrap().len();
+    assert!(eventually(|| h.transport.heartbeats.lock().unwrap().len() >= after + 3).await);
+
+    let heartbeat = h.last_heartbeat();
+    assert!(!heartbeat.audio_enabled && !heartbeat.recording_audio, "{heartbeat:?}");
+    assert_eq!(h.mic_opens.load(Ordering::SeqCst), 0, "the microphone was never opened");
+
+    stop_tx.send(true).unwrap();
+    agent.await.unwrap().unwrap();
 }

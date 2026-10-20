@@ -32,6 +32,38 @@ const _: () = assert!(SEGMENT_SECONDS_MAX <= CONTRACT_MAX_SEGMENT_SECONDS);
 pub const DEFAULT_AUDIO_GAIN_DB: f32 = 20.0;
 pub const MAX_AUDIO_GAIN_DB: f32 = 36.0;
 
+/// The program `capture.camera_cmd` names when nothing else is configured: the Pi's camera.
+pub const DEFAULT_CAMERA_CMD: &str = "rpicam-vid";
+
+/// Where video and sound come from (P3c design §3, D30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureSource {
+    /// The Pi's CSI camera through rpicam-vid and a USB microphone through ALSA.
+    #[default]
+    Csi,
+    /// A network camera: ffmpeg pulls `stream_url` (RTSP, or MJPEG over HTTP), and for sound `audio_url` or the same
+    /// stream.
+    Stream,
+}
+
+/// A secret kept in a config file: written as it is, never shown by `Debug`.
+#[derive(Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(pub String);
+
+impl Secret {
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_empty() { "\"\"" } else { "\"***\"" })
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("cannot access {path}: {source}")]
@@ -98,6 +130,15 @@ pub struct CaptureConfig {
     pub audio_device: String,
     pub audio_gain_db: f32,
     pub camera_cmd: String,
+    pub source: CaptureSource,
+    /// `stream`: the camera's address without credentials (rtsp://, http:// or https://).
+    pub stream_url: String,
+    pub stream_username: String,
+    pub stream_password: Secret,
+    /// `stream`: a separate sound stream (WAV or PCM over HTTP, as the Loopi ESP32 firmware serves); the camera's
+    /// stream itself when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_url: Option<String>,
 }
 
 impl Default for CaptureConfig {
@@ -111,7 +152,23 @@ impl Default for CaptureConfig {
             audio_enabled: true,
             audio_device: "auto".into(),
             audio_gain_db: DEFAULT_AUDIO_GAIN_DB,
-            camera_cmd: "rpicam-vid".into(),
+            camera_cmd: DEFAULT_CAMERA_CMD.into(),
+            source: CaptureSource::Csi,
+            stream_url: String::new(),
+            stream_username: String::new(),
+            stream_password: Secret::default(),
+            audio_url: None,
+        }
+    }
+}
+
+impl CaptureConfig {
+    /// The program that records video: `camera_cmd`, except that a network camera with the Pi's default runs ffmpeg.
+    pub fn recorder_cmd(&self) -> &str {
+        if self.source == CaptureSource::Stream && self.camera_cmd == DEFAULT_CAMERA_CMD {
+            "ffmpeg"
+        } else {
+            &self.camera_cmd
         }
     }
 }
@@ -145,6 +202,8 @@ pub enum LedSource {
     Sysfs,
     /// An external LED on line `gpio.led` of `gpio.chip`.
     Gpio,
+    /// No LED Loopi controls: a network camera (D31). Only allowed with `capture.source = "stream"`.
+    None,
 }
 
 /// `[led]`: which LED is the privacy LED. The default needs no config (the ACT LED).
@@ -225,6 +284,15 @@ impl Config {
                 self.led.path
             ));
         }
+        if self.led.source == LedSource::None && self.capture.source != CaptureSource::Stream {
+            return invalid("led.source = \"none\" is only allowed for a network camera (capture.source = \"stream\")".into());
+        }
+        if self.capture.source == CaptureSource::Stream {
+            check_stream_url("capture.stream_url", &self.capture.stream_url).map_err(ConfigError::Invalid)?;
+            if let Some(url) = &self.capture.audio_url {
+                check_stream_url("capture.audio_url", url).map_err(ConfigError::Invalid)?;
+            }
+        }
         let c = &self.capture;
         if !(1..=30).contains(&c.video_fps) {
             return invalid(format!("capture.video_fps must be 1..=30 (got {})", c.video_fps));
@@ -282,6 +350,30 @@ pub fn normalize_fingerprint(raw: &str) -> Option<String> {
         .collect::<String>()
         .to_ascii_lowercase();
     is_hex64(&cleaned).then_some(cleaned)
+}
+
+const STREAM_URL_MAX: usize = 1000;
+
+/// A network camera's address: rtsp://, http:// or https://, a host, no spaces or control characters, and no
+/// credentials (they live in `stream_username`/`stream_password`, so the address can be shown and logged).
+fn check_stream_url(key: &str, url: &str) -> Result<(), String> {
+    let Some(rest) = ["rtsp://", "http://", "https://"].iter().find_map(|s| url.strip_prefix(s)) else {
+        return Err(format!("{key} must start with rtsp://, http:// or https:// (got {} characters)", url.len()));
+    };
+    if url.len() > STREAM_URL_MAX {
+        return Err(format!("{key} is longer than {STREAM_URL_MAX} characters"));
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!("{key} must not contain spaces or control characters"));
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err(format!("{key} must not hold credentials; put them in capture.stream_username and stream_password"));
+    }
+    if authority.is_empty() {
+        return Err(format!("{key} has no host"));
+    }
+    Ok(())
 }
 
 fn validate_wifi(wifi: &WifiConfig) -> Result<(), String> {
@@ -636,5 +728,85 @@ mod tests {
         assert_eq!(import_boot_config(&boot, &data).unwrap(), ImportOutcome::Imported);
         // Data copy now exists and nothing secret remains: not fresh any more.
         assert_eq!(import_boot_config(&boot, &data).unwrap(), ImportOutcome::AlreadyImported);
+    }
+
+    const STREAM: &str = r#"
+[brain]
+url = "https://proxy:8443"
+[capture]
+source = "stream"
+stream_url = "rtsp://192.0.2.10:554/cam/realmonitor?channel=1&subtype=0"
+stream_username = "admin"
+stream_password = "S3cr3t"
+audio_gain_db = 0.0
+[led]
+source = "none"
+[paths]
+data_dir = "/srv/loopi/cameras/01J0000000000000000000000A/data"
+"#;
+
+    #[test]
+    fn a_network_camera_config_parses_and_round_trips() {
+        let c = Config::parse(STREAM).unwrap();
+        assert_eq!(c.capture.source, CaptureSource::Stream);
+        assert_eq!(c.capture.stream_password.expose(), "S3cr3t");
+        assert_eq!(c.capture.audio_url, None);
+        assert_eq!(c.led.source, LedSource::None);
+        assert_eq!(c.capture.recorder_cmd(), "ffmpeg");
+        assert_eq!(Config::parse(&toml::to_string(&c).unwrap()).unwrap(), c);
+    }
+
+    #[test]
+    fn the_password_never_shows_in_debug_output() {
+        let c = Config::parse(STREAM).unwrap();
+        let shown = format!("{c:?}");
+        assert!(!shown.contains("S3cr3t") && shown.contains("\"***\""), "{shown}");
+        assert_eq!(format!("{:?}", Secret::default()), "\"\"");
+    }
+
+    #[test]
+    fn a_pi_config_is_unchanged() {
+        let c = Config::parse("[brain]\nurl = \"https://brain.lan:8443\"\n").unwrap();
+        assert_eq!(c.capture.source, CaptureSource::Csi);
+        assert_eq!(c.capture.recorder_cmd(), "rpicam-vid");
+        assert!(!toml::to_string(&c).unwrap().contains("audio_url"));
+    }
+
+    #[test]
+    fn a_custom_camera_cmd_wins_for_a_stream() {
+        let mut c = Config::parse(STREAM).unwrap();
+        c.capture.camera_cmd = "/opt/ffmpeg/bin/ffmpeg".into();
+        assert_eq!(c.capture.recorder_cmd(), "/opt/ffmpeg/bin/ffmpeg");
+    }
+
+    #[test]
+    fn bad_network_camera_configs_are_refused() {
+        let cases = [
+            (r#"[led]
+source = "none""#, "only allowed for a network camera"),
+            (r#"[capture]
+source = "stream""#, "capture.stream_url"),
+            (r#"[capture]
+source = "stream"
+stream_url = "ftp://192.0.2.10/x""#, "rtsp://, http:// or https://"),
+            (r#"[capture]
+source = "stream"
+stream_url = "rtsp://admin:pw@192.0.2.10/x""#, "stream_username"),
+            (r#"[capture]
+source = "stream"
+stream_url = "rtsp:///x""#, "host"),
+            (r#"[capture]
+source = "stream"
+stream_url = "rtsp://192.0.2.10/a b""#, "spaces"),
+            (r#"[capture]
+source = "stream"
+stream_url = "rtsp://192.0.2.10/x"
+audio_url = "http://u:p@192.0.2.10/audio""#, "stream_username"),
+        ];
+        for (body, needle) in cases {
+            let text = format!("[brain]\nurl = \"https://proxy:8443\"\n{body}\n");
+            let err = Config::parse(&text).unwrap_err().to_string();
+            assert!(err.contains(needle), "{body:?} -> {err}");
+        }
     }
 }

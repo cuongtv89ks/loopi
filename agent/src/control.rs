@@ -61,6 +61,15 @@ pub fn parse_remote_command(kind: &str, payload: &Value) -> Result<Command, Stri
     }
 }
 
+/// Privacy (R4): `capture.audio_enabled = false` in the file is a ceiling. A remote "audio on" (or any other path that
+/// turns sound on) cannot reopen the microphone over it; the agent turns it off instead.
+pub fn cap_audio(command: Command, config_audio_enabled: bool) -> Command {
+    match command {
+        Command::SetAudio(true) if !config_audio_enabled => Command::SetAudio(false),
+        other => other,
+    }
+}
+
 /// Persisted state. A missing file silently yields defaults. Any other read error or a corrupt
 /// file is logged with the path and fails closed: paused (the user may have paused; the brain can
 /// resume), with `audio_enabled` from the config.
@@ -239,5 +248,13 @@ mod tests {
                 "bits {bits:07b}"
             );
         }
+    }
+
+    #[test]
+    fn a_file_without_sound_is_a_ceiling_for_remote_commands() {
+        assert_eq!(cap_audio(Command::SetAudio(true), false), Command::SetAudio(false));
+        assert_eq!(cap_audio(Command::SetAudio(true), true), Command::SetAudio(true));
+        assert_eq!(cap_audio(Command::SetAudio(false), true), Command::SetAudio(false));
+        assert_eq!(cap_audio(Command::Pause, false), Command::Pause);
     }
 }
