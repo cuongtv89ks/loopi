@@ -279,6 +279,9 @@ async def render_vlog(ctx: PipelineContext, day: dt.date) -> bool:
         named = places.several([s.device_id for s in material.segments]
                                + [h.get("device_id") for h in script.get("highlights", [])])
         labels = material.places if named else {}
+        if labels and not render.LABEL_FONT.is_file():  # labels are a nicety: never fail every multi-camera vlog
+            log.warning("vlog of %s: the label font is missing; rendered without place labels", day)
+            labels = {}
         stills = await _stills(pool, root, script, labels)
         segments = [render.Segment(p, s.start, labels.get(s.device_id), s.device_id)
                     for s in material.segments if (p := _inside(root, s.path))]

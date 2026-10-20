@@ -254,6 +254,12 @@ def test_the_cameras_container_shares_a_network_with_the_proxy_only():
     assert set(SERVICES) == {"db", "api", "worker", "models", "proxy", "cameras"}
 
 
+def test_the_brain_image_installs_ffmpeg_and_the_vlog_label_font():
+    text = (DEPLOY.parent / "brain" / "Dockerfile").read_text()
+    installed = re.search(r"apt-get install -y --no-install-recommends ([^&\\]+)", text).group(1).split()
+    assert {"ffmpeg", "fonts-dejavu-core"} <= set(installed), installed  # DejaVu Sans draws the place labels (R13)
+
+
 def test_the_cameras_image_builds_both_binaries_and_runs_as_the_data_owner():
     text = (DEPLOY / "cameras.Dockerfile").read_text()
     assert "cargo build --release --locked --bin loopi-agent --bin loopi-cameras" in text

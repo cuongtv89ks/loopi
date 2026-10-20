@@ -69,8 +69,9 @@ NORMALISE = (
 # there it would hide a truncated day (see timelapse_argv).
 PAD_TAIL = "tpad=stop_mode=clone:stop=-1"
 # Place labels (R13), drawn only when the vlog shows two or more devices.
-LABEL_FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")  # in the brain image (Debian fonts-dejavu-core)
-LABEL_STYLE = "fontsize=30:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=10:x=28:y=h-th-28:expansion=none"
+LABEL_FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")  # fonts-dejavu-core, installed by brain/Dockerfile
+# Top left: the captions (mov_text / WebVTT) sit at the bottom.
+LABEL_STYLE = "fontsize=30:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=10:x=28:y=28:expansion=none"
 _PLAIN_PATH = re.compile(r"[\w./-]+")
 
 
@@ -453,9 +454,9 @@ class RenderResult:
 
 
 def segment_shares(n_segments: int, n_out: int) -> list[int]:
-    """Output frames per segment: every segment the same share of the timelapse, the first ones one more (R12)."""
-    base, extra = divmod(n_out, n_segments)
-    return [base + (1 if k < extra else 0) for k in range(n_segments)]
+    """Output frames per segment: every segment the same share of the timelapse (R12), the frames left over spread
+    evenly over the day (any consecutive segments get their exact share to within one frame), summing to ``n_out``."""
+    return [(k + 1) * n_out // n_segments - k * n_out // n_segments for k in range(n_segments)]
 
 
 def chunk_boundaries(cum_units_before: Sequence[int], n_in: int, n_out: int) -> list[int]:
