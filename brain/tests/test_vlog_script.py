@@ -97,6 +97,39 @@ def test_the_stored_script_is_json_with_utc_times():
     assert stored["highlights"][1]["speech"] is None  # only conversations carry their sentence
 
 
+def test_a_highlight_keeps_the_camera_of_its_picture():
+    at = NINE
+    candidate = Candidate("H1", "notable", at, Frame("K0", "keyframes/K0.jpg", at, "cam"), "x", 3.0)
+    stored = script.to_json(script.rule_script(Material(DAY, [], [], [candidate])))
+    assert stored["highlights"][0]["device_id"] == "cam"
+    json.dumps(stored)
+    assert script.to_json(script.rule_script(_material(n=1)))["highlights"][0]["device_id"] is None
+
+
+def _two_rooms() -> Material:
+    frames = [Frame("K0", "keyframes/K0.jpg", NINE, "pi"), Frame("K1", "keyframes/K1.jpg", NINE, "cam")]
+    candidates = [Candidate("H1", "notable", NINE, frames[0], "bếp", 2.0),
+                  Candidate("H2", "talk", NINE + dt.timedelta(minutes=10), frames[1], "chào", 2.0, "A1", 1.0),
+                  Candidate("H3", "marker", NINE + dt.timedelta(minutes=20), Frame("K2", "k2.jpg", NINE), "?", 3.0)]
+    return Material(DAY, [], frames, candidates, {"pi": "Bếp", "cam": "Phòng khách"})
+
+
+def test_two_devices_name_the_place_after_the_time(pki_settings):
+    lines = script.script_messages(_two_rooms(), pki_settings.zone)[1]["content"].splitlines()
+    assert lines[1] == "H1 · 09:00 · Bếp · khung hình đáng chú ý · bếp"
+    assert lines[2] == "H2 · 09:10 · Phòng khách · hội thoại (có tiếng) · chào"
+    assert lines[3] == "H3 · 09:20 · đánh dấu · ?"  # a picture of no known device has no place
+
+
+def test_one_device_leaves_the_message_as_it_was(pki_settings):
+    one = _two_rooms()
+    one = Material(one.day, one.segments, one.frames, one.candidates, {"pi": "Bếp"})
+    lines = script.script_messages(one, pki_settings.zone)[1]["content"].splitlines()
+    assert lines[1] == "H1 · 09:00 · khung hình đáng chú ý · bếp"
+    assert script.script_messages(Material(DAY, [], [], one.candidates), pki_settings.zone)[1]["content"] == (
+        script.script_messages(one, pki_settings.zone)[1]["content"])
+
+
 def test_no_candidate_means_a_title_and_no_highlight():
     empty = Material(DAY, [], [], [])
     written = script.rule_script(empty)

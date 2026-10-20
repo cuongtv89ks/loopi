@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 
 from ..llm import AnswerInvalid, clipped, parse_answer
+from ..places import several
 from ..providers.base import ProviderError, ProviderUnavailable
 from ..providers.router import Router
 from .material import Candidate, Material
@@ -85,9 +86,12 @@ def default_title(day: dt.date) -> str:
 
 def script_messages(material: Material, zone) -> list[dict]:
     lines = []
+    named = several(material.places)  # P3c-3: the place is told only when the vlog shows two or more devices
     for c in material.candidates:
         sound = " (có tiếng)" if c.audio_item else ""
-        lines.append(f"{c.ref} · {c.at.astimezone(zone):%H:%M} · {KIND_LABELS[c.kind]}{sound} · {c.text}")
+        place = material.places.get(c.frame.device_id, "") if named and c.frame.device_id else ""
+        where = f"{place} · " if place else ""
+        lines.append(f"{c.ref} · {c.at.astimezone(zone):%H:%M} · {where}{KIND_LABELS[c.kind]}{sound} · {c.text}")
     user = f"Ngày {material.day:%d/%m/%Y}. Các khoảnh khắc:\n" + "\n".join(lines)
     return [{"role": "system", "content": SCRIPT_SYSTEM}, {"role": "user", "content": user}]
 
@@ -153,6 +157,7 @@ def to_json(written: Script) -> dict:
                 "at": h.candidate.at.astimezone(dt.UTC).isoformat(),
                 "keyframe_id": h.candidate.frame.keyframe_id,
                 "jpeg": h.candidate.frame.path,
+                "device_id": h.candidate.frame.device_id,
                 "line": h.line,
                 "speech": h.candidate.text if h.candidate.kind == "talk" else None,
                 "audio_item": h.candidate.audio_item if h.audio else None,
