@@ -277,9 +277,11 @@ async def revoke(request: Request, device_id: str):
 @router.post("/devices/{device_id}/location", response_class=HTMLResponse, dependencies=[Depends(require_htmx)])
 async def save_location(request: Request, device_id: str, location: str = Form("")):
     """Rename where a device stands (D34). A refused name is answered with the form and the reason (200, so htmx
-    swaps it in); an unknown or revoked device is a 404, whatever the name."""
+    swaps it in); an unknown or revoked device is a 404, whatever the name. Only a changed name refreshes the
+    summaries that name it."""
     pool = request.app.state.pool
-    if not await places.is_active_device(pool, device_id):
+    stored = await places.location_of(pool, device_id)
+    if stored is None:
         raise HTTPException(status_code=404, detail="unknown device")
     try:
         cleaned = places.clean_location(location)
@@ -287,12 +289,13 @@ async def save_location(request: Request, device_id: str, location: str = Form("
         return TEMPLATES.TemplateResponse(
             request, "_location.html", {"d": {"id": device_id, "location": location}, "error": str(exc)}
         )
-    if not await places.set_location(pool, device_id, cleaned):
-        raise HTTPException(status_code=404, detail="unknown device")
-    try:
-        await chapter_rules.refresh_places(pool, device_id, request.app.state.settings.zone)
-    except Exception:  # the new name is saved; summaries refresh by hand (Xử lý lại) if this fails
-        log.exception("could not refresh the summaries after renaming %s", device_id)
+    if cleaned != stored:  # "Lưu" without a change writes nothing again
+        if not await places.set_location(pool, device_id, cleaned):
+            raise HTTPException(status_code=404, detail="unknown device")
+        try:
+            await chapter_rules.refresh_places(pool, device_id, request.app.state.settings.zone)
+        except Exception:  # the new name is saved; summaries refresh by hand (Xử lý lại) if this fails
+            log.exception("could not refresh the summaries after renaming %s", device_id)
     return TEMPLATES.TemplateResponse(request, "_location.html", {"d": {"id": device_id, "location": cleaned},
                                                                    "saved": True})
 

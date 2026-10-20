@@ -39,6 +39,14 @@ async def set_location(pool: AsyncConnectionPool, device_id: str, location: str)
         return await cur.fetchone() is not None
 
 
+async def location_of(pool: AsyncConnectionPool, device_id: str) -> str | None:
+    """The stored name of a device that is not revoked; None when there is no such device."""
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT location FROM device WHERE id = %s AND NOT revoked", (device_id,))
+        row = await cur.fetchone()
+        return None if row is None else row["location"]
+
+
 def several(device_ids: Iterable[str | None]) -> bool:
     """Whether the rows come from two or more devices: only then is each one labelled with its place."""
     return len({d for d in device_ids if d is not None}) >= 2

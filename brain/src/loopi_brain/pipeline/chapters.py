@@ -17,7 +17,7 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
-from .. import devices, places
+from .. import devices, places, store
 from ..days import day_bounds_utc, hm, local_now
 from ..llm import ASR_CAVEAT, PICTURE_NOTE, AnswerInvalid, clip, clipped, marker_line, parse_answer, spread, within
 from ..providers.base import ProviderError, ProviderUnavailable
@@ -26,7 +26,7 @@ from . import jobs
 from .context import PipelineContext, get_context
 from .jobs import job_app
 from .moments import marker_note
-from .segment import ChapterParams, Point, closed_count, segment, signature, unit
+from .segment import ChapterParams, Point, closed_count, members_signature, segment, signature, unit
 from .state import clear_day_error, error_text, forgotten, lock_day, record_day_error
 
 log = logging.getLogger(__name__)
@@ -190,20 +190,34 @@ async def rebuild_chapters(
     return len(closed) + len(segments), len(closed) + settled
 
 
-RENAME_REFRESH_DAYS = 14  # plan R10
+RENAME_REFRESH_DAYS = 14  # plan R10: the longest window, whatever the retention
+
+
+async def _place_signature(conn: AsyncConnection, start: dt.datetime, end: dt.datetime) -> str:
+    """The signature ``_points`` would give the moments in [start, end), from their ids and places only (a rename
+    runs in the page's request: no embedding is read)."""
+    cur = await conn.execute(
+        "SELECT m.id, m.device_id, d.location FROM moment m LEFT JOIN device d ON d.id = m.device_id"
+        " WHERE m.ts_start >= %s AND m.ts_start < %s ORDER BY m.ts_start, m.id",
+        (start, end),
+    )
+    return members_signature([(r["id"], r["device_id"], r["location"]) for r in await cur.fetchall()])
 
 
 async def refresh_places(pool: AsyncConnectionPool, device_id: str, zone, now: dt.datetime | None = None) -> list[dt.date]:
-    """After a place was renamed: re-sign the chapters of the last RENAME_REFRESH_DAYS days on which the device and
-    another one have moments (only chapters that name places change signature, R9), so their summaries are written
-    again; mark those days' recaps stale; ask for a chapter build. Returns the days that changed."""
+    """After a place was renamed: re-sign the chapters of the recent days on which the device and another one have
+    moments (only chapters that name places change signature, R9), so their summaries are written again; mark those
+    days' recaps stale; ask for a chapter build. Returns the days that changed. Recent means the days whose video is
+    still kept (the retention's video days, at most RENAME_REFRESH_DAYS): an older day's vlog, written again, would
+    lose its timelapse."""
     now = now or dt.datetime.now(dt.UTC)
+    window = min(RENAME_REFRESH_DAYS, (await store.get_retention(pool)).video_days)
     async with pool.connection() as conn:
         cur = await conn.execute(
             "SELECT day FROM (SELECT (ts_start AT TIME ZONE %s)::date AS day, device_id FROM moment"
             " WHERE ts_start >= %s) t GROUP BY day HAVING bool_or(device_id = %s) AND count(DISTINCT device_id) >= 2"
             " ORDER BY day",
-            (zone.key, now - dt.timedelta(days=RENAME_REFRESH_DAYS), device_id),
+            (zone.key, now - dt.timedelta(days=window), device_id),
         )
         days = [r["day"] for r in await cur.fetchall()]
     changed_days = []
@@ -215,8 +229,7 @@ async def refresh_places(pool: AsyncConnectionPool, device_id: str, zone, now: d
                 "SELECT id, ts_start, last_moment_at, signature FROM chapter WHERE day = %s ORDER BY ts_start", (day,)
             )
             for c in await cur.fetchall():
-                points = await _points(conn, c["ts_start"], c["last_moment_at"] + dt.timedelta(microseconds=1), None)
-                sig = signature(points)
+                sig = await _place_signature(conn, c["ts_start"], c["last_moment_at"] + dt.timedelta(microseconds=1))
                 if sig != c["signature"]:
                     await conn.execute("UPDATE chapter SET signature = %s, updated_at = now() WHERE id = %s",
                                        (sig, c["id"]))

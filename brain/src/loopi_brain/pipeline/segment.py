@@ -126,6 +126,11 @@ def closed_count(segments: list[list[Point]], horizon: dt.datetime, day_end: dt.
 def signature(points: list[Point]) -> str:
     """Identifies a chapter's members: equal signatures mean the same moments — and, when they come from two or more
     devices (the chapter's text then names each place), the same place names (plan R9)."""
-    named = len({p.device_id for p in points if p.device_id}) >= 2
-    lines = (f"{p.id}\t{p.place or ''}" if named else p.id for p in points)
+    return members_signature([(p.id, p.device_id, p.place) for p in points])
+
+
+def members_signature(members: list[tuple[str, str | None, str | None]]) -> str:
+    """``signature`` of the moments (id, device id, place name), in the chapter's order."""
+    named = len({device for _, device, _ in members if device}) >= 2
+    lines = (f"{moment}\t{place or ''}" if named else moment for moment, _, place in members)
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:32]
