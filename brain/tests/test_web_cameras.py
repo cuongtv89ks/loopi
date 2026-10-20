@@ -230,6 +230,18 @@ async def test_a_camera_that_refuses_the_login_says_how_to_fix_it_on_its_card(cl
         assert "Camera từ chối tên đăng nhập" not in (await client.get("/devices")).text
 
 
+async def test_a_camera_that_works_again_gets_no_advice_from_its_old_error(client, pool, pki_settings):
+    # The agent never clears last_error: after the camera recovers (no failures now) the old text stays in the heartbeat.
+    _, device_id = await _pair(client, pool, pki_settings)
+    refused = "ffmpeg exited with Some(1) after 0 s: the camera refused the user name or password; next try in 10 min"
+    await devices.record_heartbeat(pool, device_id, {"camera_failures": 0, "last_error": refused}, [])
+    assert "Camera từ chối tên đăng nhập" not in (await client.get("/devices")).text
+    await devices.record_heartbeat(pool, device_id, {"last_error": refused}, [])  # no failure count at all
+    assert "Camera từ chối tên đăng nhập" not in (await client.get("/devices")).text
+    await devices.record_heartbeat(pool, device_id, {"camera_failures": 1, "last_error": refused}, [])
+    assert SIGN_IN_ADVICE in (await client.get("/devices")).text  # failing again: the advice is back
+
+
 async def test_a_revoked_devices_old_refused_login_gives_no_advice(client, pool, pki_settings):
     _, device_id = await _pair(client, pool, pki_settings)
     refused = "ffmpeg exited with Some(1) after 0 s: the camera refused the user name or password; next try in 10 min"
