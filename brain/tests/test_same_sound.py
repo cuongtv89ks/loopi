@@ -1,4 +1,5 @@
 import datetime as dt
+import warnings
 
 import numpy as np
 import pytest
@@ -49,13 +50,25 @@ def test_a_region_without_an_envelope_keeps_the_time_rule():
 def test_a_flat_envelope_is_not_a_match():
     pi = span("a", "pi", 0, talk(6, seed=1), 25.0)
     hum = span("b", "cam", 0, [-40.0] * 60, 15.0)  # a steady fan: no shape to compare
-    assert not speech.same_sound(hum, pi)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no division by a zero spread (RuntimeWarning): the flat guard holds
+        assert not speech.same_sound(hum, pi)
+        assert not speech.same_sound(pi, hum)
 
 
 def test_too_little_common_time_counts_as_the_same():
     pi = span("a", "pi", 0, talk(6, seed=1), 25.0)
     edge = span("b", "cam", 7.9, talk(3, seed=3), 15.0)  # same group (within the slack), < 1 s common at every lag
     assert speech.same_sound(edge, pi)
+
+
+def test_a_part_of_a_longer_sound_that_starts_later_matches():
+    """Pins the sign and size of the shift: the camera's region holds seconds 3-8 of the Pi's 10 s, starting at 3 s."""
+    env = talk(10, seed=4)
+    pi, cam = span("a", "pi", 0, env, 25.0), span("b", "cam", 3.0, env[30:80], 12.0)
+    assert speech.best_correlation(cam, pi) >= 0.9
+    assert speech.best_correlation(pi, cam) >= 0.9
+    assert speech.same_sound(cam, pi) and speech.same_sound(pi, cam)
 
 
 def test_a_short_common_stretch_is_not_compared():

@@ -17,7 +17,9 @@ SPEECH_PERCENTILE = 90  # the speech level: the loud frames of a region, whateve
 GROUP_SLACK = dt.timedelta(seconds=2)  # a network camera's sound reaches its agent about a second late (R1)
 COVERED_SHARE = 0.5  # covered when chosen speech elsewhere overlaps at least half of the region (R2)
 ENVELOPE_HOP_S = 0.1  # S1: one loudness value per 100 ms
-SAME_SOUND_MIN = 0.7  # S2: no unrelated synthetic pair of seeds 1-39 reaches it; tuned at acceptance §8.2
+# S2: no unrelated synthetic pair of seeds 1-39 reaches it at start offsets <= 0.6 s (0.3-0.4 % do at 1-5 s);
+# tuned at acceptance §8.2
+SAME_SOUND_MIN = 0.7
 SAME_SOUND_MIN_FRAMES = 10  # S2: at least 1 s in common to compare at all (and half of the shorter envelope)
 WAIT = dt.timedelta(minutes=3)  # D33: the longest wait for a minute's audio from every microphone (R3)
 
