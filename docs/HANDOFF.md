@@ -1,4 +1,4 @@
-# Loopi — handoff (2026-10-20)
+# Loopi — handoff (2026-10-21)
 
 Context memory for whoever continues this project, whether that is the owner or a Claude Code session on the brain PC
 (Linux). Read this file first, then `CLAUDE.md`, then the plan you are about to execute.
@@ -27,6 +27,7 @@ HDD is not on the bus (it dropped off on 2026-10-18); unplug it if it is still c
 | P3c design (multi-camera) | `specs/2026-10-19-p3c-multicam-design.md` | approved 2026-10-19 (D30–D36): any LAN camera can be added in the brain (IP camera, iPhone/Android, ESP32 with camera and a separate audio URL, Loopi ESP32 firmware in P3c-4). Plans P3c-1 … P3c-4 are written **after P4** | `feat/p3c` 88ddc06 (worktree `/home/soul/loopi-p3`) |
 | P3c-1: storage and display | `plans/2026-10-19-p3c1-storage-display.md` | **complete, live since 2026-10-20 16:22 KST**: one copy per segment (the raw H.264 goes once the MP4 and the keyframes exist), retention on 7/7 days, an editable location name per device, the merged timeline with a camera filter, places in search/chat/MCP and in the model text; acceptance 6 (stable SSD) is measured on the mornings of 10-21 and 10-22; ledger `ledgers/p3c1-progress.md` | `feat/p3c1` (worktree `/home/soul/loopi-p3c`); live through `feat/phase2` f5fd9a2 |
 | P3c-2: network cameras | `plans/2026-10-20-p3c2-network-cameras.md` | **deployed 2026-10-20 22:22 KST, acceptance waits for the owner's cameras**: the agent's `stream` source (ffmpeg pulls RTSP/MJPEG; a separate WAV sound address), `[led] source = "none"`, `[clock] source = "kernel"` (adjtimex, latched once synced), `loopi-cameras` in the `cameras` container (own network with the proxy only, one mount `<data>/cameras`), the Thiết bị camera form (Thử kết nối, Ghép cặp lại, Gỡ camera), the 7-day capacity estimate, "Đang ghi: N camera" on every page, the P3c-1 leftovers M2/M7/M8; ledger `ledgers/p3c2-progress.md`, final review `ledgers/p3c2-final-review.md` | `feat/p3c2` (worktree `/home/soul/loopi-p3c2`); live through `feat/phase2` |
+| P3c-3: multi-camera understanding | `plans/2026-10-21-p3c3-multicam-understanding.md` | **deployed 2026-10-21 06:22 KST**: one transcript per sentence across microphones (D33: `detect_speech` → `group_speech` (waits up to 3 min, minute by minute) → `transcribe_audio` on the chosen regions; migration 013 `speech_region`), chapter signatures with place names and a rename that refreshes the days still holding video, the vlog with one camera per 10-minute block, a run per camera and top-left place labels (D35). Acceptance §8.2/§8.5 waits for a second camera with sound; ledger `ledgers/p3c3-progress.md`, final review `ledgers/p3c3-final-review.md` | `feat/p3c3` (worktree `/home/soul/loopi-p3c3`); live through `feat/phase2` |
 | P4a: prod image + OTA | `specs/2026-10-18-p4a-prod-ota-design.md` (D26–D29), `plans/2026-10-18-p4a-prod-ota.md` | **complete**: all seven device acceptance steps (§13) passed on 2026-10-19 at 383581c; ledger `ledgers/p4a-progress.md` | `feat/p4` (worktree `/home/soul/loopi-p4`); the brain part is live through `feat/phase2` e0045ee |
 
 All plan paths are under `docs/superpowers/`. Execution ledgers are under `docs/superpowers/ledgers/`. They record every
@@ -169,6 +170,8 @@ image and OTA; WiFi by QR with a captive portal and BLE presence move to the bac
 - `feat/p3c`: the P3c design (worktree `/home/soul/loopi-p3`).
 - `feat/p4`: P4a (worktree `/home/soul/loopi-p4`); `feat/phase2` is at its e0045ee, the rest are agent/OS/docs commits.
 - `feat/p3c1`: P3c-1 (worktree `/home/soul/loopi-p3c`), merged into `main` (PR #3).
+- `feat/p3c3`: P3c-3 (worktree `/home/soul/loopi-p3c3`), with main (the P3c-2 sign-in fix) merged in;
+  `feat/phase2` was fast-forwarded to it for the deploy. Not yet merged into `main` or pushed (ask the owner).
 - `feat/p3c2`: P3c-2 (worktree `/home/soul/loopi-p3c2`); `feat/phase2` was fast-forwarded to it for the deploy;
   merged into `main` (fast-forward) and `main` pushed on 2026-10-20.
 
@@ -202,8 +205,14 @@ From now on, pushing is still outward-facing: ask the owner first.
      (`docker compose -p deploy up -d proxy`).
    - Backlog from the P3c-2 reviews (ledger): refuse a login in the URL path (XMEye style), show a waiting
      camera's token expiry, retention-off in the capacity estimate, the supervisor's serial stop waits.
-   - Then P3c-3 (one transcript per sentence across cameras, moment locations in the chapter signature, the vlog
-     with two cameras) and P3c-4 (Loopi ESP32 firmware).
+   - The Imou still refuses `admin` with the passwords tried (2026-10-21 02:02, one masked attempt): check the
+     device password / ONVIF setting in the Imou Life app, then one "Thử kết nối".
+   - P3c-3 is live: when a camera with sound records next to the Pi, check §8.2 (one sentence between two
+     microphones gives one transcript; the other region is `covered`) and, on a day with two active cameras, §8.5
+     (the vlog shows both, each scene labelled). **Owner's decision pending (I3):** two different conversations at
+     the same time in two rooms — today the louder one covers the other (D33 groups by time only); a same-sound
+     check would keep both. P3c-3 backlog: the ledger's last lines.
+   - Then P3c-4 (Loopi ESP32 firmware), when the owner has the board.
 4. **P3b acceptance:** the vlogs of 10-19 and 10-20 appear by themselves; the owner watches one.
 5. **P2c Tasks 12–14** (P2c is live since 2026-10-17 09:56 KST: migration 005, the Đánh giá page):
    - the owner labels about 22 clips, 30 keyframes and 25 questions;
@@ -216,6 +225,7 @@ From now on, pushing is still outward-facing: ask the owner first.
 ## 7. How to resume with Claude Code
 
 ```
-Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P3c-1 acceptance measurements and the P3c-2 acceptance
-(ledger `docs/superpowers/ledgers/p3c2-progress.md`), then the P3c-3 plan.
+Read CLAUDE.md and docs/HANDOFF.md. Continue with §6: the P3c-1 acceptance measurements, the P3c-2 and P3c-3
+acceptance with the owner's cameras (ledgers `docs/superpowers/ledgers/p3c2-progress.md`, `p3c3-progress.md`),
+the owner's I3 decision; then P3c-4.
 ```
