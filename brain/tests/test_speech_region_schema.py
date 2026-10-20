@@ -3,7 +3,7 @@ import datetime as dt
 import psycopg
 import pytest
 
-from helpers import T0, fetch_one, insert_item, new_ulid, paired_device
+from helpers import T0, fetch_one, insert_item, insert_moment, new_ulid, paired_device
 
 
 async def _region(pool, item_id, device_id, *, state="waiting", covered_by=None, offset=1.0):
@@ -42,3 +42,22 @@ async def test_items_start_without_speech_detection(pool, pki_settings):
     item = await insert_item(pool, a["device_id"], kind="audio")
     assert await fetch_one(pool, "SELECT speech_detected_at FROM item WHERE id = %s", (item,)) == {
         "speech_detected_at": None}
+
+
+async def test_a_region_waits_by_default_and_unlinks_a_deleted_moment(pool, pki_settings):
+    a = await paired_device(pool, pki_settings)
+    item = await insert_item(pool, a["device_id"], kind="audio")
+    region = new_ulid()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "INSERT INTO speech_region (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db)"
+            " VALUES (%s, %s, %s, %s, %s, 1.0, 2.0, 20.0)",
+            (region, item, a["device_id"], T0, T0 + dt.timedelta(seconds=2)),
+        )
+    assert await fetch_one(pool, "SELECT state FROM speech_region WHERE id = %s", (region,)) == {"state": "waiting"}
+    moment = await insert_moment(pool, a["device_id"], kind="speech", item_id=item)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE speech_region SET state = 'chosen', moment_id = %s WHERE id = %s", (moment, region))
+        await conn.execute("DELETE FROM moment WHERE id = %s", (moment,))
+    assert await fetch_one(pool, "SELECT state, moment_id FROM speech_region WHERE id = %s", (region,)) == {
+        "state": "chosen", "moment_id": None}

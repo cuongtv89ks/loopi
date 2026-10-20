@@ -115,7 +115,8 @@ def test_cascading_foreign_keys_are_indexed(database_url):
             ("commitment", "source_moment_id"),
             ("eval_audio", "item_id"), ("eval_caption", "keyframe_id"), ("eval_caption_score", "sample_id"),
             ("eval_answer", "question_id"), ("eval_answer", "item_id"), ("eval_answer", "keyframe_id"),
-            ("eval_run_audio", "run_id"), ("eval_run_audio", "sample_id")} <= indexed
+            ("eval_run_audio", "run_id"), ("eval_run_audio", "sample_id"),
+            ("speech_region", "item_id"), ("speech_region", "covered_by"), ("speech_region", "moment_id")} <= indexed
 
 
 def test_keyframe_has_a_plain_time_index_for_the_vlog_queries(database_url):
