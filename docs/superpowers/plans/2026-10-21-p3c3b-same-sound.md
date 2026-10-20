@@ -33,7 +33,7 @@ shape; same → one transcript, different → both). Builds on P3c-3 (`plans/202
 | # | Ruling | Why |
 |---|---|---|
 | S1 | The envelope is the 20 ms frame RMS of the raw audio averaged into 100 ms steps (`ENVELOPE_HOP_S = 0.1`), in dBFS, floored at `NOISE_FLOOR_MIN_DBFS` (−70); stored as `speech_region.envelope real[]` (≤ 200 values for a 20 s region) | loudness shape survives different gains, rooms and codecs; 100 ms keeps syllable rhythm without storing audio |
-| S2 | `same_sound(a, b)`: the best Pearson correlation of the two envelopes over the lags that align them within ±`GROUP_SLACK` (2 s, in 100 ms steps), using only the frames both cover, at least `SAME_SOUND_MIN_FRAMES = 10` (1 s) of them; same when ≥ `SAME_SOUND_MIN = 0.5`. Fewer than 10 common frames, or a span without an envelope (stored before this version), counts as same (today's rule) | two copies of one sentence correlate highly at the right lag; two unrelated conversations do not; 0.5 is tuned at acceptance §8.2 with real cameras |
+| S2 | `same_sound(a, b)`: the best Pearson correlation of the two envelopes over the lags that align them within ±`GROUP_SLACK` (2 s, in 100 ms steps), using only the frames both cover, at least `SAME_SOUND_MIN_FRAMES = 10` (1 s) of them; same when ≥ `SAME_SOUND_MIN = 0.5`. Fewer than 10 common frames, or a span without an envelope (stored before this version), counts as same (today's rule). Amended during execution: `SAME_SOUND_MIN` = 0.7 (at 0.5, 12.8 % of unrelated synthetic pairs matched); only lags whose common frames reach max(10, half of the shorter envelope) are compared. | two copies of one sentence correlate highly at the right lag; two unrelated conversations do not; 0.5 is tuned at acceptance §8.2 with real cameras |
 | S3 | In `decide`, a chosen span of another microphone counts towards covering `s` (the union, R2) and can be its `covered_by` only when `same_sound(s, c)`; the winner rule (R2) is unchanged | one transcript per sentence, both transcripts for two different conversations |
 
 ## Review Focus
@@ -167,7 +167,7 @@ git commit -m "feat(brain): detection stores each speech region's loudness envel
 
 **Interfaces:**
 - Consumes: `speech_region.envelope` (Task 1), `speech.ENVELOPE_HOP_S`, `speech.GROUP_SLACK`.
-- Produces: `Span(..., state="waiting", envelope: tuple[float, ...] | None = None)`; `speech.SAME_SOUND_MIN = 0.5`,
+- Produces: `Span(..., state="waiting", envelope: tuple[float, ...] | None = None)`; `speech.SAME_SOUND_MIN = 0.7`,
   `speech.SAME_SOUND_MIN_FRAMES = 10`; `speech.same_sound(a: Span, b: Span, slack=GROUP_SLACK) -> bool`.
 
 - [ ] **Step 1: Write the failing tests**

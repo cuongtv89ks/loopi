@@ -56,7 +56,9 @@ Requirements: Docker with Compose v2 on the Linux PC, port 8443 reachable on the
   the Pi. The header of every page says how many cameras record now.
 - With two or more microphones, a sentence is transcribed once, from the clearest one; the brain waits up to 3 minutes
   for every recording microphone's audio of a minute (a long conversation is decided minute by minute). The Xử lý
-  page shows how many speech regions wait for another microphone or the next minute.
+  page shows how many speech regions wait for another microphone or the next minute. A region heard on another
+  microphone is skipped only when its loudness shape matches the chosen one (the same sentence); two different
+  conversations at once are both transcribed.
 - **Deploying and rolling back P3c-3:** recreate api and worker together (`docker compose -p deploy up -d --build`
   does): a worker from before P3c-3 fails a new api's "Tìm tiếng nói" job as an unknown task. After the deploy, open
   Xử lý and retry any failed "Tìm tiếng nói" job. To roll back to an image from before P3c-3, stop the new one
