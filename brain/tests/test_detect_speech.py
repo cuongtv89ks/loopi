@@ -5,7 +5,7 @@ import psycopg
 import pytest
 
 from helpers import QUIET_SPEECH, T0, fetch_all, fetch_one, insert_item, make_ctx, make_opus, paired_device
-from loopi_brain.pipeline import asr, dispatch, grouping, jobs, status
+from loopi_brain.pipeline import asr, dispatch, grouping, jobs, speech, status
 from loopi_brain.pipeline.asr import Region
 
 
@@ -143,6 +143,9 @@ def test_regions_are_found_on_the_levelled_audio_and_measured_on_the_raw_audio(t
     assert heard[0][0] > 2 * raw_peak and heard[0][1] == 0.4  # the VAD hears what Whisper will hear
     assert [r for r, _snr, _env in found] == [Region(0.5, 1.0), Region(1.5, 2.0)]
     assert all(25 < snr < 40 for _r, snr, _env in found)  # ~ -37 dBFS over the -70 dBFS floor, not the levelled audio
+    raw = asr.load_audio(path)  # the envelope too is measured on the raw audio, from each region's own start (S1)
+    assert all(env == speech.envelope(raw, r.start, r.end) and len(env) == 5 for r, _snr, env in found)
+    assert all(-45 < max(env) < -30 for _r, _snr, env in found)  # the -34 dBFS bursts, not the levelled audio
 
 
 async def test_only_a_pending_audio_item_is_detected(pool, pki_settings, monkeypatch):

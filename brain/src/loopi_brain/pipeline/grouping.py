@@ -91,12 +91,13 @@ async def minute_ready(conn: AsyncConnection, minute: dt.datetime, now: dt.datet
     return all(any(r["device_id"] == device and r["ended_at"] >= end - END_SLACK for r in rows) for device in expected)
 
 
-_SPANS = ("SELECT id, device_id, start_ts, end_ts, snr_db, state FROM speech_region"
+_SPANS = ("SELECT id, device_id, start_ts, end_ts, snr_db, state, envelope FROM speech_region"
           " WHERE {} ORDER BY start_ts, id")
 
 
 def _span(r) -> speech.Span:
-    return speech.Span(r["id"], r["device_id"], r["start_ts"], r["end_ts"], r["snr_db"], r["state"])
+    envelope = tuple(r["envelope"]) if r["envelope"] else None  # NULL (stored before 014) and [] alike: no envelope
+    return speech.Span(r["id"], r["device_id"], r["start_ts"], r["end_ts"], r["snr_db"], r["state"], envelope)
 
 
 async def _decide(conn: AsyncConnection, now: dt.datetime) -> int:

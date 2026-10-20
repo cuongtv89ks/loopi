@@ -3,7 +3,8 @@ import datetime as dt
 
 from psycopg.types.json import Jsonb
 
-from helpers import FakeTranscriber, fetch_all, fetch_one, insert_item, make_ctx, make_opus, paired_device, run_jobs
+from helpers import (QUIET_SPEECH, FakeTranscriber, fetch_all, fetch_one, insert_item, make_ctx, make_opus,
+                     paired_device, run_jobs)
 from loopi_brain import forget, reprocess
 from loopi_brain.pipeline import asr, dispatch, grouping
 from loopi_brain.pipeline.asr import Region, RegionResult, SegmentResult
@@ -12,10 +13,10 @@ NINE = dt.datetime(2026, 10, 14, 0, 0, tzinfo=dt.UTC)  # 09:00 in Seoul
 HELLO = RegionResult("vi", 0.9, [SegmentResult(0.0, 1.5, "xin chào", -0.2, 0.05, 1.2)])
 
 
-async def _recorded(pool, settings, device_id):
+async def _recorded(pool, settings, device_id, **source):
     item_id = await insert_item(pool, device_id, kind="audio", started_at=NINE, seconds=60)
     row = await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item_id,))
-    make_opus(settings.media_root / row["raw_path"], seconds=60)
+    make_opus(settings.media_root / row["raw_path"], seconds=60, **source)
     return item_id
 
 
@@ -41,7 +42,8 @@ async def test_one_sentence_heard_by_two_microphones_gives_one_transcript(pool, 
             await conn.execute("UPDATE device SET last_heartbeat = %s, last_heartbeat_at = now() WHERE id = %s",
                                (Jsonb({"recording_audio": True}), dev["device_id"]))
     monkeypatch.setattr(asr, "speech_regions", lambda _audio, _t: [Region(10.0, 13.0)])
-    items = [await _recorded(pool, pki_settings, d["device_id"]) for d in (pi, cam)]
+    # both hear the same sound, with a loudness shape to compare (silence has none: a flat envelope matches nothing)
+    items = [await _recorded(pool, pki_settings, d["device_id"], source=QUIET_SPEECH) for d in (pi, cam)]
     for item_id in items:
         await dispatch.defer_item(pool, item_id)
     await run_jobs(make_ctx(pool, pki_settings, transcriber=FakeTranscriber(HELLO)))

@@ -1,6 +1,5 @@
 import numpy as np
 
-from helpers import fetch_one
 from loopi_brain.pipeline import asr, speech
 
 RATE = speech.SAMPLE_RATE

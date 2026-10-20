@@ -6,6 +6,7 @@ from psycopg.types.json import Jsonb
 
 from helpers import fetch_all, fetch_one, insert_item, new_ulid, paired_device
 from loopi_brain.pipeline import asr, dispatch, grouping, jobs, speech
+from test_same_sound import talk
 
 M = dt.datetime(2026, 10, 21, 1, 0, tzinfo=dt.UTC)  # a minute's start
 NOW = M + dt.timedelta(minutes=1, seconds=5)
@@ -21,22 +22,23 @@ async def _hb(pool, device_id, *, recording_audio=True, at=NOW, age=5, **flags):
         )
 
 
-async def _regions(conn, item_id, device_id, start, regions):
+async def _regions(conn, item_id, device_id, start, regions, envelopes=None):
     ids = []
-    for offset, length, snr in regions:
+    for i, (offset, length, snr) in enumerate(regions):
         ids.append(new_ulid())
         await conn.execute(
-            "INSERT INTO speech_region (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO speech_region (id, item_id, device_id, start_ts, end_ts, offset_s, length_s, snr_db, envelope)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (ids[-1], item_id, device_id, start + dt.timedelta(seconds=offset),
-             start + dt.timedelta(seconds=offset + length), offset, length, snr),
+             start + dt.timedelta(seconds=offset + length), offset, length, snr,
+             envelopes[i] if envelopes else None),
         )
     return ids
 
 
-async def _detected(pool, device_id, regions, *, start=M, seconds=60, received=None, detected=True):
+async def _detected(pool, device_id, regions, *, start=M, seconds=60, received=None, detected=True, envelopes=None):
     """An audio item (ending ``TAIL`` after its nominal length, like the agent's) whose speech detection found
-    ``regions`` [(offset, length, snr)]; return (item, region ids)."""
+    ``regions`` [(offset, length, snr)] (with their loudness ``envelopes``, if given); return (item, region ids)."""
     item_id = await insert_item(pool, device_id, kind="audio", started_at=start, seconds=seconds)
     async with pool.connection() as conn:
         await conn.execute(
@@ -44,7 +46,7 @@ async def _detected(pool, device_id, regions, *, start=M, seconds=60, received=N
             (start + dt.timedelta(seconds=seconds) + TAIL,
              received or start + dt.timedelta(seconds=seconds, milliseconds=500), NOW if detected else None, item_id),
         )
-        ids = await _regions(conn, item_id, device_id, start, regions)
+        ids = await _regions(conn, item_id, device_id, start, regions, envelopes)
     return item_id, ids
 
 
@@ -96,6 +98,16 @@ async def test_two_microphones_wait_for_each_other_then_keep_the_clearer(pool, p
     assert result.transcribing == [pi_item] and result.finished == [cam_item]
     cam_row = await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (cam_item,))
     assert cam_row["analysis_state"] == "done"
+
+
+async def test_grouping_reads_the_envelope(pool, pki_settings, jobs_open):
+    pi, cam = await paired_device(pool, pki_settings), await paired_device(pool, pki_settings)
+    await _hb(pool, pi["device_id"])
+    await _hb(pool, cam["device_id"])
+    _, (pi_region,) = await _detected(pool, pi["device_id"], [(10, 6, 22.0)], envelopes=[talk(6, seed=1)])
+    _, (cam_region,) = await _detected(pool, cam["device_id"], [(10.3, 6, 15.0)], envelopes=[talk(6, seed=2)])
+    await grouping.group_speech(pool, now=NOW)
+    assert await _states(pool) == {pi_region: ("chosen", None), cam_region: ("chosen", None)}  # two conversations
 
 
 async def test_a_silent_microphone_is_waited_for_three_minutes_only(pool, pki_settings, jobs_open):
