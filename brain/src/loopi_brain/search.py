@@ -29,7 +29,8 @@ CANDIDATES = 40  # per search, before the merge
 RRF_K = 60
 QUERY_MAX = 500  # characters of a question that are searched
 _COLUMNS = (
-    "m.id, m.kind, m.ts_start, m.text, m.lang, m.keyframe_id, m.item_id, i.meta AS item_meta"
+    "m.id, m.kind, m.ts_start, m.text, m.lang, m.keyframe_id, m.item_id, i.meta AS item_meta, m.device_id,"
+    " d.location"
 )
 _FILTER = "(%(start)s::timestamptz IS NULL OR m.ts_start >= %(start)s) AND (%(end)s::timestamptz IS NULL OR m.ts_start < %(end)s)"
 
@@ -47,6 +48,8 @@ class Hit:
     distance: float | None  # cosine distance to the question (None: found by words only)
     similarity: float | None  # word similarity (None: found by meaning only)
     score: float
+    device_id: str | None = None  # the device that recorded the moment
+    location: str | None = None  # where that device stands (D34)
 
 
 @dataclass(frozen=True)
@@ -82,7 +85,7 @@ async def _by_meaning(pool, router: Router, query: str, params: dict, max_distan
         await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
         cur = await conn.execute(
             f"SELECT {_COLUMNS}, (m.embedding <=> %(vector)s)::float8 AS distance FROM moment m"
-            f" LEFT JOIN item i ON i.id = m.item_id WHERE m.embedding IS NOT NULL AND {_FILTER}"
+            f" LEFT JOIN item i ON i.id = m.item_id LEFT JOIN device d ON d.id = m.device_id WHERE m.embedding IS NOT NULL AND {_FILTER}"
             " ORDER BY m.embedding <=> %(vector)s LIMIT %(limit)s",
             {**params, "vector": Vector(result.vectors[0])},
         )
@@ -95,7 +98,7 @@ async def _by_words(pool, query: str, params: dict, min_similarity: float) -> li
         await conn.execute("SELECT set_config('pg_trgm.word_similarity_threshold', %s, true)", (str(min_similarity),))
         cur = await conn.execute(
             f"SELECT {_COLUMNS}, word_similarity(%(query)s, m.text)::float8 AS similarity FROM moment m"
-            f" LEFT JOIN item i ON i.id = m.item_id WHERE %(query)s <%% m.text AND {_FILTER}"
+            f" LEFT JOIN item i ON i.id = m.item_id LEFT JOIN device d ON d.id = m.device_id WHERE %(query)s <%% m.text AND {_FILTER}"
             " ORDER BY similarity DESC, m.ts_start DESC, m.id LIMIT %(limit)s",
             {**params, "query": query},
         )
@@ -134,6 +137,7 @@ async def search_moments(
             id=moment_id, kind=row["kind"], ts_start=row["ts_start"], text=row["text"], lang=row["lang"],
             keyframe_id=row["keyframe_id"], item_id=row["item_id"], item_meta=row["item_meta"],
             distance=row.get("distance"), similarity=row.get("similarity"), score=scores[moment_id],
+            device_id=row["device_id"], location=row["location"],
         )
         for moment_id in ordered[:limit]
         for row in (rows[moment_id],)

@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator
 from pydantic import BaseModel, ConfigDict, Field
 from psycopg_pool import AsyncConnectionPool
 
+from . import places
 from .config import Settings
 from .days import day_bounds_utc, local_now
 from .llm import ASR_CAVEAT, PICTURE_NOTE, AnswerInvalid, clip, parse_answer
@@ -128,6 +129,7 @@ async def time_filter(router: Router, question: str, today: dt.date) -> tuple[dt
 
 
 def source_lines(hits: list[Hit], zone) -> list[str]:
+    named = places.several(hit.device_id for hit in hits)
     lines = []
     for n, hit in enumerate(hits, start=1):
         kind = KIND_WORDS.get(hit.kind, hit.kind)
@@ -137,7 +139,8 @@ def source_lines(hits: list[Hit], zone) -> list[str]:
         if hit.kind == "marker":
             note = moment_rules.marker_note(hit.item_meta or {})
             text = f"the user marked this moment: {note}" if note else "the user marked this moment"
-        lines.append(f"[{n}] {hit.ts_start.astimezone(zone):%Y-%m-%d %H:%M}, {kind}: {clip(text, SOURCE_TEXT_MAX)}")
+        when = f"{hit.ts_start.astimezone(zone):%Y-%m-%d %H:%M}{places.at(hit.location, named)}"
+        lines.append(f"[{n}] {when}, {kind}: {clip(text, SOURCE_TEXT_MAX)}")
     return lines
 
 

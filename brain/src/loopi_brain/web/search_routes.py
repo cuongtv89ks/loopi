@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from markupsafe import Markup, escape
 from pydantic import BeforeValidator
 
-from .. import chat, search
+from .. import chat, places, search
 from ..days import range_utc
 from ..pipeline import moments as moment_rules
 from .routes import MARKER_LABEL, TEMPLATES, require_htmx
@@ -34,8 +34,9 @@ def _blank_is_none(value):
 OptionalDate = Annotated[dt.date | None, BeforeValidator(_blank_is_none)]
 
 
-def hit_view(hit: search.Hit, zone) -> dict:
-    """A moment as a search result or a chat source: time, kind, text, thumbnail, link to its Day page."""
+def hit_view(hit: search.Hit, zone, *, named: bool = False) -> dict:
+    """A moment as a search result or a chat source: time, kind, text, thumbnail, link to its Day page, and its place
+    when ``named`` (the results come from two or more devices)."""
     local = hit.ts_start.astimezone(zone)
     text = hit.text
     if hit.kind == "marker":
@@ -48,6 +49,7 @@ def hit_view(hit: search.Hit, zone) -> dict:
         "text": text,
         "lang": hit.lang,
         "keyframe_id": hit.keyframe_id,
+        "place": hit.location if named else None,
         "link": f"/?day={local.date().isoformat()}#m-{hit.id}",
     }
 
@@ -70,6 +72,7 @@ async def search_page(
             limit=SEARCH_LIMIT, max_distance=state.settings.search_max_distance,
             min_similarity=state.settings.search_min_similarity,
         )
+    named = places.several(h.device_id for h in result.hits) if result else False
     return TEMPLATES.TemplateResponse(
         request,
         "search.html",
@@ -77,7 +80,7 @@ async def search_page(
             "q": q,
             "first": first,
             "last": last,
-            "hits": [hit_view(hit, zone) for hit in result.hits] if result else None,
+            "hits": [hit_view(hit, zone, named=named) for hit in result.hits] if result else None,
             "semantic": result.semantic if result else True,
         },
     )
@@ -116,7 +119,8 @@ async def chat_answer(request: Request, q: str = Form(..., max_length=2000)):
         try:
             async for event, payload in chat.chat_events(state.pool, router_, q, state.settings):
                 if event == "sources":
-                    sources = [hit_view(hit, zone) for hit in payload["hits"]]
+                    named = places.several(hit.device_id for hit in payload["hits"])
+                    sources = [hit_view(hit, zone, named=named) for hit in payload["hits"]]
                     payload = {"html": TEMPLATES.get_template("_sources.html").render(hits=sources)}
                 elif event == "answer":
                     payload = {"html": str(render_answer(payload["text"], [] if payload["not_found"] else sources))}

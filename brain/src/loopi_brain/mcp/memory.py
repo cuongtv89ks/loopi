@@ -45,6 +45,7 @@ class MomentRef(BaseModel):
     day: str
     text: str
     lang: str | None
+    location: str | None = None  # where the recording device stands (D34)
 
 
 class SearchOut(BaseModel):
@@ -66,6 +67,7 @@ class MarkerOut(BaseModel):
     moment_id: str
     ts_start: str
     text: str
+    location: str | None = None  # where the recording device stands (D34)
 
 
 class TimelineOut(BaseModel):
@@ -100,6 +102,7 @@ class MomentOut(BaseModel):
     lang: str | None
     caption: CaptionOut | None
     image: bool  # whether a 320 px keyframe picture is attached to this result (D24)
+    location: str | None = None  # where the recording device stands (D34)
 
 
 class CommitmentOut(BaseModel):
@@ -171,7 +174,8 @@ async def search_memories(
             ends = {row["id"]: row["ts_end"] for row in await cur.fetchall()}
     moments = [  # a moment forgotten since the search is left out
         MomentRef(moment_id=h.id, kind=h.kind, ts_start=iso(h.ts_start, zone), ts_end=iso(ends[h.id], zone),
-                  day=h.ts_start.astimezone(zone).date().isoformat(), text=_clip(h.text), lang=h.lang)
+                  day=h.ts_start.astimezone(zone).date().isoformat(), text=_clip(h.text), lang=h.lang,
+                  location=h.location)
         for h in result.hits if h.id in ends
     ]
     return SearchOut(moments=moments, not_found=not moments, semantic=result.semantic)
@@ -187,8 +191,8 @@ async def get_timeline(pool: AsyncConnectionPool, day_text: str, zone: ZoneInfo)
         )
         chapters = await cur.fetchall()
         cur = await conn.execute(
-            "SELECT id, ts_start, text FROM moment WHERE kind = 'marker' AND ts_start >= %s AND ts_start < %s"
-            " ORDER BY ts_start, id",
+            "SELECT m.id, m.ts_start, m.text, d.location FROM moment m LEFT JOIN device d ON d.id = m.device_id"
+            " WHERE m.kind = 'marker' AND m.ts_start >= %s AND m.ts_start < %s ORDER BY m.ts_start, m.id",
             (start, end),
         )
         markers = await cur.fetchall()
@@ -203,7 +207,11 @@ async def get_timeline(pool: AsyncConnectionPool, day_text: str, zone: ZoneInfo)
                        summary=_clip(c["summary"]), closed=c["closed"])
             for c in chapters
         ],
-        markers=[MarkerOut(moment_id=m["id"], ts_start=iso(m["ts_start"], zone), text=_clip(m["text"])) for m in markers],
+        markers=[
+            MarkerOut(moment_id=m["id"], ts_start=iso(m["ts_start"], zone), text=_clip(m["text"]),
+                      location=m["location"])
+            for m in markers
+        ],
         counts=counts,
     )
 
@@ -244,9 +252,10 @@ async def get_moment(
     zone = settings.zone
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT m.id, m.kind, m.ts_start, m.ts_end, m.text, m.lang, m.keyframe_id, k.caption,"
+            "SELECT m.id, m.kind, m.ts_start, m.ts_end, m.text, m.lang, m.keyframe_id, k.caption, d.location,"
             " EXISTS (SELECT 1 FROM eval_caption e WHERE e.keyframe_id = m.keyframe_id) AS golden"
-            " FROM moment m LEFT JOIN keyframe k ON k.id = m.keyframe_id WHERE m.id = %s",
+            " FROM moment m LEFT JOIN keyframe k ON k.id = m.keyframe_id LEFT JOIN device d ON d.id = m.device_id"
+            " WHERE m.id = %s",
             (wanted,),
         )
         row = await cur.fetchone()
@@ -263,6 +272,7 @@ async def get_moment(
         moment_id=row["id"], kind=row["kind"], ts_start=iso(row["ts_start"], zone), ts_end=iso(row["ts_end"], zone),
         day=row["ts_start"].astimezone(zone).date().isoformat(), text=_clip(row["text"]), lang=row["lang"],
         caption=_caption(row["caption"]) if row["kind"] == "visual" else None, image=picture is not None,
+        location=row["location"],
     )
     return out, picture
 
