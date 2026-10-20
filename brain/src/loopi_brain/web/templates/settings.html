@@ -41,7 +41,9 @@
   </form>
   <p>Dọn dữ liệu cũ: {% if retention.enabled %}<strong>đang bật</strong>{% else %}<strong>đang tắt</strong> (chưa xoá gì){% endif %}.</p>
   <p>Nếu chạy bây giờ sẽ xoá: {{ deletes }}.</p>
-  <p class="muted">Video (MP4) và âm thanh cũ hơn số ngày này bị xoá lúc 03:00; keyframe, transcript, chương, recap và vlog giữ vĩnh viễn.</p>
+  {% if retention.enabled %}<p class="muted">Video (MP4) và âm thanh cũ hơn số ngày này bị xoá lúc 03:00; keyframe, transcript, chương, recap và vlog giữ vĩnh viễn.</p>
+  {% else %}<p class="muted">Xoá tự động đang tắt; khi bật, video (MP4) và âm thanh cũ hơn số ngày này bị xoá lúc 03:00; keyframe, transcript, chương, recap và vlog giữ vĩnh viễn.</p>
+  {% endif %}
   <p class="muted">Bản H.264 thô bị xoá ngay khi đã có MP4 và keyframe (D32); MP4 và audio giữ theo số ngày ở đây.</p>
   <div id="retention-result"></div>
 </section>

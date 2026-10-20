@@ -120,6 +120,37 @@ async def test_a_known_camera_with_no_recording_that_day_still_filters(client, p
     assert "Không có dữ liệu cho ngày này." not in text  # the day has data, only not from this camera
 
 
+async def test_the_hours_page_names_a_filtered_camera_with_nothing_that_day_too(client, pool, two):
+    living, kitchen = two
+    await insert_moment(pool, living, kind="speech", ts=NINE, text="Một", lang="vi")
+    text = (await client.get("/hours", params={"day": "2026-10-14", "device": kitchen})).text
+    assert "Một" not in text and "<strong>Bếp</strong>" in text
+    assert 'href="/hours?day=2026-10-14">Tất cả</a>' in text
+
+
+@pytest.mark.parametrize("path", ["/", "/hours"])
+async def test_a_filtered_camera_with_nothing_that_day_takes_its_place_by_location(client, pool, pki_settings, two, path):
+    living, kitchen = two
+    idle = (await paired_device(pool, pki_settings))["device_id"]
+    await places.set_location(pool, idle, "Ao")  # before Bếp and Phòng khách
+    await insert_moment(pool, living, kind="speech", ts=NINE, text="Một", lang="vi")
+    await insert_moment(pool, kitchen, kind="speech", ts=NINE, text="Hai", lang="vi")
+    text = (await client.get(path, params={"day": "2026-10-14", "device": idle})).text
+    bar = text.split('<nav class="places">', 1)[1].split("</nav>", 1)[0]
+    assert bar.index("<strong>Ao</strong>") < bar.index(">Bếp</a>") < bar.index(">Phòng khách</a>"), bar
+
+
+async def test_day_places_can_include_one_more_device_in_the_same_order(pool, pki_settings, two):
+    living, kitchen = two
+    await insert_item(pool, living, kind="audio", started_at=NINE)
+    idle = (await paired_device(pool, pki_settings))["device_id"]
+    await places.set_location(pool, idle, "Ao")
+    got = await places.day_places(pool, NINE, NINE + dt.timedelta(hours=2), include=idle)
+    assert got == [{"id": idle, "location": "Ao"}, {"id": living, "location": "Phòng khách"}]
+    assert await places.day_places(pool, NINE, NINE + dt.timedelta(hours=2), include=living) == [
+        {"id": living, "location": "Phòng khách"}]  # already there: listed once
+
+
 async def test_day_places_lists_cameras_with_a_recording_in_range_by_location_then_id(pool, pki_settings, two):
     living, kitchen = two
     idle = (await paired_device(pool, pki_settings))["device_id"]

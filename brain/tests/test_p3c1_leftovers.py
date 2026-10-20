@@ -147,6 +147,18 @@ async def test_the_retention_wording_no_longer_speaks_of_raw_video(web, pool):
     assert "giữ video 5 ngày, audio thô 9 ngày" in card and "video thô" not in card
 
 
+async def test_the_deletion_line_follows_the_retention_switch(web, pool):
+    on = "Video (MP4) và âm thanh cũ hơn số ngày này bị xoá lúc 03:00; keyframe, transcript, chương, recap và vlog giữ vĩnh viễn."
+    off = ("Xoá tự động đang tắt; khi bật, video (MP4) và âm thanh cũ hơn số ngày này bị xoá lúc 03:00; keyframe, "
+           "transcript, chương, recap và vlog giữ vĩnh viễn.")
+    await web.post("/settings/retention", data={"video_days": "7", "audio_days": "7"}, headers=HX)
+    text = (await web.get("/settings")).text
+    assert off in text and on not in text  # while off, the page never says files are deleted at 03:00
+    await web.post("/settings/retention", data={"video_days": "7", "audio_days": "7", "enabled": "on"}, headers=HX)
+    text = (await web.get("/settings")).text
+    assert on in text and off not in text
+
+
 async def test_a_vlog_made_from_keyframes_says_its_video_expired(web, pool):
     async with pool.connection() as conn:
         await conn.execute("INSERT INTO vlog (day, state, source, path) VALUES (%s, 'rendered', 'keyframes', 'vlog/x.mp4')",

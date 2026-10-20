@@ -133,7 +133,7 @@ async def timeline(
     device = device or None
     if device and not await places.known_device(pool, device):
         raise HTTPException(status_code=422, detail="unknown device")
-    day_cams = await places.day_places(pool, *day_bounds_utc(day, zone))
+    day_cams = await places.day_places(pool, *day_bounds_utc(day, zone), include=device)
     labels = {p["id"]: p["location"] for p in day_cams} if device is None and len(day_cams) >= 2 else None
     hours = await _day_by_hour(pool, day, zone, device, labels)
     return TEMPLATES.TemplateResponse(

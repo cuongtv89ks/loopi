@@ -1,5 +1,8 @@
+import asyncio
 import datetime as dt
+import re
 import stat
+import time
 import tomllib
 from pathlib import Path
 
@@ -38,6 +41,7 @@ async def test_a_camera_gets_a_mode_600_config_its_agent_can_run(pool, pki_setti
     assert capture["audio_enabled"] is True and capture["audio_gain_db"] == 0.0
     assert (capture["video_fps"], capture["video_bitrate_bps"]) == (2, 400000) and "audio_url" not in capture
     assert config["led"] == {"source": "none"}
+    assert config["clock"] == {"source": "kernel"}  # the agent asks the PC's kernel: the container mounts no timesync
     assert config["paths"]["data_dir"] == f"/srv/loopi/cameras/{camera_id}/data"
     assert config["schedule"]["timezone"] == pki_settings.tz
 
@@ -101,8 +105,16 @@ async def test_removing_a_camera_scrubs_the_password_and_revokes(pool, pki_setti
     (dict(audio_url="ftp://192.0.2.10/a"), "Địa chỉ âm thanh phải bắt đầu bằng http://, https:// hoặc rtsp://."),
     (dict(video_url="rtsp://#x"), "Địa chỉ không có tên máy hoặc IP."),  # the agent ends the host at '#' too
     (dict(video_url="rtsp://?x"), "Địa chỉ không có tên máy hoặc IP."),
-    (dict(video_url="rtsp://192.0.2.10/" + "a" * 983), "Địa chỉ dài quá 1000 ký tự."),
-    (dict(video_url="rtsp://192.0.2.10/" + "ế" * 400), "Địa chỉ dài quá 1000 ký tự."),  # 400 characters, 1200 bytes
+    (dict(video_url="rtsp://192.0.2.10/" + "a" * 983), "Địa chỉ quá dài (tối đa 1000 byte)."),
+    (dict(video_url="rtsp://192.0.2.10/" + "ế" * 400), "Địa chỉ quá dài (tối đa 1000 byte)."),  # 400 characters, 1200 bytes
+    # Credentials in the query (or the fragment) would reach the database and every card: they go in the fields.
+    (dict(video_url="http://192.0.2.10/videostream.cgi?pwd=x"), "Đừng ghi tên đăng nhập hay mật khẩu vào địa chỉ"),
+    (dict(video_url="http://192.0.2.10/videostream.cgi?User=admin&Password=x"), "Đừng ghi tên đăng nhập hay mật khẩu"),
+    (dict(video_url="http://192.0.2.10/v?resolution=8&loginuse=admin&loginpas=x"), "Đừng ghi tên đăng nhập"),
+    (dict(video_url="http://192.0.2.10/v?p%61ss=x"), "Đừng ghi tên đăng nhập hay mật khẩu"),  # pass, percent-encoded
+    (dict(video_url="rtsp://192.0.2.10/live#usr=admin"), "Đừng ghi tên đăng nhập hay mật khẩu"),
+    (dict(video_url="rtsp://192.0.2.10/live?passwd"), "Đừng ghi tên đăng nhập hay mật khẩu"),
+    (dict(audio_url="http://192.0.2.10/audio.wav?username=a&passwd=x"), "Đừng ghi tên đăng nhập hay mật khẩu"),
     (dict(username="ad\x00min"), "Tên đăng nhập có ký tự không hợp lệ."),
     (dict(username="ad\nmin"), "Tên đăng nhập có ký tự không hợp lệ."),
     (dict(username="u" * 65), "Tên đăng nhập dài quá 64 ký tự."),
@@ -110,8 +122,14 @@ async def test_removing_a_camera_scrubs_the_password_and_revokes(pool, pki_setti
     (dict(password="pw\x00"), "Mật khẩu có ký tự không hợp lệ."),
 ])
 def test_bad_camera_input_is_refused_with_a_vietnamese_reason(over, message):
-    with pytest.raises(cameras.CameraError, match=message):
+    with pytest.raises(cameras.CameraError, match=re.escape(message)):
         cam(**over)
+
+
+def test_query_parameters_that_are_not_credentials_pass():
+    for url in ("rtsp://192.0.2.10:554/cam/realmonitor?channel=1&subtype=0", "http://192.0.2.10/v?passive=1&user_id=3",
+                "http://192.0.2.10/video#t=1", "http://192.0.2.10/pwd/stream?x=user"):
+        assert cam(video_url=url).video_url == url
 
 
 def test_credentials_are_percent_encoded_for_ffprobe():
@@ -152,6 +170,25 @@ async def test_an_ordinary_token_leaves_the_cameras_alone(pool, pki_settings):
 
 async def test_the_app_creates_the_cameras_directory(client, pki_settings):
     assert pki_settings.cameras_dir.is_dir()
+
+
+async def test_removing_locks_the_token_before_the_camera_as_pairing_does(pool, pki_settings):
+    # register_device locks the token (consuming it), then the camera row. A remove that took the camera first could
+    # deadlock against it; it now waits on the token without holding the camera.
+    camera_id = await cameras.add_camera(pool, pki_settings, cam())
+    async with pool.connection() as pairing:
+        async with pairing.transaction():
+            await pairing.execute("UPDATE pair_token SET used_at = used_at WHERE camera_id = %s", (camera_id,))
+            remove = asyncio.create_task(cameras.remove_camera(pool, pki_settings, camera_id))
+            deadline = time.monotonic() + 5
+            while not (await (await pairing.execute(
+                    "SELECT count(*) AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+                    " AND datname = current_database()")).fetchone())["n"]:
+                assert time.monotonic() < deadline and not remove.done(), "the remove never waited on the token"
+                await asyncio.sleep(0.02)
+            # The camera row is still free: pairing could finish its own work and commit.
+            await pairing.execute("SELECT 1 FROM network_camera WHERE id = %s FOR UPDATE NOWAIT", (camera_id,))
+    assert await remove
 
 
 def test_the_limits_are_the_agents_own_and_are_accepted_at_the_edge():

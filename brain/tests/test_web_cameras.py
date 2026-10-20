@@ -1,6 +1,6 @@
 
 from helpers import fetch_one, make_csr_pem, paired_device
-from loopi_brain import camera_probe, devices, pki
+from loopi_brain import camera_probe, cameras, devices, pki
 
 HX = {"HX-Request": "true"}
 FORM = dict(kind="ip", location="Phòng khách", video_url="rtsp://192.0.2.10:554/cam/realmonitor?channel=1&subtype=0",
@@ -18,6 +18,17 @@ async def test_switching_the_kind_fills_its_template(client):
     form = (await client.get("/cameras/form", params={"kind": "esp32"})).text
     assert 'value="http://&lt;IP&gt;:81/stream"' in form and "Firmware Loopi" in form
     assert 'name="has_audio"' in form and "checked" not in form.split('name="has_audio"')[1].split(">")[0]
+
+
+async def test_a_phone_records_no_sound_by_default_and_its_hint_names_the_sound_address(client):
+    # Its template is MJPEG over HTTP, which has no sound: "Ghi âm" on would only report a missing microphone.
+    phone = cameras.KINDS["phone"]
+    assert phone.has_audio is False and phone.video_template == "http://<IP>:8080/video"
+    assert phone.hint == ('Android "IP Webcam": hình http://<IP>:8080/video, tiếng http://<IP>:8080/audio.wav (điền vào ô '
+                          'âm thanh riêng và chọn "Ghi âm"). iPhone: dùng địa chỉ RTSP mà app hiện ra (có cả tiếng).')
+    form = (await client.get("/cameras/form", params={"kind": "phone"})).text
+    assert "tiếng http://&lt;IP&gt;:8080/audio.wav" in form
+    assert "checked" not in form.split('name="has_audio"')[1].split(">")[0]
 
 
 async def test_adding_a_camera(client, pool, pki_settings):
@@ -69,6 +80,8 @@ async def test_probing_refuses_an_address_that_a_save_would_refuse_and_never_run
     assert r.status_code == 200 and "Địa chỉ âm thanh phải bắt đầu bằng http://, https:// hoặc rtsp://." in r.text
     r = await client.post("/cameras/probe", data=FORM | {"audio_url": "http://<IP>/audio"}, headers=HX)
     assert r.status_code == 200 and "Thay &lt;IP&gt; bằng địa chỉ của camera." in r.text
+    r = await client.post("/cameras/probe", data=FORM | {"video_url": "http://192.0.2.10/v.cgi?user=admin&pwd=x"}, headers=HX)
+    assert r.status_code == 200 and "Đừng ghi tên đăng nhập hay mật khẩu vào địa chỉ" in r.text
     assert calls == []  # nothing, not even the good video address next to the bad audio address, reached ffprobe
 
 

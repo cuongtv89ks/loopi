@@ -61,7 +61,7 @@ async def day_view(pool, day: dt.date, zone, today: dt.date | None = None, devic
     from the previous 7 days). With ``device``, only that camera's moments; with several cameras and no filter,
     each moment carries its place."""
     start, end = day_bounds_utc(day, zone)
-    day_cams = await places.day_places(pool, start, end)
+    day_cams = await places.day_places(pool, start, end, include=device)  # a filtered camera with nothing today too
     named = device is None and len(day_cams) >= 2
     async with pool.connection() as conn:
         cur = await conn.execute("SELECT * FROM chapter WHERE day = %s ORDER BY ts_start", (day,))
@@ -81,10 +81,6 @@ async def day_view(pool, day: dt.date, zone, today: dt.date | None = None, devic
             "SELECT EXISTS (SELECT 1 FROM moment WHERE ts_start >= %s AND ts_start < %s) AS any", (start, end)
         )
         has_data = (await cur.fetchone())["any"]  # the whole day, all cameras: a filter does not hide it
-        if device and all(p["id"] != device for p in day_cams):  # a camera with nothing today is still named
-            cur = await conn.execute("SELECT id, location FROM device WHERE id = %s", (device,))
-            if (idle := await cur.fetchone()) is not None:
-                day_cams.append(idle)
         cur = await conn.execute("SELECT * FROM day_recap WHERE day = %s", (day,))
         recap = await cur.fetchone()
         cur = await conn.execute(f"{_COMMITMENTS} WHERE c.day = %s ORDER BY c.created_at, c.id", (day,))

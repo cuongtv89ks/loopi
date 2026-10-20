@@ -45,15 +45,17 @@
     const HX_ERRORS = {403: "Yêu cầu không hợp lệ", 404: "Không tìm thấy, hãy tải lại trang",
                        409: "Job không còn ở trạng thái lỗi, hãy tải lại trang",
                        422: "Giá trị không hợp lệ, hãy kiểm tra lại"};
-    // The 15 s "Đang ghi" poll is not an owner request: it never clears or shows the banner.
+    // The 15 s "Đang ghi" poll is not an owner request: it never clears or shows the banner. When it fails, its own
+    // line says the count is unknown (an old count would claim cameras record, or do not); the next answer replaces it.
     const fromPoll = (e) => e.detail.elt.id === "recording-now";
+    const pollFailed = (e) => { e.detail.elt.textContent = "Đang ghi: không rõ"; };
     document.body.addEventListener("htmx:responseError", (e) => {
-      if (fromPoll(e)) return;
+      if (fromPoll(e)) return pollFailed(e);
       document.getElementById("hx-error").textContent =
         HX_ERRORS[e.detail.xhr.status] || "Có lỗi, thử lại";
     });
     document.body.addEventListener("htmx:sendError", (e) => {
-      if (fromPoll(e)) return;
+      if (fromPoll(e)) return pollFailed(e);
       document.getElementById("hx-error").textContent = "Có lỗi, thử lại";
     });
     document.body.addEventListener("htmx:beforeRequest", (e) => {

@@ -28,6 +28,10 @@ URL_MAX = 1000  # bytes, as the agent counts them
 USERNAME_MAX = 64
 PASSWORD_MAX = 128
 _AUTHORITY_END = re.compile(r"[/?#]")  # where a URL's host part ends, as the agent splits it
+# Query (or fragment) parameters that carry a login: cheap cameras' manuals give `…/videostream.cgi?user=admin&pwd=…`.
+# Such an address would put the password in the database and on every card, so it is refused (compared lowercased).
+CREDENTIAL_PARAMS = frozenset({"user", "username", "usr", "pass", "passwd", "password", "pwd", "loginuse", "loginpas"})
+CREDENTIALS_IN_URL = "Đừng ghi tên đăng nhập hay mật khẩu vào địa chỉ; điền chúng vào ô bên dưới."
 VIDEO_FPS = 2
 VIDEO_BITRATE_BPS = 400_000
 
@@ -44,8 +48,10 @@ class CameraKind:
 KINDS: dict[str, CameraKind] = {
     "ip": CameraKind("Camera IP (RTSP)", "rtsp://<IP>:554/cam/realmonitor?channel=1&subtype=0", "admin", True,
                      "Camera Imou: tên đăng nhập admin, mật khẩu là mã an toàn in dưới đáy camera."),
-    "phone": CameraKind("Điện thoại — iPhone/Android (app phát RTSP hoặc MJPEG)", "http://<IP>:8080/video", "", True,
-                        "Android \"IP Webcam\": http://<IP>:8080/video. iPhone: dùng địa chỉ RTSP mà app hiện ra."),
+    # MJPEG over HTTP carries no sound: "Ghi âm" starts off, and the hint names IP Webcam's own sound address.
+    "phone": CameraKind("Điện thoại — iPhone/Android (app phát RTSP hoặc MJPEG)", "http://<IP>:8080/video", "", False,
+                        "Android \"IP Webcam\": hình http://<IP>:8080/video, tiếng http://<IP>:8080/audio.wav (điền vào"
+                        " ô âm thanh riêng và chọn \"Ghi âm\"). iPhone: dùng địa chỉ RTSP mà app hiện ra (có cả tiếng)."),
     "esp32": CameraKind("ESP32 có camera (MJPEG qua HTTP)", "http://<IP>:81/stream", "", False,
                         "Firmware có sẵn: http://<IP>:81/stream, không có âm thanh. Firmware Loopi: http://<IP>/stream"
                         " và âm thanh ở http://<IP>/audio."),
@@ -81,13 +87,22 @@ def clean_url(text: str, *, schemes: tuple[str, ...], what: str) -> str:
     if any(c.isspace() for c in url) or not url.isprintable():
         raise CameraError("Địa chỉ không được có dấu cách.")
     if len(url.encode()) > URL_MAX:
-        raise CameraError(f"Địa chỉ dài quá {URL_MAX} ký tự.")
+        raise CameraError(f"Địa chỉ quá dài (tối đa {URL_MAX} byte).")
     authority = _AUTHORITY_END.split(url.split("://", 1)[1], maxsplit=1)[0]
-    if "@" in authority:
-        raise CameraError("Đừng ghi tên đăng nhập hay mật khẩu vào địa chỉ; điền chúng vào ô bên dưới.")
+    if "@" in authority or _has_credential_params(url):
+        raise CameraError(CREDENTIALS_IN_URL)
     if not authority:
         raise CameraError("Địa chỉ không có tên máy hoặc IP.")
     return url
+
+
+def _has_credential_params(url: str) -> bool:
+    """Whether the query or the fragment names a login parameter (`?pwd=x`, `?User=a&Password=x`, `#pass=x`)."""
+    before_fragment, _, fragment = url.partition("#")
+    query = before_fragment.partition("?")[2]
+    names = (name.lower() for part in (query, fragment)
+             for name, _ in urllib.parse.parse_qsl(part, keep_blank_values=True))
+    return any(name in CREDENTIAL_PARAMS for name in names)
 
 
 VIDEO_SCHEMES = ("rtsp://", "http://", "https://")
@@ -159,6 +174,8 @@ def render_config(camera_id: str, cam: CameraInput, *, token: str | None, ca_fin
     } | ({"audio_url": cam.audio_url} if cam.audio_url else {})
     sections = {
         "brain": brain, "capture": capture, "schedule": {"timezone": tz}, "led": {"source": "none"},
+        # The container has no timesyncd and mounts nothing of the host's but its directory: the agent asks the kernel.
+        "clock": {"source": "kernel"},
         "paths": {"data_dir": f"{CONTAINER_ROOT}/{camera_id}/data"},
     }
     lines = ["# Written by the brain (P3c-2) for the cameras container. Holds a password: mode 600, never commit."]
@@ -260,6 +277,10 @@ async def remove_camera(pool: AsyncConnectionPool, settings: Settings, camera_id
     created = False
     try:
         async with pool.connection() as conn, conn.transaction():
+            # The tokens first, then the camera: the order register_device takes them in (it consumes a token, then
+            # links its camera). The other order lets a pairing and a remove each wait on the other until Postgres
+            # aborts one.
+            await conn.execute("SELECT 1 FROM pair_token WHERE camera_id = %s FOR UPDATE", (camera_id,))
             cur = await conn.execute(
                 "UPDATE network_camera SET removed_at = now() WHERE id = %s AND removed_at IS NULL RETURNING *",
                 (camera_id,),

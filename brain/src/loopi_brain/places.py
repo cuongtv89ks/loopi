@@ -65,9 +65,11 @@ def at(location: str | None, named: bool, sep: str = "") -> str:
     return f" at {location}{sep}" if named and location else ""
 
 
-async def day_places(pool: AsyncConnectionPool, start: dt.datetime, end: dt.datetime) -> list[dict]:
+async def day_places(pool: AsyncConnectionPool, start: dt.datetime, end: dt.datetime,
+                     include: str | None = None) -> list[dict]:
     """Every device (revoked ones too) with a recording or a moment in [start, end), as {"id", "location"},
-    ordered by location then id: the cameras a merged day shows."""
+    ordered by location then id: the cameras a merged day shows. ``include`` (the camera a page is filtered to) is
+    listed even with nothing in the range, in its place in that same order."""
     async with pool.connection() as conn:
         cur = await conn.execute(
             "SELECT d.id, d.location FROM device d"
@@ -75,8 +77,9 @@ async def day_places(pool: AsyncConnectionPool, start: dt.datetime, end: dt.date
             "               AND i.started_at < %(end)s)"
             " OR EXISTS (SELECT 1 FROM moment m WHERE m.device_id = d.id AND m.ts_start >= %(start)s"
             "            AND m.ts_start < %(end)s)"
+            " OR d.id = %(include)s::text"
             " ORDER BY d.location, d.id",
-            {"start": start, "end": end},
+            {"start": start, "end": end, "include": include},
         )
         return await cur.fetchall()
 

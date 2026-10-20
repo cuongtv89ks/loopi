@@ -196,10 +196,11 @@ async def list_devices(pool: AsyncConnectionPool) -> list[dict]:
 
 async def recording_count(pool: AsyncConnectionPool) -> int:
     """Devices recording video now (D31: the web is the sign for a network camera): not revoked, heard from within
-    45 seconds, and their last heartbeat says recording_video."""
+    45 seconds, and their last heartbeat says recording_video: true. Containment, not a cast: a cast would take "yes"
+    or 1 as true and raise on any other text."""
     async with pool.connection() as conn:
         cur = await conn.execute(
             "SELECT count(*) AS n FROM device WHERE NOT revoked AND last_heartbeat_at > now() - interval '45 seconds'"
-            " AND (last_heartbeat->>'recording_video')::boolean"
+            " AND last_heartbeat @> '{\"recording_video\": true}'"
         )
         return (await cur.fetchone())["n"]
