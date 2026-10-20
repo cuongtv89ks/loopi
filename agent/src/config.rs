@@ -400,8 +400,8 @@ pub fn normalize_fingerprint(raw: &str) -> Option<String> {
 
 /// A TOML error as "line N: message". `toml::de::Error` is neither displayed nor kept: its Display quotes the source line
 /// and its Debug holds the whole file, and the file holds `capture.stream_password`, `wifi.psk` and `brain.pair_token`.
-/// The message itself keeps no quoted span (`without_quoted`): a type error quotes the value
-/// (`invalid type: integer `12345``). A message about the password's own line is replaced altogether.
+/// The message itself keeps no value (`without_quoted`): a type error quotes it (`invalid type: integer `12345``), a key
+/// name stays. A message about the password's own line is replaced altogether.
 fn toml_error(text: &str, e: &toml::de::Error) -> ConfigError {
     let Some(span) = e.span() else {
         return ConfigError::Toml(without_quoted(e.message()));
@@ -417,9 +417,25 @@ fn toml_error(text: &str, e: &toml::de::Error) -> ConfigError {
     ConfigError::Toml(format!("line {}: {message}", line + 1))
 }
 
-/// toml's message without anything it quotes: a backtick span (`integer `12345678``, `unknown variant `x``) or a
-/// double-quoted string (serde's `string "S3cr3t"`), an unclosed one up to the end. Any of them can be a value from the
-/// file, a secret's included, so only the kind of error is left; the line number tells where to look.
+/// Whether a backtick span starting after `before` quotes a value from the file: serde's "invalid type: integer `12345678`",
+/// "invalid value: integer `-1`" and "unknown variant `blink`". Every other span names a key or lists what was expected
+/// (`missing field `brain``, `unknown field `x`, expected one of `a`, `b``) and is no secret.
+fn span_quotes_a_value(before: &str) -> bool {
+    if before.ends_with("unknown variant ") {
+        return true;
+    }
+    ["invalid type: ", "invalid value: "].iter().any(|marker| {
+        before.rfind(marker).is_some_and(|at| {
+            let kind = &before[at + marker.len()..];
+            kind.ends_with(' ') && !kind.trim().is_empty() && kind.chars().all(|c| c.is_ascii_alphabetic() || c == ' ')
+        })
+    })
+}
+
+/// toml's message without any value it quotes: a double-quoted string (serde's `string "S3cr3t"`, an unclosed one up to the
+/// end) and the backtick span where `span_quotes_a_value`; an unclosed backtick span goes too. Any of them can be a value
+/// from the file, a secret's included, so only the kind of error is left, with the key names and expected lists; the line
+/// number tells where to look.
 fn without_quoted(message: &str) -> String {
     let drop_dangling = |kept: &mut String| kept.truncate(kept.trim_end_matches(|c: char| c.is_whitespace() || c == ',').len());
     let mut kept = String::with_capacity(message.len());
@@ -427,8 +443,17 @@ fn without_quoted(message: &str) -> String {
     while let Some(c) = chars.next() {
         match c {
             '`' => {
-                let _ = chars.find(|&c| c == '`');
-                drop_dangling(&mut kept);
+                let mut span = String::new();
+                let closed = chars.by_ref().find(|&c| {
+                    span.push(c);
+                    c == '`'
+                });
+                if closed.is_some() && !span_quotes_a_value(&kept) {
+                    kept.push('`');
+                    kept.push_str(&span);
+                } else {
+                    drop_dangling(&mut kept);
+                }
             }
             '"' => {
                 while let Some(c) = chars.next() {
@@ -984,25 +1009,56 @@ data_dir = "/srv/loopi/cameras/01J0000000000000000000000A/data"
         }
     }
 
+    /// Values go, key names and the "expected" lists stay: a backtick span is dropped only right after
+    /// "invalid type: <kind> ", "invalid value: <kind> " or "unknown variant ", every double-quoted string always.
     #[test]
-    fn toml_messages_keep_the_kind_of_error_without_any_quoted_span() {
+    fn toml_messages_drop_values_and_keep_key_names() {
         let wrong_type = "invalid type: integer `12345678`, expected a string";
         assert_eq!(without_quoted(wrong_type), "invalid type: integer, expected a string");
+        assert_eq!(without_quoted("invalid type: floating point `1.5`, expected a string"), "invalid type: floating point, expected a string");
+        assert_eq!(without_quoted("invalid value: integer `-1`, expected u32"), "invalid value: integer, expected u32");
+        assert_eq!(without_quoted("invalid value: string \"S3cr3t\", expected u32"), "invalid value: string, expected u32");
         assert_eq!(without_quoted("invalid type: string \"S3\\\"cr`3t\", expected u32"), "invalid type: string, expected u32");
-        assert_eq!(without_quoted("unknown variant `S3cr3t`, expected `csi` or `stream`"), "unknown variant, expected or");
-        assert_eq!(without_quoted("invalid string\nexpected `\"`, `'`"), "invalid string; expected");
+        assert_eq!(
+            without_quoted("unknown variant `S3cr3t`, expected `csi` or `stream`"),
+            "unknown variant, expected `csi` or `stream`"
+        );
+        assert_eq!(without_quoted("missing field `brain`"), "missing field `brain`");
+        assert_eq!(without_quoted("duplicate field `url`"), "duplicate field `url`");
+        assert_eq!(
+            without_quoted("unknown field `unknown_key`, expected one of `url`, `pair_token`"),
+            "unknown field `unknown_key`, expected one of `url`, `pair_token`"
+        );
+        assert_eq!(without_quoted("invalid string\nexpected `\"`, `'`"), "invalid string; expected `\"`, `'`");
+        // A double-quoted string goes wherever it stands; a span in no known value position stays, an unclosed one does not.
+        assert_eq!(without_quoted("key \"S3cr3t\" is missing field `x`"), "key is missing field `x`");
         assert_eq!(without_quoted("unclosed `S3cr3t"), "unclosed");
         assert_eq!(without_quoted("unclosed \"S3cr3t\\"), "unclosed");
         assert_eq!(without_quoted("value is out of range"), "value is out of range");
     }
 
     #[test]
+    fn a_toml_error_names_the_key_it_is_about_and_never_the_value() {
+        let brain = "[brain]\nurl = \"https://proxy:8443\"\n";
+        let err = Config::parse("unknown_key = 1\n[brain]\nurl = \"https://proxy:8443\"\n").unwrap_err().to_string();
+        assert!(err.contains("line 1") && err.contains("`unknown_key`"), "{err}");
+        let err = Config::parse("[capture]\n").unwrap_err().to_string();
+        assert_eq!(err, "invalid TOML: line 1: missing field `brain`");
+        let err = Config::parse(&format!("{brain}[led]\nsource = \"blink\"\n")).unwrap_err().to_string();
+        assert!(err.contains("line 4") && err.contains("unknown variant"), "{err}");
+        assert!(!err.contains("blink") && !err.contains("source ="), "the bad value is shown: {err}");
+        assert!(err.contains("expected one of `"), "the expected list is gone: {err}");
+        let err = Config::parse(&format!("{brain}[capture]\nvideo_fps = \"fast\"\n")).unwrap_err().to_string();
+        assert!(err.contains("line 4") && err.contains("invalid type") && !err.contains("fast"), "{err}");
+    }
+
+    #[test]
     fn other_toml_errors_keep_their_message_and_line() {
         let err = Config::parse("[brain]\nurl = \"https://proxy:8443\"\n[capture]\nvideo_fps = \"fast\"\n").unwrap_err().to_string();
         assert!(err.contains("line 4") && err.contains("invalid type") && !err.contains("fast"), "{err}");
-        // A key's name goes too: the rule keeps no quoted span at all.
+        // The name of the missing key stays: only values are dropped.
         let err = Config::parse("[capture]\n").unwrap_err().to_string();
-        assert_eq!(err, "invalid TOML: line 1: missing field");
+        assert_eq!(err, "invalid TOML: line 1: missing field `brain`");
         // An error without a position (serde's `custom`) is the message alone.
         let positionless = toml_error("[brain]\n", &<toml::de::Error as serde::de::Error>::custom("boom"));
         assert_eq!(positionless.to_string(), "invalid TOML: boom");

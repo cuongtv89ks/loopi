@@ -263,7 +263,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("loopi.toml");
         let toml = format!(
-            "[brain]\nurl = \"https://192.168.1.10:8443\"\n[capture]\ncamera_cmd = \"/nonexistent/rpicam-vid\"\n\
+            "[brain]\nurl = \"https://192.0.2.10:8443\"\n[capture]\ncamera_cmd = \"/nonexistent/rpicam-vid\"\n\
              [clock]\nsource = \"kernel\"\n[paths]\ndata_dir = {:?}\nsync_flag = {:?}\n",
             dir.path(),
             dir.path().join("missing")
