@@ -4,9 +4,10 @@ image's ffmpeg 7.1.5 (240 real 1080p 2 fps segments + 10 stills: 152 s wall, 212
 Pipeline (every ffmpeg call is built by a pure function returning its argv):
   0. inputs are checked in pure Python — MP4 frame/keyframe counts (moov parse), Ogg Opus duration, JPEG decode
      (Pillow); a bad input is skipped here, before any ffmpeg runs.
-  1. base track: ONE ffmpeg per run (consecutive segments of one camera; a single camera is one run) over a
-     concat-demuxer list of its segments, keeping exactly its share of N = T*24 frames (uniform select; every segment
-     the same share, ruling R12), split into chunks at the stills' positions (forced keyframes + the segment muxer).
+  1. base track: ONE ffmpeg per run (consecutive segments of one camera at one frame size; a single camera at one
+     size is one run) over a concat-demuxer list of its segments, keeping exactly its share of N = T*24 frames
+     (uniform select; every segment the same share, ruling R12), split into chunks at the stills' positions (forced
+     keyframes + the segment muxer).
      Without segments: a keyframe slideshow (Pillow -> rawvideo pipe), 0.25 s per JPEG, split the same way.
      With two or more cameras each run and still carries its place (drawtext, ruling R13).
   2. Ken Burns stills: Pillow -> one 1920x1080 rawvideo frame on stdin -> pre-scale x4 -> zoompan, D s at 24 fps.
@@ -97,6 +98,8 @@ class Track:
     duration: int  # in timescale units (mdhd)
     samples: int  # stsz sample_count = frames for video
     sync_samples: int  # stss entry_count (== samples when there is no stss box)
+    width: int = 0  # the track header's (tkhd) presentation size, whole pixels; 0 for sound and text
+    height: int = 0
 
     @property
     def seconds(self) -> float:
@@ -126,6 +129,20 @@ def _child(f, start: int, end: int, kind: bytes) -> tuple[int, int] | None:
     return None
 
 
+def _track_size(f, tkhd: tuple[int, int] | None) -> tuple[int, int]:
+    """Width and height from a track header (16.16 fixed point, 76 bytes in; 88 for version 1); (0, 0) without
+    one."""
+    if tkhd is None:
+        return 0, 0
+    f.seek(tkhd[0])
+    at = tkhd[0] + (88 if f.read(1)[0] == 1 else 76)
+    if at + 8 > tkhd[1]:
+        raise InvalidMedia(f"truncated tkhd at {tkhd[0]}")
+    f.seek(at)
+    width, height = struct.unpack(">II", f.read(8))
+    return width >> 16, height >> 16
+
+
 def probe_mp4(path: Path) -> list[Track]:
     """Tracks of an MP4 from its moov box only (no decoding). Raises InvalidMedia when moov is missing
     (e.g. a recording cut before the moov was written) or any top-level box overruns the file."""
@@ -150,6 +167,7 @@ def probe_mp4(path: Path) -> list[Track]:
                 stbl = _child(f, *minf, b"stbl") if minf else None
                 if not (hdlr and mdhd and stbl):
                     raise InvalidMedia(f"{path}: incomplete trak")
+                width, height = _track_size(f, _child(f, s, e, b"tkhd"))
                 f.seek(hdlr[0] + 8)
                 handler = f.read(4).decode("latin-1")
                 f.seek(mdhd[0])
@@ -169,7 +187,7 @@ def probe_mp4(path: Path) -> list[Track]:
                 if stss is not None:
                     f.seek(stss[0] + 4)
                     (sync,) = struct.unpack(">I", f.read(4))
-                tracks.append(Track(handler, timescale, duration, samples, sync))
+                tracks.append(Track(handler, timescale, duration, samples, sync, width, height))
             return tracks
     except (OSError, struct.error) as exc:
         raise InvalidMedia(f"{path}: {exc}") from exc
@@ -516,8 +534,13 @@ async def render(*, segments: Sequence[Segment], stills: Sequence[Still], keyfra
     placed: list[tuple[int, int]]  # per still: (run, output-frame boundary in that run)
     if good:
         runs: list[list[tuple[Segment, Track]]] = []
-        for s, t in good:  # consecutive segments of one camera (one label) form a run (R12)
-            if runs and (runs[-1][-1][0].camera, runs[-1][-1][0].label) == (s.camera, s.label):
+        def run_key(s: Segment, t: Track) -> tuple:
+            return s.camera, s.label, t.width, t.height
+
+        # Consecutive segments of one camera (one label) and one frame size form a run (R12): ffmpeg rebuilds its
+        # filtergraph when the size changes, which restarts select's frame counter.
+        for s, t in good:
+            if runs and run_key(*runs[-1][-1]) == run_key(s, t):
                 runs[-1].append((s, t))
             else:
                 runs.append([(s, t)])

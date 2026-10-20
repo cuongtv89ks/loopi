@@ -184,6 +184,45 @@ async def test_two_cameras_of_one_place_still_render_apart(tmp_path):
     assert result.frames == 2 * render.FPS and render.video_track(result.out).samples == result.frames
 
 
+def test_the_video_track_reads_its_frame_size(tmp_path):
+    track = render.video_track(make_mp4(tmp_path / "seg.mp4", size="640x360"))
+    assert (track.width, track.height) == (640, 360)
+
+
+@pytest.mark.parametrize("version", [0, 1])
+def test_a_track_header_of_either_version_gives_its_size(version):
+    import io
+    import struct
+
+    at = 88 if version == 1 else 76
+    body = bytes([version]) + b"\x00" * (at - 1) + struct.pack(">II", 1280 << 16, 720 << 16)
+    assert render._track_size(io.BytesIO(body), (0, len(body))) == (1280, 720)
+    assert render._track_size(io.BytesIO(body), None) == (0, 0)  # no tkhd: no size, the run key still holds
+    with pytest.raises(render.InvalidMedia):
+        render._track_size(io.BytesIO(body), (0, len(body) - 1))
+
+
+async def test_a_camera_whose_frame_size_changes_starts_a_new_run(tmp_path):
+    """An iPhone app restarted in portrait: one ffmpeg over both sizes would rebuild its filtergraph mid-run and
+    restart select's frame counter (the frame-count check then fails the whole vlog)."""
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    make_mp4(a, seconds=4, fps=6, size="640x360", gop=6)
+    make_mp4(b, seconds=4, fps=6, size="360x640", gop=6)  # the same phone, now portrait
+    steps = []
+
+    async def runner(step, argv, feed):
+        steps.append(step)
+        await render.run_step(step, argv, feed)
+
+    result = await render.render(
+        segments=[render.Segment(a, T, camera="cam"), render.Segment(b, T + dt.timedelta(seconds=4), camera="cam")],
+        stills=[], keyframes=[], target_seconds=2.0, workdir=tmp_path / "w", out=tmp_path / "out.mp4", title="x",
+        runner=runner,
+    )
+    assert [s for s in steps if s.startswith("timelapse")] == ["timelapse", "timelapse[1]"]
+    assert result.frames == 2 * render.FPS and render.video_track(result.out).samples == result.frames
+
+
 async def test_stills_go_in_time_order_before_inside_between_and_after_the_runs(tmp_path):
     a1, a2, b = (make_mp4(tmp_path / f"{n}.mp4") for n in ("a1", "a2", "b"))  # 6 s at 2 fps: 12 frames each
     jpeg = write_jpeg(tmp_path / "s.jpg")
