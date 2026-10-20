@@ -231,10 +231,11 @@ async def test_commitments_stop_at_200(pool):
 
 
 async def test_the_picture_switch_is_off_until_turned_on(pool):
+    await store.set_retention(pool, store.Retention(enabled=False))  # the owner turned retention off
     assert (await store.get_mcp(pool)).images is False
     await store.set_mcp(pool, store.McpSettings(images=True))
     assert (await store.get_mcp(pool)).images is True
-    assert (await store.get_retention(pool)).enabled is True  # the retention setting is a separate row (on by default, D32)
+    assert (await store.get_retention(pool)).enabled is False  # a separate row: set_mcp leaves retention alone
 
 
 async def test_an_unknown_keyframe_has_no_thumbnail(pool, pki_settings):

@@ -53,7 +53,9 @@ async def test_the_search_page_tags_results_from_several_cameras(web, pool, two)
 async def test_results_from_one_camera_are_not_tagged(web, pool, two):
     living, _ = two
     await insert_moment(pool, living, kind="speech", ts=NINE, text="đi chợ mua rau", lang="vi")
-    assert 'class="place"' not in (await web.get("/search", params={"q": "đi chợ"})).text
+    text = (await web.get("/search", params={"q": "đi chợ"})).text
+    assert "đi chợ mua rau" in text  # the hit is on the page ...
+    assert 'class="place"' not in text  # ... without a place tag
 
 
 def test_chat_sources_name_the_place_when_there_are_several(pki_settings):

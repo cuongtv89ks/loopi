@@ -27,12 +27,14 @@ async def test_chapter_lines_name_the_place_when_two_cameras_recorded(pool, pki_
     living, kitchen = two
     await insert_moment(pool, living, kind="visual", ts=at(15), text="Two people cook")
     await insert_moment(pool, kitchen, kind="visual", ts=at(16), text="Two people cook")  # same words, other room
+    await insert_moment(pool, living, kind="visual", ts=at(17), text="Two people cook")  # a repeat for that camera
     await insert_moment(pool, kitchen, kind="speech", ts=at(20), text="Mai mình đi chợ nhé", lang="vi")
     await insert_moment(pool, kitchen, kind="marker", ts=at(40), text="Marked moment")
     lines = await chapters.chapter_lines(pool, NINE, at(59), pki_settings.zone)
     assert lines[:3] == ["09:15 at Phòng khách, picture: Two people cook", "09:16 at Bếp, picture: Two people cook",
                          "09:20 at Bếp, speech (vi): Mai mình đi chợ nhé"]
     assert lines[3].startswith("09:40 at Bếp, the user pressed the mark button")
+    assert len(lines) == 4 and not any(line.startswith("09:17") for line in lines)  # de-duplicated per camera
 
 
 async def test_chapter_lines_of_one_camera_are_unchanged(pool, pki_settings, two):
