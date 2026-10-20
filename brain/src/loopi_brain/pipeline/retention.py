@@ -13,7 +13,8 @@ a row someone else holds, say a reprocess resetting it, is left for the next nig
 **before** any file is deleted, so a reprocess never reads "raw is kept" for a file that is going. Once the files
 are gone the row says so (``raw_files_gone_at``, ``view_path`` cleared). A recording whose files could not all be
 deleted gets its mark removed again and is tried the next night, but only while its raw file is verifiably still
-there; its raw file is only deleted once every copy of it is gone. A worker that dies between the commit and the
+there (audio; a video's raw H.264 went right after its analysis, D32, so a video MP4 that cannot be deleted lands
+in the next case instead); its raw file is only deleted once every copy of it is gone. A worker that dies between the commit and the
 deletion leaves rows marked without ``raw_files_gone_at``, possibly with their raw file already unlinked: each run
 (retention on) first finishes those, a batch at a time, whatever the kept days say now (the pages already show them
 as expired). **Fail closed:** when nothing is known about a recording's files (an unexpected error on it, or a file
@@ -70,8 +71,12 @@ class RetentionResult:
 
 class _Removed(NamedTuple):
     done: list[str]  # every file is gone
-    left: list[str]  # a file could not be deleted and the raw file is verifiably still there: loses its mark again
-    stuck: list[str]  # state unknown (unexpected error, or a failure with the raw file already gone): keeps its mark
+    # a file could not be deleted and the raw file is verifiably still there (audio, or a video one copy has not
+    # reached yet): loses its mark again
+    left: list[str]
+    # state unknown (unexpected error, or a failure with the raw file already gone, as with every video after one
+    # copy): keeps its mark and is retried by the _UNFINISHED phase of the next run
+    stuck: list[str]
     deleted: int  # files deleted
     failed: int  # files that could not be deleted (an unexpected error on a recording counts as one)
 
@@ -96,7 +101,8 @@ def _remove(media_root: Path, rows: list[dict]) -> _Removed:
             out.done.append(row["id"])
         elif os.path.lexists(media_root / row["raw_path"]):  # still there: it can be reprocessed, tried tomorrow
             out.left.append(row["id"])
-        else:  # the raw file is already gone (a dead run took it): the row must keep saying so
+        else:  # the raw file is already gone (a video's raw H.264 goes after its analysis, D32; or a dead run took
+            # it): the row must keep saying so, and the _UNFINISHED phase retries the MP4 or the playback copy
             out.stuck.append(row["id"])
     return out
 
@@ -227,7 +233,8 @@ def due(timestamp: int | None, zone) -> bool:
 @job_app.task(name=jobs.APPLY_RETENTION, queue="light", queueing_lock="apply_retention")
 async def apply_retention_job(timestamp: int | None = None) -> None:
     """Hourly tick (Procrastinate's cron runs in UTC, so the local 03:00 is found here): retry the files of a
-    forgotten range and sweep the golden copies, on or off; then apply retention when the owner turned it on."""
+    forgotten range and sweep the golden copies, on or off; then apply retention unless the owner turned it off in
+    Cài đặt."""
     ctx = get_context()
     if due(timestamp, ctx.settings.zone):
         await retry_forgotten_files(ctx.pool, ctx.settings)
