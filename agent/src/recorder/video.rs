@@ -1,5 +1,5 @@
-//! Video capture: supervise `rpicam-vid` writing fixed-length H.264 segments and queue each one
-//! once it is closed. Raw H.264 carries no timestamps, so times come from file mtimes.
+//! Video capture: supervise `rpicam-vid` (or, for a network camera, ffmpeg pulling its stream) writing fixed-length
+//! H.264 segments and queue each one once it is closed. Raw H.264 carries no timestamps, so times come from file mtimes.
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -8,19 +8,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use tokio::process::{Child, Command};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, ChildStderr, Command};
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::clock::Clock;
-use crate::config::{CaptureConfig, CONTRACT_MAX_SEGMENT_SECONDS};
+use crate::config::{CaptureConfig, CaptureSource, CONTRACT_MAX_SEGMENT_SECONDS};
 use crate::item::{ItemKind, ItemMeta};
 use crate::queue::{Queue, RecoveryReport};
+use crate::recorder::stream::{self, StreamProblem};
 use crate::status::StatusTx;
 
 pub const SEGMENT_PATTERN: &str = "v_%06d.h264";
 const INTRA_SECONDS: u32 = 5;
 const FALLBACK_SEGMENT_SECONDS: i64 = 60;
+
+/// What runs the camera: rpicam-vid on the Pi, or ffmpeg pulling a network camera's stream (P3c-2).
+#[derive(Debug, Clone)]
+pub enum VideoSource {
+    Rpicam,
+    Stream(crate::recorder::stream::StreamInput),
+}
 
 #[derive(Debug, Clone)]
 pub struct VideoOptions {
@@ -35,12 +45,13 @@ pub struct VideoOptions {
     pub stop_grace: Duration,
     pub max_backoff: Duration,
     pub healthy_run: Duration,
+    pub source: VideoSource,
 }
 
 impl VideoOptions {
     pub fn from_config(capture: &CaptureConfig, incoming_dir: PathBuf) -> Self {
         Self {
-            camera_cmd: capture.camera_cmd.clone(),
+            camera_cmd: capture.recorder_cmd().to_string(),
             width: capture.video_width,
             height: capture.video_height,
             fps: capture.video_fps,
@@ -51,6 +62,10 @@ impl VideoOptions {
             stop_grace: Duration::from_secs(5),
             max_backoff: Duration::from_secs(60),
             healthy_run: Duration::from_secs(60),
+            source: match capture.source {
+                CaptureSource::Stream => VideoSource::Stream(stream::video_input(capture)),
+                CaptureSource::Csi => VideoSource::Rpicam,
+            },
         }
     }
 }
@@ -233,33 +248,59 @@ pub fn camera_backoff(failures: u32, max: Duration) -> Duration {
     Duration::from_secs(1u64 << failures.min(6)).min(max)
 }
 
-/// Make the child receive SIGTERM when the agent dies, so no recorder outlives it.
-#[cfg(target_os = "linux")]
-fn die_with_parent(command: &mut Command) {
-    // SAFETY: prctl(2) is async-signal-safe; this runs in the child between fork and exec.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn die_with_parent(_command: &mut Command) {}
-
-fn spawn_camera(cmd: &str, args: &[String]) -> io::Result<Child> {
+/// A network camera's stderr is piped (ffmpeg quotes the address, with the password, in its errors; see
+/// `watch_stderr`); rpicam-vid's goes to the journal.
+fn spawn_camera(cmd: &str, args: &[String], source: &VideoSource) -> io::Result<Child> {
     let mut command = Command::new(cmd);
     command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(match source {
+            VideoSource::Rpicam => Stdio::inherit(),
+            VideoSource::Stream(_) => Stdio::piped(),
+        })
         .kill_on_drop(true);
-    die_with_parent(&mut command);
+    crate::child::die_with_parent_tokio(&mut command);
     command.spawn()
+}
+
+/// Read ffmpeg's error output to its end (so the pipe never fills) and keep what it means: the first specific
+/// problem, or `Other` when no line was more specific. No line is logged or stored.
+fn watch_stderr(stderr: ChildStderr) -> JoinHandle<Option<StreamProblem>> {
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr);
+        let mut raw = Vec::new();
+        let mut problem: Option<StreamProblem> = None;
+        loop {
+            raw.clear();
+            match reader.read_until(b'\n', &mut raw).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let line = String::from_utf8_lossy(&raw);
+            if let Some(found) = stream::classify_stream_error(&line) {
+                if matches!(problem, None | Some(StreamProblem::Other)) {
+                    problem = Some(found);
+                }
+            }
+        }
+        problem
+    })
+}
+
+/// How long to wait for the stderr reader after the child is gone (a stray grandchild could still hold the pipe).
+const STDERR_DRAIN_WAIT: Duration = Duration::from_secs(2);
+
+async fn finish_stderr(task: Option<JoinHandle<Option<StreamProblem>>>) -> Option<StreamProblem> {
+    let mut task = task?;
+    match tokio::time::timeout(STDERR_DRAIN_WAIT, &mut task).await {
+        Ok(joined) => joined.ok().flatten(),
+        Err(_) => {
+            task.abort();
+            None
+        }
+    }
 }
 
 /// SIGINT lets rpicam-vid close its file cleanly; SIGKILL after `grace`.
@@ -278,7 +319,7 @@ async fn stop_child(child: &mut Child, grace: Duration) {
 enum RunEnd {
     GateClosed,
     Shutdown,
-    Exited { ran_for: Duration, code: Option<i32> },
+    Exited { ran_for: Duration, code: Option<i32>, problem: Option<StreamProblem> },
 }
 
 /// A `changed()` result means shutdown when the value is true or the sender is gone.
@@ -298,7 +339,11 @@ async fn record_once(
     fs::create_dir_all(&run_dir)?;
     // Privacy invariant: the LED must already be solid when the camera process comes to life.
     status.send_modify(|s| s.recording_video = true);
-    let mut child = match spawn_camera(&opts.camera_cmd, &rpicam_args(opts, &run_dir)) {
+    let args = match &opts.source {
+        VideoSource::Rpicam => rpicam_args(opts, &run_dir),
+        VideoSource::Stream(input) => stream::video_args(input, opts.fps, opts.bitrate_bps, opts.segment, &run_dir),
+    };
+    let mut child = match spawn_camera(&opts.camera_cmd, &args, &opts.source) {
         Ok(child) => child,
         Err(e) => {
             status.send_modify(|s| s.recording_video = false);
@@ -306,7 +351,12 @@ async fn record_once(
             return Err(e);
         }
     };
+    let stderr_task = child.stderr.take().map(watch_stderr);
     let started = Instant::now();
+    // A run that lasts `healthy_run` has recovered the camera: the old failures stop being reported.
+    let healthy = tokio::time::sleep(opts.healthy_run);
+    tokio::pin!(healthy);
+    let mut healthy_seen = false;
     let mut collector = SegmentCollector::new(run_dir.clone(), clock.now(), opts.segment, opts.fps);
     let mut ticker = tokio::time::interval(opts.poll);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -317,8 +367,12 @@ async fn record_once(
                     tracing::warn!(error = %e, "collecting video segments failed");
                 }
             }
+            _ = &mut healthy, if !healthy_seen => {
+                healthy_seen = true;
+                status.send_modify(|s| s.camera_failures = 0);
+            }
             exit = child.wait() => {
-                break RunEnd::Exited { ran_for: started.elapsed(), code: exit.ok().and_then(|s| s.code()) };
+                break RunEnd::Exited { ran_for: started.elapsed(), code: exit.ok().and_then(|s| s.code()), problem: None };
             }
             changed = gate.changed() => {
                 if changed.is_err() {
@@ -337,6 +391,11 @@ async fn record_once(
                 }
             }
         }
+    };
+    let problem = finish_stderr(stderr_task).await;
+    let end = match end {
+        RunEnd::Exited { ran_for, code, .. } => RunEnd::Exited { ran_for, code, problem },
+        other => other,
     };
     let collected = collector.collect(queue, true);
     let _ = fs::remove_dir(&run_dir);
@@ -391,9 +450,16 @@ pub async fn run_video(
                 status.send_modify(|s| s.camera_failures = 0);
                 continue;
             }
-            Ok(RunEnd::Exited { ran_for, code }) => {
+            Ok(RunEnd::Exited { ran_for, code, problem }) => {
                 failures = if ran_for >= opts.healthy_run { 1 } else { failures.saturating_add(1) };
-                format!("rpicam-vid exited with {code:?} after {} s", ran_for.as_secs())
+                let secs = ran_for.as_secs();
+                match opts.source {
+                    VideoSource::Rpicam => format!("rpicam-vid exited with {code:?} after {secs} s"),
+                    VideoSource::Stream(_) => {
+                        let why = problem.unwrap_or(StreamProblem::Other).describe();
+                        format!("ffmpeg exited with {code:?} after {secs} s: {why}")
+                    }
+                }
             }
             Err(e) => {
                 failures = failures.saturating_add(1);
@@ -446,6 +512,7 @@ mod tests {
             stop_grace: Duration::from_secs(2),
             max_backoff: Duration::from_millis(50),
             healthy_run: Duration::from_secs(60),
+            source: VideoSource::Rpicam,
         }
     }
 
@@ -698,6 +765,71 @@ mod tests {
 
         drop(stop_tx);
         assert!(matches!(tokio::time::timeout(Duration::from_secs(5), task).await, Ok(Ok(()))));
+    }
+
+    fn fake_ffmpeg(dir: &Path) -> String {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-ffmpeg.sh");
+        executable(dir, "fake-ffmpeg.sh", &fs::read(fixture).unwrap())
+    }
+
+    fn stream_opts(dir: &Path, cmd: String) -> VideoOptions {
+        let input = crate::recorder::stream::StreamInput {
+            url: "rtsp://192.0.2.10/cam".into(),
+            username: "admin".into(),
+            password: crate::config::Secret("S3cr3t".into()),
+        };
+        VideoOptions { source: VideoSource::Stream(input), ..opts(dir, cmd) }
+    }
+
+    #[tokio::test]
+    async fn a_network_camera_records_segments_like_the_pi() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let queue = Arc::new(queue);
+        let status = status_channel(AgentStatus::default());
+        let (_gate_tx, gate_rx) = watch::channel(true);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let options = stream_opts(tmp.path(), fake_ffmpeg(tmp.path()));
+        let task = tokio::spawn(run_video(options, queue.clone(), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
+        assert!(eventually(|| queue.len().unwrap() >= 2).await, "segments are queued");
+        assert!(status.borrow().recording_video);
+        stop_tx.send(true).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_dies_is_restarted_and_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let status = status_channel(AgentStatus::default());
+        let (_gate_tx, gate_rx) = watch::channel(true);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let script = executable(
+            tmp.path(),
+            "failing-ffmpeg.sh",
+            b"#!/bin/sh\necho '[rtsp @ 0x1] 401 Unauthorized (rtsp://admin:S3cr3t@192.0.2.10/cam)' >&2\nexit 1\n",
+        );
+        let task = tokio::spawn(run_video(stream_opts(tmp.path(), script), Arc::new(queue), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
+        assert!(eventually(|| status.borrow().camera_failures >= 2).await, "the recorder retries");
+        let error = status.borrow().last_error.clone().unwrap();
+        assert!(error.contains("refused the user name or password"), "{error}");
+        assert!(!error.contains("S3cr3t") && !error.contains("rtsp://"), "{error}");
+        stop_tx.send(true).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_run_that_lasts_clears_the_failure_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (queue, _) = Queue::open(&tmp.path().join("q")).unwrap();
+        let status = status_channel(AgentStatus { camera_failures: 4, ..AgentStatus::default() });
+        let (_gate_tx, gate_rx) = watch::channel(true);
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let options = VideoOptions { healthy_run: Duration::from_millis(300), ..opts(tmp.path(), fake_camera(tmp.path())) };
+        let task = tokio::spawn(run_video(options, Arc::new(queue), Arc::new(SyncedClock), gate_rx, status.clone(), stop_rx));
+        assert!(eventually(|| status.borrow().recording_video && status.borrow().camera_failures == 0).await);
+        stop_tx.send(true).unwrap();
+        task.await.unwrap();
     }
 
     #[test]
