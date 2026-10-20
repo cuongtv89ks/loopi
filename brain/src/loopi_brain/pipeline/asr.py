@@ -413,10 +413,15 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
         return 0
     async with pool.connection() as conn:
         cur = await conn.execute(
-            "SELECT id, offset_s, length_s FROM speech_region WHERE item_id = %s AND state = 'chosen' ORDER BY offset_s",
+            "SELECT id, offset_s, length_s, state FROM speech_region"
+            " WHERE item_id = %s AND state IN ('chosen', 'waiting') ORDER BY offset_s",
             (item_id,),
         )
-        chosen = await cur.fetchall()
+        found = await cur.fetchall()
+    chosen = [r for r in found if r["state"] == "chosen"]
+    if len(chosen) < len(found):  # a stray job (e.g. a stalled R8 run retried): grouping has not decided every region
+        log.info("item %s: %d regions still wait for grouping; nothing transcribed", item_id, len(found) - len(chosen))
+        return 0
     path = ctx.settings.media_root / item["raw_path"]
     if not path.is_file():
         await finish_item(pool, item_id, "skipped")
@@ -436,7 +441,7 @@ async def _transcribe(ctx: PipelineContext, item_id: str) -> int:
             return 0
         # Re-running replaces the item's transcript (moments go with their segments: ON DELETE CASCADE).
         await conn.execute("DELETE FROM transcript_segment WHERE item_id = %s", (item_id,))
-        for row, (region, result) in zip(chosen, results):
+        for row, (region, result) in zip(chosen, results, strict=True):
             kept = kept_segments(result, rules)
             if not kept:
                 continue

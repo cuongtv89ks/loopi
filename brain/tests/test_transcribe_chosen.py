@@ -63,3 +63,33 @@ async def test_a_job_from_before_this_version_detects_first(pool, pki_settings, 
     assert whisper.chunks == []  # detected, now waiting for grouping; nothing lost
     assert (await fetch_one(pool, "SELECT state FROM speech_region"))["state"] == "waiting"
     assert (await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (item_id,)))["analysis_state"] == "pending"
+
+
+async def test_a_stray_job_leaves_an_item_whose_regions_are_still_waiting(pool, pki_settings, jobs_open):
+    dev = await paired_device(pool, pki_settings)
+    item_id = await _item(pool, pki_settings, dev["device_id"], [(1.0, 2.0, "waiting")])
+    whisper = FakeTranscriber(HELLO)
+    assert await asr.transcribe_audio(make_ctx(pool, pki_settings, transcriber=whisper), item_id) == 0
+    assert whisper.chunks == []
+    assert (await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (item_id,)))["analysis_state"] == "pending"
+    assert (await fetch_one(pool, "SELECT state FROM speech_region"))["state"] == "waiting"
+
+
+async def test_a_chosen_item_whose_file_is_gone_is_skipped(pool, pki_settings, jobs_open):
+    dev = await paired_device(pool, pki_settings)
+    item_id = await _item(pool, pki_settings, dev["device_id"], [(1.0, 2.0, "chosen")])
+    row = await fetch_one(pool, "SELECT raw_path FROM item WHERE id = %s", (item_id,))
+    (pki_settings.media_root / row["raw_path"]).unlink()
+    whisper = FakeTranscriber(HELLO)
+    assert await asr.transcribe_audio(make_ctx(pool, pki_settings, transcriber=whisper), item_id) == 0
+    assert whisper.chunks == []
+    assert (await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (item_id,)))["analysis_state"] == "skipped"
+
+
+async def test_a_stray_job_waits_even_when_only_some_regions_are_decided(pool, pki_settings, jobs_open):
+    dev = await paired_device(pool, pki_settings)
+    item_id = await _item(pool, pki_settings, dev["device_id"], [(1.0, 2.0, "chosen"), (5.0, 2.0, "waiting")])
+    whisper = FakeTranscriber(HELLO)
+    assert await asr.transcribe_audio(make_ctx(pool, pki_settings, transcriber=whisper), item_id) == 0
+    assert whisper.chunks == []  # the item is transcribed once, when grouping has decided every region
+    assert (await fetch_one(pool, "SELECT analysis_state FROM item WHERE id = %s", (item_id,)))["analysis_state"] == "pending"
